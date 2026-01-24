@@ -1,8 +1,35 @@
-.flatpak/*
-.vscode/*
-target/*
+# Flutter/Dart
+.dart_tool/
+.packages
+build/
+*.iml
+.metadata
+pubspec.lock
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Rust
+rust/target/
+
+# Legacy GTK build
+target/
 _build/
-.aider*
+
+# Flatpak
+.flatpak/
+
+# Environment and secrets
 .env
-src/config.rs
+.aider*
+
+# Misc
+*.log
+flutter_output.txt*
+test_spawn
 plans/

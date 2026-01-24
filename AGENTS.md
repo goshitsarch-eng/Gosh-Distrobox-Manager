@@ -1,135 +1,65 @@
-# DistroShelf Copilot Instructions
+# Gosh Distrobox Manager Copilot Instructions
 
 ## Project Overview
-DistroShelf is a Rust-based GTK4/Libadwaita GUI for managing [Distrobox](https://distrobox.it/) containers. Built with Meson, it provides container lifecycle management, package installation, and application export functionality.
+Gosh Distrobox Manager is a **Flutter** application for managing [Distrobox](https://distrobox.it/) containers. It uses **Rust** for the backend logic, connected via [flutter_rust_bridge](https://github.com/fzyzcjy/flutter_rust_bridge).
 
-## Architecture Overview
+**Note**: This project was previously a GTK4/Rust application. Legacy GTK resources may still exist in `rust/data/` or `data/`, but the active UI is pure Flutter in `lib/`.
 
-### State Management (`RootStore`)
-**Central reactive store pattern** (`src/store/root_store.rs`):
-- Single GObject holding all app state: containers, tasks, images, settings
-- UI binds directly to `RootStore` properties via GObject data binding
-- State updates trigger automatic UI refresh through property notifications
-- Contains `Query<T>` instances for async data with built-in loading/error states
-- Example: `containers_query: Query<Vec<Container>>` exposed as bindable property
+## Architecture
 
-### Command Execution Architecture
-**ALL shell commands MUST use `CommandRunner` abstraction** (`src/fakers/command_runner.rs`):
-```rust
-// CORRECT - works in both native and Flatpak
-let cmd = Command::new("distrobox-list");
-let output = runner.output(cmd).await?;
+### Stack
+- **Frontend**: Flutter (Dart) using `Provider` for state management.
+- **Backend**: Rust (in `rust/` directory).
+- **Bridge**: `flutter_rust_bridge` (FRB) v2.
 
-// WRONG - breaks in Flatpak
-let output = std::process::Command::new("distrobox-list").output()?;
+### Directory Structure
+- `lib/`: Flutter UI and application logic.
+  - `lib/src/rust/`: **Generated** Dart code for the Rust bridge. Do not edit manually.
+  - `lib/providers/`: State management (calls Rust APIs).
+  - `lib/screens/`: UI Screens.
+- `rust/`: The Rust backend crate.
+  - `rust/src/api.rs`: The main API surface exposed to Flutter.
+  - `rust/src/frb_generated.rs`: **Generated** Rust bridge code.
+  - `rust/src/backends/`: Core logic for interacting with container runtimes (Podman, Docker, Flatpak).
+
+## Development Workflow
+
+### 1. Running the App
+Standard Flutter workflow:
+```bash
+flutter run
 ```
-**Why:** Flatpak apps cannot directly exec host commands. `FlatpakCommandRunner` automatically wraps commands with `flatpak-spawn --host` (see `src/backends/flatpak.rs::map_flatpak_spawn_host`).
+This automatically compiles the Rust crate and links it.
 
-**Implementations:**
-- `RealCommandRunner`: Direct execution (native builds)
-- `FlatpakCommandRunner`: Wraps with `flatpak-spawn --host` 
-- `NullCommandRunner`: Returns mock responses for testing/previews
+### 2. Modifying Rust API
+If you change `rust/src/api.rs` or other exposed Rust types:
+1.  Make your changes in Rust.
+2.  Run the codegen (requires `flutter_rust_bridge_codegen` installed):
+    ```bash
+    flutter_rust_bridge_codegen generate
+    ```
+    *Note: Check project docs if a specific script or `justfile` exists for this, but this is the standard command.*
+3.  Use the updated API in Dart.
 
-### GObject Subclassing Pattern
-Standard gtk-rs pattern used throughout (`src/container.rs`, `src/window.rs`, etc.):
-```rust
-mod imp {
-    #[derive(Properties)]
-    #[properties(wrapper_type = super::MyWidget)]
-    pub struct MyWidget {
-        #[property(get, set)]
-        name: RefCell<String>,
-    }
-}
-glib::wrapper! {
-    pub struct MyWidget(ObjectSubclass<imp::MyWidget>);
-}
-```
+### 3. State Management
+- **Dart**: `AppStateProvider` (`lib/providers/app_state.dart`) holds the source of truth for the UI.
+- **Pattern**: The provider calls async Rust functions (e.g., `api.getContainers()`) and updates local state (`_containers`, `_isLoading`), notifying listeners.
 
-### Composite Template Pattern
-UI widgets use GTK composite templates:
-```rust
-#[derive(gtk::CompositeTemplate)]
-#[template(file = "window.ui")]
-pub struct DistroShelfWindow {
-    #[template_child]
-    pub sidebar_list_view: TemplateChild<gtk::ListView>,
-}
-// Connect callbacks in imp module:
-#[gtk::template_callbacks]
-impl WelcomeView {
-    #[template_callback]
-    fn continue_to_terminal_page(&self, _: &gtk::Button) { /* ... */ }
-}
-```
-Widget `.ui` files live alongside their Rust implementations in `src/widgets/`. Global UI resources (help overlay, etc.) remain in `data/gtk/`.
+## Key Concepts
 
-## Key Patterns & Utilities
+### Command Execution (`CommandRunner`)
+Gosh Distrobox Manager must run in both **Native** and **Flatpak** environments.
+- **Abstraction**: `rust/src/fakers/command_runner.rs` defines a `CommandRunner` trait.
+- **Native**: Executes commands directly.
+- **Flatpak**: Detects Flatpak environment and wraps commands with `flatpak-spawn --host` automatically.
+- **Logic**: See `rust/src/backends/flatpak.rs`.
 
-### `Query<T>` - Async Data Fetching
-Wraps async operations with reactive state (`src/query/mod.rs`):
-```rust
-let query = Query::new("containers", || async { fetch_containers().await })
-    .with_timeout(Duration::from_secs(5))
-    .with_retry_strategy(|n| if n < 3 { Some(Duration::from_secs(n as u64)) } else { None });
+**Rule**: NEVER use `std::process::Command` directly in backend logic. Always use the `CommandRunner` or provided helpers to ensure Flatpak compatibility.
 
-query.refetch(); // Triggers fetch, updates is-loading/data/error properties
-query.connect_success(|data| { /* UI update */ });
-```
-Properties: `is-loading`, `data`, `error`, `last-fetched-at`
+### Distrobox Integration
+- Logic is encapsulated in `rust/src/backends/distrobox/`.
+- Desktop file parsing uses a shell script: `rust/src/backends/distrobox/POSIX_FIND_AND_CONCAT_DESKTOP_FILES.sh`.
 
-### `DistroboxTask` - Long-Running Operations
-Tracks command execution with output streaming (`src/distrobox_task.rs`):
-```rust
-let task = DistroboxTask::new("my-container", "Upgrade", |task| async move {
-    let child = runner.spawn(Command::new("distrobox-upgrade"))?;
-    task.handle_child_output(child).await?; // Streams output to task.vte_terminal()
-    Ok(())
-});
-// Status: "pending" -> "executing" -> "successful"/"failed"
-// Displayed in TaskManagerDialog with live output
-```
-
-### `TypedListStore<T>` & List Reconciliation
-Type-safe wrapper over `gio::ListStore` (`src/gtk_utils/typed_list_store.rs`):
-```rust
-let store = TypedListStore::<Container>::new();
-for container in store.iter() { /* No downcasting needed */ }
-```
-Use `reconcile_list_by_key` to diff-update lists without full rebuild:
-```rust
-reconcile_list_by_key(&store, &new_containers, |c| c.name(), &["status", "image"]);
-// Updates existing items, adds new, removes old - preserves object identity
-```
-
-### `glib::clone!` Macro
-**Always use attribute syntax** for weak/strong references:
-```rust
-btn.connect_clicked(clone!(
-    #[weak(rename_to=this)]
-    self,
-    #[strong]
-    data,
-    move |_| { this.do_something(&data); }
-));
-```
-
-## Critical Integration Points
-
-### Flatpak Detection
-App automatically detects Flatpak environment and configures `CommandRunner`:
-- Native: Uses `RealCommandRunner`
-- Flatpak: Uses `FlatpakCommandRunner` (wraps all commands with `flatpak-spawn --host`)
-- See `src/backends/flatpak.rs` and application initialization in `src/application.rs`
-
-### Container Runtime Abstraction
-`ContainerRuntime` trait (`src/backends/container_runtime.rs`) abstracts Podman/Docker:
-- Auto-detects available runtime at startup
-- Provides unified interface for images, events, container status
-- `RootStore::container_runtime` is a `Query<Rc<dyn ContainerRuntime>>`
-
-### Desktop File Parsing
-Shell script in `src/backends/distrobox/POSIX_FIND_AND_CONCAT_DESKTOP_FILES.sh` finds and encodes desktop files from containers for app export. Uses hex-encoding to avoid shell escaping issues.
-
-### GNOME Documentation Librarian Agent
-Call #tool:runSubagent with `gnome-doc-librarian` to fetch up-to-date documentation for GNOME libraries and components.
+## Gotchas
+- **Generated Files**: `lib/src/rust/` and `rust/src/frb_generated.rs` are auto-generated. **Do not edit them.**
+- **Legacy Files**: Ignore `meson.build` or `.ui` files in `rust/data/` or `data/` unless you are specifically working on packaging/migration tasks. The UI is built in Dart.

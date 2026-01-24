@@ -1,85 +1,149 @@
-# DistroShelf - A GUI for Distrobox Containers
+# Gosh Distrobox Manager
 
-<p align="center">
-  <img src="data/icons/hicolor/scalable/apps/com.ranfdev.DistroShelf.svg" alt="Icon">
-</p>
+A modern, cross-platform GUI application for managing [Distrobox](https://distrobox.it/) containers. Built with **Flutter** for the frontend and **Rust** for the backend, connected via [flutter_rust_bridge](https://github.com/fzyzcjy/flutter_rust_bridge).
 
-DistroShelf is a graphical interface for managing [Distrobox](https://distrobox.it/) containers on Linux. It provides an easy way to:
+## Features
 
-- Create and manage containers
-- View container status and details
-- Install packages
-- Manage exported applications
-- Open terminal sessions
-- Upgrade containers
-- Clone and delete containers
+### Container Management
+- List and view all Distrobox containers with status indicators
+- Create new containers from a wide variety of Linux distributions
+- Clone existing containers
+- Start, stop, and remove containers
+- Upgrade container packages
+- View detailed container information and statistics
 
-![Screenshot](data/screenshots/1.png)
+### Integrated Terminal
+- Built-in terminal emulator for direct container access
+- Enter any container with a single click
 
-## Installation
-[![Packaging status](https://repology.org/badge/vertical-allrepos/distroshelf.svg)](https://repology.org/project/distroshelf/versions)
+### Application Management
+- Browse applications installed inside containers
+- Export/unexport applications to the host system
+- Export/unexport binaries from containers
 
-### Flatpak
-<a href='https://flathub.org/apps/com.ranfdev.DistroShelf'>
-  <img width='240' alt='Get it on Flathub' src='https://flathub.org/api/badge?locale=en'/>
-</a>
+### Package Management
+- Detect container's package manager (apt, dnf, pacman, zypper, etc.)
+- List installed packages
+- Search for packages in container repositories
+- Install and remove packages with real-time output streaming
 
-or
+### Backup & Restore
+- Create snapshots of containers
+- List and manage snapshots
+- Restore containers from snapshots
+- Export containers to tar archives
+- Import containers from archives
+
+### Resource Monitoring
+- View container resource usage (CPU, memory)
+- Monitor disk usage
+
+### Additional Features
+- Dashboard with overview of all containers
+- Activity logs for tracking operations
+- Task management with real-time output streaming
+- Flatpak support (runs natively or inside Flatpak sandbox)
+- Dark/light theme support
+
+## Screenshots
+
+*Coming soon*
+
+## Architecture
+
+- **Frontend**: Flutter (Dart) with Provider for state management
+- **Backend**: Rust for performance-critical operations and system interaction
+- **Bridge**: `flutter_rust_bridge` v2 for seamless Dart-Rust interop
+
+## Prerequisites
+
+- Flutter SDK (3.x or later)
+- Rust toolchain (cargo)
+- `flutter_rust_bridge_codegen` v2
+- Distrobox installed on the host system
+- Podman or Docker as the container runtime
+
+## Building
+
+### Quick Start
 
 ```bash
-flatpak install com.ranfdev.DistroShelf
+# Clone the repository
+git clone https://github.com/goshitsarch-eng/Gosh-Distrobox-Manager.git
+cd Gosh-Distrobox-Manager
+
+# Get dependencies
+flutter pub get
+
+# Run the app
+flutter run -d linux
 ```
 
-### Third party packages
-#### Arch linux
-`distroshelf` is on the [AUR](https://aur.archlinux.org/packages/distroshelf)
+### Manual Build Steps
 
-#### NixOS
-`distroshelf` on nixpkgs-unstable
+1. **Generate Rust-Dart bindings** (only needed after modifying Rust API):
+   ```bash
+   flutter_rust_bridge_codegen generate
+   ```
 
-### From Source
+2. **Build Rust library** (optional, Flutter build does this automatically):
+   ```bash
+   cd rust
+   cargo build --release
+   ```
 
-#### Requirements
-- Distrobox installed and configured
-- GTK 4 and libadwaita
-- Supported terminal emulator (GNOME Terminal, Konsole, etc.)
+3. **Build for Linux**:
+   ```bash
+   flutter build linux
+   ```
 
-#### Steps
-1. Clone the repository:
-```bash
-git clone https://github.com/ranfdev/DistroShelf.git
-cd DistroShelf
+The built application will be at `build/linux/x64/release/bundle/gosh_distrobox_manager`
+
+## Project Structure
+
 ```
-
-2. Build and install:
-```bash
-meson build --prefix=/usr
-ninja -C build
-sudo ninja -C build install
+.
+├── lib/                    # Flutter Dart code
+│   ├── main.dart           # Application entry point
+│   ├── providers/          # State management (Provider/ChangeNotifier)
+│   ├── screens/            # UI screens
+│   ├── widgets/            # Reusable widgets
+│   └── src/rust/           # Generated Rust bindings (do not edit)
+├── rust/                   # Rust backend
+│   ├── src/
+│   │   ├── api.rs          # API exposed to Dart
+│   │   ├── backends/       # Distrobox/Podman/Docker logic
+│   │   ├── models/         # Data models
+│   │   └── frb_generated.rs # Generated bridge code (do not edit)
+│   └── Cargo.toml
+├── linux/                  # Linux platform runner
+├── android/                # Android platform support
+├── ios/                    # iOS platform support
+├── macos/                  # macOS platform support
+├── windows/                # Windows platform support
+└── web/                    # Web platform support
 ```
-
-## Configuration
-
-You can configure your preferred terminal emulator in the Preferences dialog.
-
-Supported terminals:
-- GNOME Terminal
-- Konsole
-- Xfce Terminal
-- Tilix
-- Alacritty
-- And more...
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or pull request on GitHub.
+Contributions are welcome! Please feel free to submit issues and pull requests.
+
+## Acknowledgments
+
+This project builds upon the work of others:
+
+- **[Distrobox](https://github.com/89luca89/distrobox)** by [Luca Di Maio](https://github.com/89luca89) - The amazing container tool that makes running any Linux distribution inside your terminal possible. Gosh Distrobox Manager is simply a GUI wrapper around this fantastic CLI tool.
+
+- **[DistroShelf](https://github.com/ranfdev/distroshelf)** by [ranfdev](https://github.com/ranfdev) - The original GTK4/Rust application that inspired this project. The Rust backend logic and architecture were derived from DistroShelf.
+
+- **[flutter_rust_bridge](https://github.com/fzyzcjy/flutter_rust_bridge)** - For making Dart-Rust interop seamless.
 
 ## License
 
-DistroShelf is licensed under the GPL-3.0-or-later license.
+This project is open source. See the LICENSE file for details.
 
-## Credits
+## Links
 
-- Distro icons from [font-logos](https://github.com/lukas-w/font-logos)
-- Some snippets are from [BoxBuddy](https://github.com/Dvlv/BoxBuddyRS)
-- [Distrobox](https://distrobox.it/)
+- [Distrobox Documentation](https://distrobox.it/)
+- [Flutter Documentation](https://docs.flutter.dev/)
+- [Rust Documentation](https://www.rust-lang.org/learn)

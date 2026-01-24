@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.gosh_distrobox_manager</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>Gosh Distrobox Manager</name>
+  <summary>Graphical interface for managing Distrobox containers</summary>
+  <description>
+    <p>
+    Gosh Distrobox Manager is a graphical interface for managing Distrobox containers on Linux.
+    It provides an easy way to:
+    </p>
+    <ul>
+      <li>Create and manage containers</li>
+      <li>View container status and details</li>
+      <li>Install packages</li>
+      <li>Manage exported applications</li>
+      <li>Open terminal sessions</li>
+      <li>Upgrade containers</li>
+      <li>Clone and delete containers</li>
+    </ul>
+  </description>
+
+  <developer id="io.github">
+    <name>Gosh Distrobox Manager Contributors</name>
+  </developer>
+
+  <url type="homepage">https://github.com/gosh-distrobox-manager/gosh-distrobox-manager</url>
+  <url type="vcs-browser">https://github.com/gosh-distrobox-manager/gosh-distrobox-manager</url>
+  <url type="bugtracker">https://github.com/gosh-distrobox-manager/gosh-distrobox-manager/issues</url>
+
+  <translation type="gettext">gosh_distrobox_manager</translation>
+  <launchable type="desktop-id">io.github.gosh_distrobox_manager.desktop</launchable>
+  <content_rating type="oars-1.1" />
+
+  <branding>
+    <color type="primary" scheme_preference="light">#deddda</color>
+    <color type="primary" scheme_preference="dark">#241f31</color>
+  </branding>
+
+  <releases>
+    <release version="1.0.0" date="2026-01-23">
+      <description translate="no">
+        <p>Initial release as Gosh Distrobox Manager</p>
+        <ul>
+          <li>Renamed from DistroShelf to Gosh Distrobox Manager</li>
+          <li>Flutter-based UI with Rust backend</li>
+          <li>Create and manage containers</li>
+          <li>View container status and details</li>
+          <li>Install packages</li>
+          <li>Manage exported applications</li>
+          <li>Open terminal sessions</li>
+          <li>Upgrade containers</li>
+          <li>Clone and delete containers</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+
+</component>

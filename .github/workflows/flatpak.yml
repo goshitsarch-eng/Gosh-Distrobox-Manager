@@ -39,25 +39,25 @@ jobs:
                           --repo=repo \
                           --keep-build-dirs \
                           build \
-                          com.ranfdev.DistroShelf.json
+                          io.github.gosh_distrobox_manager.json
 
           # Test the build
-          flatpak-builder --run build com.ranfdev.DistroShelf.json ninja test "-C.flatpak-builder/build/distroshelf/_flatpak_build"
+          flatpak-builder --run build io.github.gosh_distrobox_manager.json ninja test "-C.flatpak-builder/build/gosh_distrobox_manager/_flatpak_build"
 
           # Spawn a shell inside the build sandbox and run `meson dist`
-          flatpak-builder --run build com.ranfdev.DistroShelf.json meson dist --no-tests "-C.flatpak-builder/build/distroshelf/_flatpak_build"
+          flatpak-builder --run build io.github.gosh_distrobox_manager.json meson dist --no-tests "-C.flatpak-builder/build/gosh_distrobox_manager/_flatpak_build"
         # `--run` spawns the build sandbox and executes the given command
 
       - name: Upload Meson distribution artifact
         uses: actions/upload-artifact@v4
         with:
           name: meson-dist
-          path: '.flatpak-builder/build/distroshelf/_flatpak_build/meson-dist/*.tar.xz'
+          path: '.flatpak-builder/build/gosh_distrobox_manager/_flatpak_build/meson-dist/*.tar.xz'
 
       - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}      # defaults to this if omitted
           name: Release ${{ github.ref_name }}  # defaults to tag name if omitted
-          files: '.flatpak-builder/build/distroshelf/_flatpak_build/meson-dist/*.tar.xz'
+          files: '.flatpak-builder/build/gosh_distrobox_manager/_flatpak_build/meson-dist/*.tar.xz'
           generate_release_notes: true         # optional: auto-generate notes
