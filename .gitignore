@@ -33,3 +33,8 @@ _build/
 flutter_output.txt*
 test_spawn
 plans/
+
+# RPM build artifacts
+*.rpm
+*.src.rpm
+rpmbuild/

@@ -99,18 +99,18 @@ flutter:
 flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_1024.png"
+  image_path: "assets/icon.png"
   # Platform-specific configurations
   macos:
     generate: true
-    image_path: "macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_1024.png"
+    image_path: "assets/icon.png"
   windows:
     generate: true
-    image_path: "macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_1024.png"
+    image_path: "assets/icon.png"
     icon_size: 48
   linux:
     generate: true
-    image_path: "macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_1024.png"
+    image_path: "assets/icon.png"
   web:
     generate: true
-    image_path: "macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_1024.png"
+    image_path: "assets/icon.png"
