@@ -29,7 +29,43 @@ flutter run -d linux
 
 If you modify the Rust API, regenerate the bindings with `flutter_rust_bridge_codegen generate`.
 
+### Release Build
+
+To create a release build:
+
+```bash
+flutter build linux --release
+```
+
 The release build ends up at `build/linux/x64/release/bundle/gosh_distrobox_manager`.
+
+### System-Wide Installation
+
+To install the application system-wide with proper desktop integration (app launcher icon, taskbar icon, etc.):
+
+```bash
+# Build the release version
+flutter build linux --release
+
+# Install to /usr/local (requires sudo)
+cd build/linux/x64/release/bundle
+sudo cmake --install . --prefix /usr/local
+
+# Or install to ~/.local for user-only installation
+cmake --install . --prefix ~/.local
+```
+
+After installation, the application will:
+- Appear in your application launcher (GNOME Activities, KDE Kickoff, etc.)
+- Show the correct icon in the taskbar when running
+- Be accessible via the command `gosh_distrobox_manager`
+
+The installation includes:
+- Desktop file at `share/applications/io.github.gosh_distrobox_manager.desktop`
+- Icons in various sizes at `share/icons/hicolor/`
+- Automatic icon and desktop file cache updates
+
+**Note for Wayland users:** The application ID is `io.github.gosh_distrobox_manager`, which should properly match the window to the desktop file for correct taskbar icon display.
 
 ## Project Structure
 

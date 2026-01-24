@@ -150,3 +150,26 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
   install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
 endif()
+
+# Install desktop file and icons for system-wide installation
+if(NOT CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+  # Install desktop file
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/data/share/applications/${APPLICATION_ID}.desktop"
+    DESTINATION "share/applications"
+    COMPONENT Runtime)
+  
+  # Install icons
+  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/share/icons"
+    DESTINATION "share"
+    COMPONENT Runtime
+    PATTERN "*")
+
+  # Update icon and desktop file caches after installation
+  install(CODE "
+    execute_process(COMMAND gtk-update-icon-cache -f -t ${CMAKE_INSTALL_PREFIX}/share/icons/hicolor
+      ERROR_QUIET)
+    execute_process(COMMAND update-desktop-database ${CMAKE_INSTALL_PREFIX}/share/applications
+      ERROR_QUIET)
+    message(STATUS \"Updated icon and desktop file caches\")
+  ")
+endif()

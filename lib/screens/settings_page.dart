@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:gosh_distrobox_manager/providers/app_state.dart';
 import 'package:gosh_distrobox_manager/src/rust/api.dart' as api;
+import 'package:url_launcher/url_launcher.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -36,6 +37,25 @@ class _SettingsPageState extends State<SettingsPage> {
           _distroboxVersion = 'Unknown';
           _isLoadingVersion = false;
         });
+      }
+    }
+  }
+
+  Future<void> _launchUrl(String urlString) async {
+    final url = Uri.parse(urlString);
+    try {
+      if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not open $urlString')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error opening URL: $e')),
+        );
       }
     }
   }
@@ -200,13 +220,8 @@ class _SettingsPageState extends State<SettingsPage> {
                       icon: Icons.code,
                       title: 'Source Code',
                       subtitle: 'View on GitHub',
-                      onTap: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Open source project on GitHub'),
-                          ),
-                        );
-                      },
+                      onTap: () => _launchUrl(
+                          'https://github.com/goshitsarch-eng/Gosh-Distrobox-Manager'),
                     ),
                     const Divider(height: 1),
                     _buildActionTile(
@@ -214,13 +229,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       icon: Icons.description,
                       title: 'Distrobox Documentation',
                       subtitle: 'Learn more about Distrobox',
-                      onTap: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Visit distrobox.it for documentation'),
-                          ),
-                        );
-                      },
+                      onTap: () => _launchUrl('https://distrobox.it'),
                     ),
                   ],
                 ),
@@ -277,7 +286,8 @@ class _SettingsPageState extends State<SettingsPage> {
           Icon(icon, color: Theme.of(context).hintColor, size: 20),
           const SizedBox(width: 12),
           Expanded(
-            child: Text(title, style: const TextStyle(fontWeight: FontWeight.w500)),
+            child: Text(title,
+                style: const TextStyle(fontWeight: FontWeight.w500)),
           ),
           Text(
             value,
@@ -329,8 +339,9 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
       trailing: Icon(
         Icons.chevron_right,
-        color:
-            isEnabled ? Theme.of(context).hintColor : Theme.of(context).disabledColor,
+        color: isEnabled
+            ? Theme.of(context).hintColor
+            : Theme.of(context).disabledColor,
       ),
       onTap: onTap,
     );
