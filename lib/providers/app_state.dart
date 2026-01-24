@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:gosh_distrobox_manager/src/rust/api.dart' as api;
 import 'package:gosh_distrobox_manager/src/rust/backends/distrobox/distrobox.dart';
+import 'package:gosh_distrobox_manager/utils/environment_guard.dart';
+import 'package:gosh_distrobox_manager/utils/environment_guard_types.dart';
 
 /// Represents a running task in the application
 class TaskInfo {
@@ -10,6 +12,9 @@ class TaskInfo {
   final List<String> output;
   final DateTime startTime;
   StreamSubscription<String>? _subscription;
+  bool completed = false;
+  bool failed = false;
+  static const int _maxOutputLines = 500;
 
   TaskInfo({
     required this.id,
@@ -20,6 +25,20 @@ class TaskInfo {
 
   void addOutput(String line) {
     output.add(line);
+    final lower = line.toLowerCase();
+    if (lower.contains('error') || lower.contains('failed')) {
+      failed = true;
+    }
+    if (output.length > _maxOutputLines) {
+      output.removeRange(0, output.length - _maxOutputLines);
+    }
+  }
+
+  void markCompleted({bool success = true}) {
+    completed = true;
+    if (!success) {
+      failed = true;
+    }
   }
 
   void cancel() {
@@ -70,6 +89,8 @@ class AppStateProvider extends ChangeNotifier {
   final Map<String, TaskInfo> _activeTasks = {};
   bool _isActionInProgress = false;
   String? _actionError;
+  bool _environmentBlocked = false;
+  String? _environmentError;
 
   // Getters for container state
   List<ContainerInfo> get containers => _containers;
@@ -113,6 +134,8 @@ class AppStateProvider extends ChangeNotifier {
   Map<String, TaskInfo> get activeTasks => _activeTasks;
   bool get isActionInProgress => _isActionInProgress;
   String? get actionError => _actionError;
+  bool get environmentBlocked => _environmentBlocked;
+  String? get environmentError => _environmentError;
 
   // Helper getters
   int get runningContainersCount =>
@@ -121,7 +144,31 @@ class AppStateProvider extends ChangeNotifier {
       _containers.where((c) => c.status is! Status_Up).length;
 
   AppStateProvider() {
+    _applyEnvironmentGuard(checkEnvironmentGuard());
     refresh();
+  }
+
+  void _applyEnvironmentGuard(EnvironmentGuardResult result) {
+    _environmentBlocked = result.blocked;
+    _environmentError = result.message;
+  }
+
+  bool _guardEnvironmentForAction() {
+    if (!_environmentBlocked) {
+      return true;
+    }
+    _actionError = _environmentError;
+    notifyListeners();
+    return false;
+  }
+
+  bool _guardEnvironmentForLoad(void Function(String message) setError) {
+    if (!_environmentBlocked) {
+      return true;
+    }
+    setError(_environmentError ?? 'Environment blocked');
+    notifyListeners();
+    return false;
   }
 
   // ============================================================================
@@ -131,6 +178,14 @@ class AppStateProvider extends ChangeNotifier {
   Future<void> refresh() async {
     _isLoading = true;
     notifyListeners();
+    _applyEnvironmentGuard(checkEnvironmentGuard());
+    if (_environmentBlocked) {
+      _isLoading = false;
+      _isDistroboxInstalled = false;
+      _error = _environmentError;
+      notifyListeners();
+      return;
+    }
     try {
       _isDistroboxInstalled = await api.isDistroboxInstalled();
       if (_isDistroboxInstalled) {
@@ -158,6 +213,9 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<bool> removeContainer(String name) async {
+    if (!_guardEnvironmentForAction()) {
+      return false;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -178,6 +236,9 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<bool> stopContainer(String name) async {
+    if (!_guardEnvironmentForAction()) {
+      return false;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -198,6 +259,9 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<bool> stopAllContainers() async {
+    if (!_guardEnvironmentForAction()) {
+      return false;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -218,6 +282,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Upgrade a container (returns task ID for tracking)
   Future<String?> upgradeContainer(String name) async {
+    if (!_guardEnvironmentForAction()) {
+      return null;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -238,6 +305,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Clone a container (returns task ID for tracking)
   Future<String?> cloneContainer(String sourceName, CreateArgs args) async {
+    if (!_guardEnvironmentForAction()) {
+      return null;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -259,6 +329,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Create a new container (returns task ID for tracking)
   Future<String?> createContainer(CreateArgs args) async {
+    if (!_guardEnvironmentForAction()) {
+      return null;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -287,6 +360,9 @@ class AppStateProvider extends ChangeNotifier {
   // ============================================================================
 
   Future<void> loadContainerApps(String containerName) async {
+    if (!_guardEnvironmentForLoad((msg) => _appsError = msg)) {
+      return;
+    }
     _isLoadingApps = true;
     _appsError = null;
     notifyListeners();
@@ -303,6 +379,9 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<bool> exportApp(String containerName, String desktopFilePath) async {
+    if (!_guardEnvironmentForAction()) {
+      return false;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -325,6 +404,9 @@ class AppStateProvider extends ChangeNotifier {
 
   Future<bool> unexportApp(
       String containerName, String desktopFilePath) async {
+    if (!_guardEnvironmentForAction()) {
+      return false;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -360,6 +442,9 @@ class AppStateProvider extends ChangeNotifier {
   // ============================================================================
 
   Future<void> loadExportedBinaries(String containerName) async {
+    if (!_guardEnvironmentForLoad((msg) => _binariesError = msg)) {
+      return;
+    }
     _isLoadingBinaries = true;
     _binariesError = null;
     notifyListeners();
@@ -376,6 +461,9 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<bool> exportBinary(String containerName, String binaryPath) async {
+    if (!_guardEnvironmentForAction()) {
+      return false;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -397,6 +485,9 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<bool> unexportBinary(String containerName, String binaryPath) async {
+    if (!_guardEnvironmentForAction()) {
+      return false;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -422,6 +513,9 @@ class AppStateProvider extends ChangeNotifier {
   // ============================================================================
 
   Future<void> loadAvailableImages() async {
+    if (!_guardEnvironmentForLoad((msg) => _imagesError = msg)) {
+      return;
+    }
     _isLoadingImages = true;
     _imagesError = null;
     notifyListeners();
@@ -450,11 +544,16 @@ class AppStateProvider extends ChangeNotifier {
         notifyListeners();
       },
       onDone: () {
+        task.markCompleted(success: !task.failed);
+        task._subscription = null;
+        notifyListeners();
         // Task completed - refresh containers
         refresh();
       },
       onError: (error) {
         task.addOutput('Error: $error');
+        task.markCompleted(success: false);
+        task._subscription = null;
         notifyListeners();
       },
     );
@@ -499,6 +598,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Detect the package manager used in a container
   Future<String?> detectPackageManager(String containerName) async {
+    if (!_guardEnvironmentForLoad((msg) => _packagesError = msg)) {
+      return null;
+    }
     try {
       _detectedPackageManager = await api.detectPackageManager(containerName: containerName);
       notifyListeners();
@@ -512,6 +614,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Load installed packages for a container
   Future<void> loadInstalledPackages(String containerName) async {
+    if (!_guardEnvironmentForLoad((msg) => _packagesError = msg)) {
+      return;
+    }
     _isLoadingPackages = true;
     _packagesError = null;
     notifyListeners();
@@ -534,6 +639,9 @@ class AppStateProvider extends ChangeNotifier {
       return;
     }
 
+    if (!_guardEnvironmentForLoad((msg) => _packagesError = msg)) {
+      return;
+    }
     _isLoadingPackages = true;
     _packagesError = null;
     notifyListeners();
@@ -556,6 +664,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Install a package in a container (returns task ID)
   Future<String?> installPackage(String containerName, String packageName) async {
+    if (!_guardEnvironmentForAction()) {
+      return null;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -576,6 +687,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Remove a package from a container (returns task ID)
   Future<String?> removePackage(String containerName, String packageName) async {
+    if (!_guardEnvironmentForAction()) {
+      return null;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -600,6 +714,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Load available snapshots
   Future<void> loadSnapshots({String? filterPrefix}) async {
+    if (!_guardEnvironmentForLoad((msg) => _snapshotsError = msg)) {
+      return;
+    }
     _isLoadingSnapshots = true;
     _snapshotsError = null;
     notifyListeners();
@@ -616,6 +733,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Create a snapshot of a container
   Future<bool> createSnapshot(String containerName, String snapshotName) async {
+    if (!_guardEnvironmentForAction()) {
+      return false;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -637,6 +757,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Delete a snapshot
   Future<bool> deleteSnapshot(String snapshotNameOrId) async {
+    if (!_guardEnvironmentForAction()) {
+      return false;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -658,6 +781,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Restore from a snapshot (creates a new container, returns task ID)
   Future<String?> restoreFromSnapshot(String snapshotName, String newContainerName) async {
+    if (!_guardEnvironmentForAction()) {
+      return null;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -681,6 +807,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Export a container to a file (returns task ID)
   Future<String?> exportContainerToFile(String containerName, String outputPath) async {
+    if (!_guardEnvironmentForAction()) {
+      return null;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -704,6 +833,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Import a container from a file (returns task ID)
   Future<String?> importContainerFromFile(String archivePath, String imageName) async {
+    if (!_guardEnvironmentForAction()) {
+      return null;
+    }
     _isActionInProgress = true;
     _actionError = null;
     notifyListeners();
@@ -731,6 +863,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Get resource stats for a container
   Future<void> loadContainerStats(String containerName) async {
+    if (!_guardEnvironmentForLoad((msg) => _error = msg)) {
+      return;
+    }
     _isLoadingStats = true;
     notifyListeners();
 
@@ -747,6 +882,9 @@ class AppStateProvider extends ChangeNotifier {
 
   /// Run an arbitrary command in a container
   Future<String?> runCommandInContainer(String containerName, String command) async {
+    if (!_guardEnvironmentForAction()) {
+      return null;
+    }
     try {
       return await api.runCommandInContainer(containerName: containerName, command: command);
     } catch (e) {

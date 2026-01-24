@@ -80,6 +80,10 @@ class _DashboardPageState extends State<DashboardPage> {
             return const Center(child: CircularProgressIndicator());
           }
 
+          if (appState.environmentBlocked) {
+            return _buildEnvironmentBlockedView(context, appState);
+          }
+
           if (!appState.isDistroboxInstalled) {
             return _buildDistroboxNotInstalledView(context, appState);
           }
@@ -208,6 +212,47 @@ class _DashboardPageState extends State<DashboardPage> {
             const SizedBox(height: 12),
             Text(
               'Distrobox is required to manage Linux containers. Please install it to use Gosh Distrobox Manager.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Theme.of(context).hintColor),
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: () => appState.refresh(),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Check Again'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEnvironmentBlockedView(
+      BuildContext context, AppStateProvider appState) {
+    final message = appState.environmentError ??
+        'Running inside a Distrobox container without distrobox-host-exec is not supported.';
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Colors.red.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.block, size: 64, color: Colors.red),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Environment Blocked',
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              message,
               textAlign: TextAlign.center,
               style: TextStyle(color: Theme.of(context).hintColor),
             ),

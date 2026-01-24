@@ -1,4 +1,5 @@
 use crate::backends::Distrobox;
+use crate::backends::host_exec::{has_distrobox_host_exec, is_distrobox_container, map_distrobox_host_exec};
 use crate::fakers::CommandRunner;
 use crate::models::Task;
 use std::collections::HashMap;
@@ -16,6 +17,8 @@ impl AppState {
 
         let runner = if Path::new("/.flatpak-info").exists() {
             runner.map_cmd(crate::backends::flatpak::map_flatpak_spawn_host)
+        } else if is_distrobox_container() && has_distrobox_host_exec() {
+            runner.map_cmd(map_distrobox_host_exec)
         } else {
             runner
         };

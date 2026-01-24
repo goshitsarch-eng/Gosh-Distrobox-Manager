@@ -672,10 +672,14 @@ class _CreateContainerPageState extends State<CreateContainerPage> {
       builder: (context, appState, child) {
         final task = _taskId != null ? appState.getTask(_taskId!) : null;
         final output = task?.output ?? [];
-        final isComplete =
-            output.isNotEmpty && output.last.contains('Container created');
-        final hasFailed =
-            output.isNotEmpty && output.last.toLowerCase().contains('error');
+        final hasFailed = task?.failed ??
+            output.any((line) =>
+                line.toLowerCase().contains('error') ||
+                line.toLowerCase().contains('failed'));
+        final isComplete = task?.completed ??
+            (output.isNotEmpty &&
+                (output.last.toLowerCase().contains('completed') ||
+                    output.last.toLowerCase().contains('failed')));
 
         return Column(
           children: [

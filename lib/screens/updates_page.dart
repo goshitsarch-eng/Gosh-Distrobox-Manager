@@ -512,9 +512,10 @@ class _UpgradeProgressDialogState extends State<_UpgradeProgressDialog> {
       builder: (context, appState, child) {
         final task = appState.getTask(widget.taskId);
         final output = task?.output ?? [];
-        final isComplete = output.isNotEmpty &&
-            (output.last.contains('completed') ||
-                output.last.contains('failed'));
+        final isComplete = task?.completed ??
+            (output.isNotEmpty &&
+                (output.last.contains('completed') ||
+                    output.last.contains('failed')));
 
         // Auto-scroll to bottom
         WidgetsBinding.instance.addPostFrameCallback((_) {

@@ -1,9 +1,11 @@
 use crate::app_state::AppState;
 use flutter_rust_bridge::frb;
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
-use futures::{AsyncReadExt};
+use futures::{AsyncRead, AsyncReadExt};
 use crate::models::Task;
+use crate::fakers::Child;
 use crate::frb_generated::StreamSink;
 
 pub use crate::backends::ContainerInfo;
@@ -38,6 +40,94 @@ pub struct ExportedBinary {
 }
 
 static STATE: LazyLock<AppState> = LazyLock::new(|| AppState::new());
+const MAX_TASK_OUTPUT_LINES: usize = 500;
+const COMPLETED_TASK_TTL: Duration = Duration::from_secs(600);
+
+fn push_task_output(task_id: &str, line: String) {
+    let mut tasks = STATE.tasks.write().unwrap();
+    if let Some(task) = tasks.get_mut(task_id) {
+        task.push_output(line.clone(), MAX_TASK_OUTPUT_LINES);
+        if let Some(tx) = task.tx.as_ref() {
+            let _ = tx.send(line);
+        }
+    }
+}
+
+fn finish_task(task_id: &str, success: bool) {
+    let mut tasks = STATE.tasks.write().unwrap();
+    if let Some(task) = tasks.get_mut(task_id) {
+        task.completed = true;
+        task.success = success;
+        task.completed_at = Some(Instant::now());
+        task.tx.take();
+    }
+
+    let now = Instant::now();
+    tasks.retain(|_, task| {
+        if task.completed {
+            match task.completed_at {
+                Some(when) => now.duration_since(when) < COMPLETED_TASK_TTL,
+                None => true,
+            }
+        } else {
+            true
+        }
+    });
+}
+
+async fn stream_reader_to_task_output(
+    mut reader: impl AsyncRead + Unpin,
+    task_id: String,
+) {
+    let mut buf = [0u8; 1024];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => {
+                let s = String::from_utf8_lossy(&buf[..n]).to_string();
+                push_task_output(&task_id, s);
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+async fn run_child_task(
+    task_id: String,
+    mut child: Box<dyn Child + Send>,
+    success_message: &'static str,
+    failure_message: &'static str,
+) -> anyhow::Result<()> {
+    let stdout = match child.take_stdout() {
+        Some(stdout) => stdout,
+        None => {
+            push_task_output(&task_id, "Error: No stdout".into());
+            return Err(anyhow::anyhow!("No stdout"));
+        }
+    };
+    let stderr = match child.take_stderr() {
+        Some(stderr) => stderr,
+        None => {
+            push_task_output(&task_id, "Error: No stderr".into());
+            return Err(anyhow::anyhow!("No stderr"));
+        }
+    };
+
+    let out_task = tokio::spawn(stream_reader_to_task_output(stdout, task_id.clone()));
+    let err_task = tokio::spawn(stream_reader_to_task_output(stderr, task_id.clone()));
+
+    let status = child.wait().await?;
+    let _ = out_task.await;
+    let _ = err_task.await;
+
+    if status.success() {
+        push_task_output(&task_id, success_message.to_string());
+        Ok(())
+    } else {
+        push_task_output(&task_id, failure_message.to_string());
+        Err(anyhow::anyhow!(failure_message))
+    }
+}
 
 #[frb(init)]
 pub fn init_app() {
@@ -54,6 +144,10 @@ pub async fn is_distrobox_installed() -> bool {
     let runner = crate::fakers::CommandRunner::new_real();
     let runner = if std::path::Path::new("/.flatpak-info").exists() {
         runner.map_cmd(crate::backends::flatpak::map_flatpak_spawn_host)
+    } else if crate::backends::host_exec::is_distrobox_container()
+        && crate::backends::host_exec::has_distrobox_host_exec()
+    {
+        runner.map_cmd(crate::backends::host_exec::map_distrobox_host_exec)
     } else {
         runner
     };
@@ -75,66 +169,34 @@ pub async fn create_container(args: CreateArgs) -> anyhow::Result<String> {
     let name = args.name.to_string();
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    let tx_clone = tx.clone();
     
     let distrobox = STATE.distrobox.clone();
     let args_clone = args.clone();
     
+    let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
-        let res = distrobox.create(args_clone).await;
-        match res {
-            Ok(mut child) => {
-                 let mut stdout = child.take_stdout().ok_or(anyhow::anyhow!("No stdout"))?;
-                 let mut stderr = child.take_stderr().ok_or(anyhow::anyhow!("No stderr"))?;
-                 
-                 let tx_out = tx_clone.clone();
-                 let tx_err = tx_clone.clone();
-                 
-                 let out_task = tokio::spawn(async move {
-                     let mut buf = [0u8; 1024];
-                     loop {
-                         match stdout.read(&mut buf).await {
-                             Ok(0) => break,
-                             Ok(n) => {
-                                 let s = String::from_utf8_lossy(&buf[..n]);
-                                 let _ = tx_out.send(s.to_string());
-                             }
-                             Err(_) => break,
-                         }
-                     }
-                 });
-                 
-                 let err_task = tokio::spawn(async move {
-                     let mut buf = [0u8; 1024];
-                     loop {
-                         match stderr.read(&mut buf).await {
-                             Ok(0) => break,
-                             Ok(n) => {
-                                 let s = String::from_utf8_lossy(&buf[..n]);
-                                 let _ = tx_err.send(s.to_string());
-                             }
-                             Err(_) => break,
-                         }
-                     }
-                 });
-                 
-                 let status = child.wait().await?;
-                 let _ = out_task.await;
-                 let _ = err_task.await;
-                 
-                 if status.success() {
-                     let _ = tx_clone.send("Task completed successfully".into());
-                     Ok(())
-                 } else {
-                     let _ = tx_clone.send("Task failed".into());
-                     Err(anyhow::anyhow!("Task failed"))
-                 }
-            }
-            Err(e) => {
-                let _ = tx_clone.send(format!("Error starting task: {}", e));
-                Err(anyhow::anyhow!(e))
+        let task_id_for_run = task_id_clone.clone();
+        let result: anyhow::Result<()> = async {
+            match distrobox.create(args_clone).await {
+                Ok(child) => {
+                    run_child_task(
+                        task_id_for_run.clone(),
+                        child,
+                        "Task completed successfully",
+                        "Task failed",
+                    )
+                    .await
+                }
+                Err(e) => {
+                    push_task_output(&task_id_for_run, format!("Error starting task: {}", e));
+                    Err(anyhow::anyhow!(e))
+                }
             }
         }
+        .await;
+
+        finish_task(&task_id_clone, result.is_ok());
+        result
     });
     
     {
@@ -146,9 +208,25 @@ pub async fn create_container(args: CreateArgs) -> anyhow::Result<String> {
 }
 
 pub fn stream_task_output(task_id: String, sink: StreamSink<String>) -> anyhow::Result<()> {
-    let tasks = STATE.tasks.read().unwrap();
-    if let Some(task) = tasks.get(&task_id) {
-        let mut rx = task.tx.subscribe();
+    let (output, rx) = {
+        let tasks = STATE.tasks.read().unwrap();
+        if let Some(task) = tasks.get(&task_id) {
+            let output = task.output.clone();
+            let rx = task.tx.as_ref().map(|tx| tx.subscribe());
+            (output, rx)
+        } else {
+            return Err(anyhow::anyhow!("Task not found"));
+        }
+    };
+
+    let sink = sink;
+    for line in output {
+        if sink.add(line).is_err() {
+            return Ok(());
+        }
+    }
+
+    if let Some(mut rx) = rx {
         tokio::spawn(async move {
             while let Ok(msg) = rx.recv().await {
                 if sink.add(msg).is_err() {
@@ -156,10 +234,9 @@ pub fn stream_task_output(task_id: String, sink: StreamSink<String>) -> anyhow::
                 }
             }
         });
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("Task not found"))
     }
+
+    Ok(())
 }
 
 // ============================================================================
@@ -185,66 +262,34 @@ pub async fn stop_all_containers() -> anyhow::Result<String> {
 pub async fn upgrade_container(name: String) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    let tx_clone = tx.clone();
     
     let distrobox = STATE.distrobox.clone();
     let name_clone = name.clone();
     
+    let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
-        let res = distrobox.upgrade(&name_clone);
-        match res {
-            Ok(mut child) => {
-                let mut stdout = child.take_stdout().ok_or(anyhow::anyhow!("No stdout"))?;
-                let mut stderr = child.take_stderr().ok_or(anyhow::anyhow!("No stderr"))?;
-                
-                let tx_out = tx_clone.clone();
-                let tx_err = tx_clone.clone();
-                
-                let out_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stdout.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_out.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let err_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stderr.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_err.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let status = child.wait().await?;
-                let _ = out_task.await;
-                let _ = err_task.await;
-                
-                if status.success() {
-                    let _ = tx_clone.send("Upgrade completed successfully".into());
-                    Ok(())
-                } else {
-                    let _ = tx_clone.send("Upgrade failed".into());
-                    Err(anyhow::anyhow!("Upgrade failed"))
+        let task_id_for_run = task_id_clone.clone();
+        let result: anyhow::Result<()> = async {
+            match distrobox.upgrade(&name_clone) {
+                Ok(child) => {
+                    run_child_task(
+                        task_id_for_run.clone(),
+                        child,
+                        "Upgrade completed successfully",
+                        "Upgrade failed",
+                    )
+                    .await
+                }
+                Err(e) => {
+                    push_task_output(&task_id_for_run, format!("Error starting upgrade: {}", e));
+                    Err(anyhow::anyhow!(e))
                 }
             }
-            Err(e) => {
-                let _ = tx_clone.send(format!("Error starting upgrade: {}", e));
-                Err(anyhow::anyhow!(e))
-            }
         }
+        .await;
+
+        finish_task(&task_id_clone, result.is_ok());
+        result
     });
     
     {
@@ -259,66 +304,34 @@ pub async fn upgrade_container(name: String) -> anyhow::Result<String> {
 pub async fn clone_container(source_name: String, args: CreateArgs) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    let tx_clone = tx.clone();
     
     let distrobox = STATE.distrobox.clone();
     let new_name = args.name.to_string();
     
+    let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
-        let res = distrobox.clone_from(&source_name, args).await;
-        match res {
-            Ok(mut child) => {
-                let mut stdout = child.take_stdout().ok_or(anyhow::anyhow!("No stdout"))?;
-                let mut stderr = child.take_stderr().ok_or(anyhow::anyhow!("No stderr"))?;
-                
-                let tx_out = tx_clone.clone();
-                let tx_err = tx_clone.clone();
-                
-                let out_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stdout.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_out.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let err_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stderr.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_err.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let status = child.wait().await?;
-                let _ = out_task.await;
-                let _ = err_task.await;
-                
-                if status.success() {
-                    let _ = tx_clone.send("Clone completed successfully".into());
-                    Ok(())
-                } else {
-                    let _ = tx_clone.send("Clone failed".into());
-                    Err(anyhow::anyhow!("Clone failed"))
+        let task_id_for_run = task_id_clone.clone();
+        let result: anyhow::Result<()> = async {
+            match distrobox.clone_from(&source_name, args).await {
+                Ok(child) => {
+                    run_child_task(
+                        task_id_for_run.clone(),
+                        child,
+                        "Clone completed successfully",
+                        "Clone failed",
+                    )
+                    .await
+                }
+                Err(e) => {
+                    push_task_output(&task_id_for_run, format!("Error starting clone: {}", e));
+                    Err(anyhow::anyhow!(e))
                 }
             }
-            Err(e) => {
-                let _ = tx_clone.send(format!("Error starting clone: {}", e));
-                Err(anyhow::anyhow!(e))
-            }
         }
+        .await;
+
+        finish_task(&task_id_clone, result.is_ok());
+        result
     });
     
     {
@@ -406,7 +419,7 @@ pub fn get_active_tasks() -> Vec<String> {
 pub fn is_task_running(task_id: String) -> bool {
     let tasks = STATE.tasks.read().unwrap();
     if let Some(task) = tasks.get(&task_id) {
-        !task.handle.is_finished()
+        !task.handle.is_finished() && !task.completed
     } else {
         false
     }
@@ -414,9 +427,19 @@ pub fn is_task_running(task_id: String) -> bool {
 
 /// Cancel/abort a running task (if possible)
 pub fn cancel_task(task_id: String) -> bool {
-    let tasks = STATE.tasks.read().unwrap();
-    if let Some(task) = tasks.get(&task_id) {
-        task.handle.abort();
+    let should_abort = {
+        let tasks = STATE.tasks.read().unwrap();
+        if let Some(task) = tasks.get(&task_id) {
+            task.handle.abort();
+            true
+        } else {
+            false
+        }
+    };
+
+    if should_abort {
+        push_task_output(&task_id, "Task cancelled".into());
+        finish_task(&task_id, false);
         true
     } else {
         false
@@ -446,66 +469,34 @@ pub async fn search_packages(container_name: String, query: String) -> anyhow::R
 pub async fn install_package(container_name: String, package_name: String) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    let tx_clone = tx.clone();
     
     let distrobox = STATE.distrobox.clone();
     let task_description = format!("Install {} in {}", package_name, container_name);
     
+    let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
-        let res = distrobox.install_package(&container_name, &package_name);
-        match res {
-            Ok(mut child) => {
-                let mut stdout = child.take_stdout().ok_or(anyhow::anyhow!("No stdout"))?;
-                let mut stderr = child.take_stderr().ok_or(anyhow::anyhow!("No stderr"))?;
-                
-                let tx_out = tx_clone.clone();
-                let tx_err = tx_clone.clone();
-                
-                let out_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stdout.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_out.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let err_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stderr.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_err.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let status = child.wait().await?;
-                let _ = out_task.await;
-                let _ = err_task.await;
-                
-                if status.success() {
-                    let _ = tx_clone.send("Package installed successfully".into());
-                    Ok(())
-                } else {
-                    let _ = tx_clone.send("Package installation failed".into());
-                    Err(anyhow::anyhow!("Package installation failed"))
+        let task_id_for_run = task_id_clone.clone();
+        let result: anyhow::Result<()> = async {
+            match distrobox.install_package(&container_name, &package_name) {
+                Ok(child) => {
+                    run_child_task(
+                        task_id_for_run.clone(),
+                        child,
+                        "Package installed successfully",
+                        "Package installation failed",
+                    )
+                    .await
+                }
+                Err(e) => {
+                    push_task_output(&task_id_for_run, format!("Error: {}", e));
+                    Err(anyhow::anyhow!(e))
                 }
             }
-            Err(e) => {
-                let _ = tx_clone.send(format!("Error: {}", e));
-                Err(anyhow::anyhow!(e))
-            }
         }
+        .await;
+
+        finish_task(&task_id_clone, result.is_ok());
+        result
     });
     
     {
@@ -520,66 +511,34 @@ pub async fn install_package(container_name: String, package_name: String) -> an
 pub async fn remove_package(container_name: String, package_name: String) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    let tx_clone = tx.clone();
     
     let distrobox = STATE.distrobox.clone();
     let task_description = format!("Remove {} from {}", package_name, container_name);
     
+    let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
-        let res = distrobox.remove_package(&container_name, &package_name);
-        match res {
-            Ok(mut child) => {
-                let mut stdout = child.take_stdout().ok_or(anyhow::anyhow!("No stdout"))?;
-                let mut stderr = child.take_stderr().ok_or(anyhow::anyhow!("No stderr"))?;
-                
-                let tx_out = tx_clone.clone();
-                let tx_err = tx_clone.clone();
-                
-                let out_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stdout.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_out.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let err_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stderr.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_err.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let status = child.wait().await?;
-                let _ = out_task.await;
-                let _ = err_task.await;
-                
-                if status.success() {
-                    let _ = tx_clone.send("Package removed successfully".into());
-                    Ok(())
-                } else {
-                    let _ = tx_clone.send("Package removal failed".into());
-                    Err(anyhow::anyhow!("Package removal failed"))
+        let task_id_for_run = task_id_clone.clone();
+        let result: anyhow::Result<()> = async {
+            match distrobox.remove_package(&container_name, &package_name) {
+                Ok(child) => {
+                    run_child_task(
+                        task_id_for_run.clone(),
+                        child,
+                        "Package removed successfully",
+                        "Package removal failed",
+                    )
+                    .await
+                }
+                Err(e) => {
+                    push_task_output(&task_id_for_run, format!("Error: {}", e));
+                    Err(anyhow::anyhow!(e))
                 }
             }
-            Err(e) => {
-                let _ = tx_clone.send(format!("Error: {}", e));
-                Err(anyhow::anyhow!(e))
-            }
         }
+        .await;
+
+        finish_task(&task_id_clone, result.is_ok());
+        result
     });
     
     {
@@ -613,66 +572,34 @@ pub async fn delete_snapshot(snapshot_name_or_id: String) -> anyhow::Result<Stri
 pub async fn restore_from_snapshot(snapshot_name: String, new_container_name: String) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    let tx_clone = tx.clone();
     
     let distrobox = STATE.distrobox.clone();
     let task_description = format!("Restore {} to {}", snapshot_name, new_container_name);
     
+    let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
-        let res = distrobox.restore_from_snapshot(&snapshot_name, &new_container_name).await;
-        match res {
-            Ok(mut child) => {
-                let mut stdout = child.take_stdout().ok_or(anyhow::anyhow!("No stdout"))?;
-                let mut stderr = child.take_stderr().ok_or(anyhow::anyhow!("No stderr"))?;
-                
-                let tx_out = tx_clone.clone();
-                let tx_err = tx_clone.clone();
-                
-                let out_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stdout.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_out.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let err_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stderr.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_err.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let status = child.wait().await?;
-                let _ = out_task.await;
-                let _ = err_task.await;
-                
-                if status.success() {
-                    let _ = tx_clone.send("Restore completed successfully".into());
-                    Ok(())
-                } else {
-                    let _ = tx_clone.send("Restore failed".into());
-                    Err(anyhow::anyhow!("Restore failed"))
+        let task_id_for_run = task_id_clone.clone();
+        let result: anyhow::Result<()> = async {
+            match distrobox.restore_from_snapshot(&snapshot_name, &new_container_name).await {
+                Ok(child) => {
+                    run_child_task(
+                        task_id_for_run.clone(),
+                        child,
+                        "Restore completed successfully",
+                        "Restore failed",
+                    )
+                    .await
+                }
+                Err(e) => {
+                    push_task_output(&task_id_for_run, format!("Error: {}", e));
+                    Err(anyhow::anyhow!(e))
                 }
             }
-            Err(e) => {
-                let _ = tx_clone.send(format!("Error: {}", e));
-                Err(anyhow::anyhow!(e))
-            }
         }
+        .await;
+
+        finish_task(&task_id_clone, result.is_ok());
+        result
     });
     
     {
@@ -691,66 +618,34 @@ pub async fn restore_from_snapshot(snapshot_name: String, new_container_name: St
 pub async fn export_container_to_file(container_name: String, output_path: String) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    let tx_clone = tx.clone();
     
     let distrobox = STATE.distrobox.clone();
     let task_description = format!("Export {} to {}", container_name, output_path);
     
+    let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
-        let res = distrobox.export_container(&container_name, &output_path);
-        match res {
-            Ok(mut child) => {
-                let mut stdout = child.take_stdout().ok_or(anyhow::anyhow!("No stdout"))?;
-                let mut stderr = child.take_stderr().ok_or(anyhow::anyhow!("No stderr"))?;
-                
-                let tx_out = tx_clone.clone();
-                let tx_err = tx_clone.clone();
-                
-                let out_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stdout.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_out.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let err_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stderr.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_err.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let status = child.wait().await?;
-                let _ = out_task.await;
-                let _ = err_task.await;
-                
-                if status.success() {
-                    let _ = tx_clone.send("Export completed successfully".into());
-                    Ok(())
-                } else {
-                    let _ = tx_clone.send("Export failed".into());
-                    Err(anyhow::anyhow!("Export failed"))
+        let task_id_for_run = task_id_clone.clone();
+        let result: anyhow::Result<()> = async {
+            match distrobox.export_container(&container_name, &output_path) {
+                Ok(child) => {
+                    run_child_task(
+                        task_id_for_run.clone(),
+                        child,
+                        "Export completed successfully",
+                        "Export failed",
+                    )
+                    .await
+                }
+                Err(e) => {
+                    push_task_output(&task_id_for_run, format!("Error: {}", e));
+                    Err(anyhow::anyhow!(e))
                 }
             }
-            Err(e) => {
-                let _ = tx_clone.send(format!("Error: {}", e));
-                Err(anyhow::anyhow!(e))
-            }
         }
+        .await;
+
+        finish_task(&task_id_clone, result.is_ok());
+        result
     });
     
     {
@@ -765,66 +660,34 @@ pub async fn export_container_to_file(container_name: String, output_path: Strin
 pub async fn import_container_from_file(archive_path: String, image_name: String) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    let tx_clone = tx.clone();
     
     let distrobox = STATE.distrobox.clone();
     let task_description = format!("Import {} as {}", archive_path, image_name);
     
+    let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
-        let res = distrobox.import_container(&archive_path, &image_name);
-        match res {
-            Ok(mut child) => {
-                let mut stdout = child.take_stdout().ok_or(anyhow::anyhow!("No stdout"))?;
-                let mut stderr = child.take_stderr().ok_or(anyhow::anyhow!("No stderr"))?;
-                
-                let tx_out = tx_clone.clone();
-                let tx_err = tx_clone.clone();
-                
-                let out_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stdout.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_out.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let err_task = tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    loop {
-                        match stderr.read(&mut buf).await {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                let s = String::from_utf8_lossy(&buf[..n]);
-                                let _ = tx_err.send(s.to_string());
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-                
-                let status = child.wait().await?;
-                let _ = out_task.await;
-                let _ = err_task.await;
-                
-                if status.success() {
-                    let _ = tx_clone.send("Import completed successfully".into());
-                    Ok(())
-                } else {
-                    let _ = tx_clone.send("Import failed".into());
-                    Err(anyhow::anyhow!("Import failed"))
+        let task_id_for_run = task_id_clone.clone();
+        let result: anyhow::Result<()> = async {
+            match distrobox.import_container(&archive_path, &image_name) {
+                Ok(child) => {
+                    run_child_task(
+                        task_id_for_run.clone(),
+                        child,
+                        "Import completed successfully",
+                        "Import failed",
+                    )
+                    .await
+                }
+                Err(e) => {
+                    push_task_output(&task_id_for_run, format!("Error: {}", e));
+                    Err(anyhow::anyhow!(e))
                 }
             }
-            Err(e) => {
-                let _ = tx_clone.send(format!("Error: {}", e));
-                Err(anyhow::anyhow!(e))
-            }
         }
+        .await;
+
+        finish_task(&task_id_clone, result.is_ok());
+        result
     });
     
     {
