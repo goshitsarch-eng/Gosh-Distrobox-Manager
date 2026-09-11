@@ -167,6 +167,47 @@ impl Backend {
             .map_err(CoreFailure::from)
     }
 
+    // ---- short mutations (T6): stop / remove / stop-all ---------------------
+    //
+    // Non-task operations: `distrobox stop/rm` return promptly (no child to
+    // stream), so they stay synchronous `Result<String, CoreFailure>` — the
+    // same shape as the read-only domains, and the same shape `api.rs`'s
+    // `remove_container`/`stop_container`/`stop_all_containers` had. The UI
+    // refreshes the container list after each (T6 `ActionFinished` arm).
+
+    /// Today's `remove_container`, typed.
+    pub async fn remove_container(&self, name: &str) -> Result<String, CoreFailure> {
+        self.guard_ok()?;
+        self.inner
+            .distrobox
+            .remove(name)
+            .await
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
+    /// Today's `stop_container`, typed.
+    pub async fn stop_container(&self, name: &str) -> Result<String, CoreFailure> {
+        self.guard_ok()?;
+        self.inner
+            .distrobox
+            .stop(name)
+            .await
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
+    /// Today's `stop_all_containers`, typed.
+    pub async fn stop_all_containers(&self) -> Result<String, CoreFailure> {
+        self.guard_ok()?;
+        self.inner
+            .distrobox
+            .stop_all()
+            .await
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
     // ---- task-spawning operations (T5) ---------------------------------------
     //
     // Each is one `spawn_task` call: the label, start-error prefix, and

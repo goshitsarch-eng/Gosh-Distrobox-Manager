@@ -4,7 +4,9 @@
 //! plus `cosmic::app::run`. Everything else lives in `app.rs`/`message.rs`.
 
 mod app;
+mod icons;
 mod message;
+mod views;
 
 use cosmic::app::Settings;
 use cosmic::iced::Size;

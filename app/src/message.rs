@@ -1,10 +1,13 @@
-//! `Message` — the T3 read-only subset plus the T5 task-stream subset.
+//! `Message` — the T3 read-only subset plus the T5 task-stream subset plus
+//! the T6 dashboard/containers/details requests.
 //!
-//! Task-spawning request variants (`CreateRequested`, `UpgradeRequested`, …)
-//! still arrive with their owner page tasks (T6–T12); what lands here is the
-//! task *lifecycle* (`TaskMsg`), which T5's subscription produces. Remaining
-//! domains (packages, snapshots, backups, terminals, config, dialogs) follow
-//! the same rule as before: no dead variants behind the exhaustive match.
+//! Task-spawning request variants for later domains (`CreateRequested`,
+//! packages, snapshots, backups, terminals, config) still arrive with their
+//! owner page tasks (T7–T12); what lands here is the task *lifecycle*
+//! (`TaskMsg`), which T5's subscription produces, plus the T6 container
+//! actions (stop/remove/stop-all/upgrade/clone-terminal-open) and dialog
+//! control. Same rule as before: no dead variants behind the exhaustive
+//! match — every variant added here has a producer in this task.
 
 use gosh_distrobox_core::models::{AppInfo, ContainerInfo, ContainerStats, ExportedBinary};
 use gosh_distrobox_core::{CoreFailure, EnvGuard, EnvMode, TaskId};
@@ -18,6 +21,8 @@ pub enum Message {
     #[allow(dead_code)]
     NavSelect(cosmic::widget::nav_bar::Id),
     Containers(ContainerMsg),
+    Details(DetailsMsg),
+    Dialog(DialogMsg),
     Apps(AppMsg),
     Images(ImageMsg),
     Stats(StatsMsg),
@@ -33,14 +38,11 @@ pub enum Message {
 /// `TaskView.output` (ring-buffered); `Expired` is TTL-sweep evidence from
 /// core so the UI drops its mirror entry.
 ///
-/// Request variants have no producers until their owner pages land (T6–T12
-/// drive `Started` via spawn calls; T11 drives cancel/clear). The scoped
-/// allows mark exactly that — T6 removes `Started`'s when the first spawn
-/// call site lands, T11 the rest. No global allow: a variant still dead
-/// after its owner task is a real finding.
+/// `ClearCompleted` / `Cancelled` payload have no producers until T11
+/// drives them. No global allow: a variant still dead after its owner task
+/// is a real finding.
 #[derive(Clone, Debug)]
 pub enum TaskMsg {
-    #[allow(dead_code)]
     Started {
         label: String,
         result: Result<TaskId, CoreFailure>,
@@ -53,7 +55,6 @@ pub enum TaskMsg {
         id: TaskId,
         success: bool,
     },
-    #[allow(dead_code)]
     CancelRequested(TaskId),
     /// Fired back after the registry confirms cancel (the id rides along so
     /// the T11 log can mark the row without re-reading the registry).
@@ -68,17 +69,91 @@ pub enum TaskMsg {
     ExpiredTick,
 }
 
-/// Union of the Dart `refresh()` + `loadContainers()`.
+/// Union of the Dart `refresh()` + `loadContainers()`, plus the T6
+/// container actions (stop/remove/stop-all/upgrade — rows #25/#30/#50/#51).
+/// Short mutations (`Stop/Remove/StopAll`) run synchronously and report via
+/// `ActionFinished` (`Err` becomes a toast); `UpgradeRequested` spawns a
+/// task and reports via `TaskMsg::Started`.
 #[derive(Clone, Debug)]
 pub enum ContainerMsg {
     RefreshRequested,
     Loaded(Result<Vec<ContainerInfo>, CoreFailure>),
     Selected(Option<ContainerInfo>),
     /// Result of a short (non-task) mutation; `Err` becomes a toast.
-    /// (No producer in T3 — kept so the match arm shape matches the draft;
-    /// producers land with T6's action buttons.)
-    #[allow(dead_code)]
     ActionFinished(Result<String, CoreFailure>),
+    StopRequested(String),
+    RemoveRequested(String),
+    StopAllRequested,
+    UpgradeRequested(String),
+    /// "View all" (row #23, dead in Flutter): switch to the Containers tab.
+    ViewAllRequested,
+    /// Dashboard "New Container" (row #28, dead in Flutter): switches to
+    /// the Containers page AND toasts that the wizard lands in T7 (the
+    /// header New button is the create affordance from T6 on).
+    NewContainerRequested,
+    /// Dashboard "Upgrade All" (row #29, snackbar redirect in Flutter):
+    /// confirm, then spawn an upgrade task per running container.
+    UpgradeAllRequested,
+}
+
+/// Details page (rows #53–#65): nested page under Containers, pushed from a
+/// row tap, popped with the header back button.
+#[derive(Clone, Debug)]
+pub enum DetailsMsg {
+    /// Open the details page for this container.
+    OpenRequested(ContainerInfo),
+    /// Back button → pop to the list.
+    Closed,
+    StopRequested(String),
+    RemoveRequested(String),
+    UpgradeRequested(String),
+    CloneRequested(String),
+    /// Clone dialog keystrokes (name field).
+    CloneNameChanged(String),
+    /// Clone dialog confirmed with the new name.
+    CloneConfirmed {
+        source: String,
+        name: String,
+    },
+    /// Copy the image URL to the clipboard (row #57).
+    CopyImageRequested(String),
+    /// "Applications" tile (row #61): jump to the Apps page for this
+    /// container (full Apps page lands in T12; T6 selects + switches).
+    AppsRequested(String),
+    /// "Open Terminal" tile/header (rows #54/#63): terminal page lands in
+    /// T9 — T6 records the request as a toast pointing there.
+    TerminalRequested(String),
+}
+
+/// Single active modal (§3.3): `Application::dialog()` owns one slot, so at
+/// most one of these is `Some` at a time. Confirm dialogs share copy through
+/// the constructor (fixing the card-vs-details divergence, row #52).
+#[derive(Clone, Debug)]
+pub enum DialogMsg {
+    Cancelled,
+    Confirmed,
+}
+
+/// Shared confirm spec (§3.3): title + consequence body + verb label +
+/// destructive class. One copy per action — no per-page drift.
+#[derive(Clone, Debug)]
+pub struct ConfirmSpec {
+    pub title: String,
+    pub body: String,
+    pub confirm_label: String,
+    pub destructive: bool,
+    /// The follow-up to re-dispatch on confirm (plain enum, not boxed —
+    /// the payloads are small data).
+    pub action: ConfirmAction,
+}
+
+/// Follow-up for a confirmed dialog. `Clone` (Message: Clone) — the payloads
+/// are data, re-dispatched as fresh messages on confirm.
+#[derive(Clone, Debug)]
+pub enum ConfirmAction {
+    RemoveContainer(String),
+    StopAll,
+    UpgradeAll,
 }
 
 #[derive(Clone, Debug)]
@@ -120,16 +195,23 @@ pub enum EnvMsg {
 #[derive(Clone, Debug)]
 pub enum UiMsg {
     DismissError,
+    /// Toast closed (toaster `on_close`).
+    ToastClosed(cosmic::widget::toaster::ToastId),
+    /// Copy completed — surface the transient confirmation as a toast.
+    CopiedToClipboard(String),
 }
 
-/// Derived view helper: containers currently `Up` (Dart
-/// `runningContainersCount`). First caller lands with the Dashboard in T6.
-#[allow(dead_code)]
+/// Derived view helpers (Dart `runningContainersCount` /
+/// `stoppedContainersCount`).
 pub fn running_count(containers: &[ContainerInfo]) -> usize {
     containers
         .iter()
         .filter(|c| matches!(c.status, gosh_distrobox_core::models::Status::Up(_)))
         .count()
+}
+
+pub fn stopped_count(containers: &[ContainerInfo]) -> usize {
+    containers.len() - running_count(containers)
 }
 
 /// Whether the env guard blocks all backend access.

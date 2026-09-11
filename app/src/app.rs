@@ -10,11 +10,15 @@
 //! [`Backend`] is held behind `Arc` (cheap to clone into task futures). T3 has
 //! no task-output subscriptions yet — those land with T5's `spawn_task`.
 
+use crate::icons;
 use crate::message::{
-    AppMsg, ContainerMsg, EnvMsg, ImageMsg, Message, StatsMsg, TaskMsg, UiMsg, is_blocked,
+    AppMsg, ConfirmAction, ConfirmSpec, ContainerMsg, DetailsMsg, DialogMsg, EnvMsg, ImageMsg,
+    Message, StatsMsg, TaskMsg, UiMsg, is_blocked, running_count, stopped_count,
 };
+use crate::views::{self, Page, active_page};
 use cosmic::app::{Core, Task};
 use cosmic::iced::{Length, Subscription};
+use cosmic::widget::toaster::Toasts;
 use cosmic::widget::{self, nav_bar};
 use gosh_distrobox_core::models::{AppInfo, ContainerInfo, ContainerStats, ExportedBinary};
 use gosh_distrobox_core::{
@@ -27,26 +31,13 @@ use std::sync::Arc;
 /// metainfo `<id>`, the `.desktop` `Icon=`, and the `cosmic-config` id (§5.2).
 pub const APP_ID: &str = "io.github.gosh_distrobox_manager";
 
-/// Nav pages for the T3 read-only browser.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page {
-    Containers,
-    Images,
-    Apps,
-    Stats,
-}
-
-impl Page {
-    fn title(self) -> &'static str {
-        match self {
-            Page::Containers => "Containers",
-            Page::Images => "Images",
-            Page::Apps => "Apps",
-            Page::Stats => "Stats",
-        }
-    }
-
-    const ALL: [Page; 4] = [Page::Containers, Page::Images, Page::Apps, Page::Stats];
+/// Active modal slot (§3.3): at most one dialog at a time. `Confirm` shares
+/// copy through `ConfirmSpec` (row #52 divergence fixed); `Clone` carries
+/// the dialog's editable name.
+#[derive(Clone, Debug)]
+pub enum ActiveDialog {
+    Confirm(ConfirmSpec),
+    Clone { source: String, name: String },
 }
 
 /// Independent per-domain spinners, mirroring the eight Dart `isLoadingX`
@@ -82,13 +73,24 @@ pub struct App {
     /// `MAX_TASK_OUTPUT_LINES`); the authoritative buffer lives in core and
     /// `Expired` drops the mirror entry.
     tasks: BTreeMap<TaskId, TaskView>,
+    /// Details page stack: `Some` = pushed over Containers (row #53 back
+    /// button pops). Single level — details never nests deeper.
+    details_for: Option<ContainerInfo>,
+    /// Single active modal (§3.3).
+    dialog: Option<ActiveDialog>,
+    /// Toasts (§3.4): every mutation reports here.
+    toasts: Toasts<Message>,
+    /// Short-mutation re-press guards (stop/remove per container, stop-all):
+    /// a second press while one is in flight is ignored. (No busy LABEL is
+    /// rendered — buttons keep their normal text; the guard is behavioural,
+    /// not visual.)
+    busy: std::collections::BTreeSet<String>,
 }
 
-/// The UI-side mirror of a core task (§3.1). `label`/`started_at` render in
-/// the Activity page (T11); no reader yet, hence the scoped allow (not a
-/// global one — T11 removes it by using them).
+/// The UI-side mirror of a core task (§3.1). `label` renders in task rows
+/// (dashboard) and the Activity page (T11); `started_at` gets its reader
+/// in T11.
 pub struct TaskView {
-    #[allow(dead_code)]
     pub label: String,
     pub output: Vec<String>,
     pub completed: bool,
@@ -109,10 +111,7 @@ impl TaskView {
 
 impl App {
     fn active_page(&self) -> Page {
-        self.nav_model
-            .active_data::<Page>()
-            .copied()
-            .unwrap_or(Page::Containers)
+        active_page(&self.nav_model)
     }
 
     /// No-op task.
@@ -121,10 +120,14 @@ impl App {
     }
 
     /// Synchronous follow-up message (explicit `Action::App` form — never
-    /// fights inference, §2.3). First producer lands with T6's action buttons.
-    #[allow(dead_code)]
+    /// fights inference, §2.3).
     fn done(m: Message) -> Task<Message> {
         Task::done(cosmic::Action::App(m))
+    }
+
+    /// Push a toast; returns the auto-dismiss follow-up task.
+    fn toast(&mut self, text: String) -> Task<Message> {
+        views::push_toast(&mut self.toasts, text)
     }
 
     /// Run an async backend call. THE ONLY PLACE `Backend` methods run (§0.2).
@@ -163,42 +166,6 @@ impl App {
             } => format!("`{command}` failed: {stderr}"),
             other => other.to_string(),
         }
-    }
-
-    fn view_containers(&self) -> cosmic::Element<'_, Message> {
-        if self.loading.containers {
-            return widget::container(widget::text::body("Loading containers…"))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .into();
-        }
-        if self.containers.is_empty() {
-            return widget::container(widget::text::body("No containers found."))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .into();
-        }
-        let mut list = widget::list_column::list_column();
-        for c in &self.containers {
-            let selected = self.selected_container.as_deref() == Some(c.name.as_str());
-            let status = format!("{:?}", c.status);
-            let row = widget::Row::new()
-                .push(widget::text::body(c.name.clone()).width(Length::Fill))
-                .push(widget::text::caption(c.image.clone()))
-                .push(widget::text::caption(status))
-                .spacing(12);
-            // `list_column` takes `ListButton` items; the row selects the
-            // container and is keyboard-activatable (a11y, REVIEW UX-16).
-            let item = widget::list::button(row)
-                .on_press(Message::Containers(ContainerMsg::Selected(Some(c.clone()))))
-                .selected(selected);
-            list = list.add(item);
-        }
-        widget::scrollable(list.into_element()).into()
     }
 
     fn view_images(&self) -> cosmic::Element<'_, Message> {
@@ -351,6 +318,10 @@ impl cosmic::Application for App {
             stats_for: None,
             loading: Loading::default(),
             tasks: BTreeMap::new(),
+            details_for: None,
+            dialog: None,
+            toasts: Toasts::new(|id| Message::Ui(UiMsg::ToastClosed(id))),
+            busy: std::collections::BTreeSet::new(),
         };
         app.core_mut()
             .set_header_title("Gosh Distrobox Manager".to_string());
@@ -370,9 +341,14 @@ impl cosmic::Application for App {
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Self::Message> {
         self.nav_model.activate(id);
+        // Leaving Containers pops the details stack (single-level; details
+        // never nests deeper, row #53).
+        if self.active_page() != Page::Containers {
+            self.details_for = None;
+        }
         // Lazy-load each domain on first visit; containers load at init.
         match self.active_page() {
-            Page::Containers => {
+            Page::Dashboard | Page::Containers => {
                 if self.containers.is_empty() && !self.loading.containers {
                     self.loading.containers = true;
                     return Self::refresh_containers(&self.backend);
@@ -416,6 +392,17 @@ impl cosmic::Application for App {
                                 self.exported_binaries.clear();
                                 self.stats = None;
                                 self.stats_for = None;
+                            }
+                            // B2: reconcile the details page against the fresh
+                            // list — it renders a frozen clone, so without
+                            // this a Stop/Delete leaves stale status and an
+                            // enabled Stop button (or a page for a deleted
+                            // container). Re-point by name; close when gone.
+                            if let Some(viewing) = self.details_for.take()
+                                && let Some(fresh) =
+                                    containers.iter().find(|c| c.name == viewing.name).cloned()
+                            {
+                                self.details_for = Some(fresh);
                             }
                             self.containers = containers;
                             self.error = None;
@@ -461,8 +448,307 @@ impl cosmic::Application for App {
                     }
                 }
                 ContainerMsg::ActionFinished(result) => {
-                    if let Err(e) = result {
-                        self.error = Some(Self::error_text(&e));
+                    // Short-mutation result: clear busy flags, refresh the
+                    // list on success, toast on error (§3.4 — no silent
+                    // failures; Flutter's pkg page showed nothing on null).
+                    self.busy.clear();
+                    match result {
+                        Ok(msg) => {
+                            self.loading.containers = true;
+                            let toast = self.toast(msg);
+                            let refresh = Self::refresh_containers(&self.backend);
+                            return Task::batch(vec![toast, refresh]);
+                        }
+                        Err(e) => {
+                            let toast = self.toast(format!("Failed: {}", Self::error_text(&e)));
+                            return toast;
+                        }
+                    }
+                }
+                ContainerMsg::StopRequested(name) => {
+                    if is_blocked(self.backend.env()) {
+                        self.error = self.backend.env().message.clone();
+                        return Self::none();
+                    }
+                    if !self.busy.insert(format!("stop:{name}")) {
+                        return Self::none();
+                    }
+                    let backend = Arc::clone(&self.backend);
+                    return Self::run(async move {
+                        let result = backend
+                            .stop_container(&name)
+                            .await
+                            .map(|_| format!("{name} stopped"));
+                        Message::Containers(ContainerMsg::ActionFinished(result))
+                    });
+                }
+                ContainerMsg::RemoveRequested(name) => {
+                    // Destructive → shared confirm (§3.3), not a direct run.
+                    self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+                        title: "Delete Container".to_string(),
+                        body: format!(
+                            "Are you sure you want to delete \"{name}\"?\n\nThis action cannot be undone and all container data will be lost."
+                        ),
+                        confirm_label: "Delete".to_string(),
+                        destructive: true,
+                        action: ConfirmAction::RemoveContainer(name),
+                    }));
+                }
+                ContainerMsg::StopAllRequested => {
+                    let count = running_count(&self.containers);
+                    if count == 0 || !self.busy.insert("stop-all".to_string()) {
+                        return Self::none();
+                    }
+                    self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+                        title: "Stop All Containers".to_string(),
+                        body: format!("Stop all {count} running containers?"),
+                        confirm_label: "Stop All".to_string(),
+                        destructive: true,
+                        action: ConfirmAction::StopAll,
+                    }));
+                    self.busy.remove("stop-all");
+                }
+                ContainerMsg::UpgradeRequested(name) => {
+                    if is_blocked(self.backend.env()) {
+                        self.error = self.backend.env().message.clone();
+                        return Self::none();
+                    }
+                    if self.upgrading(&ContainerInfo {
+                        id: String::new(),
+                        name: name.clone(),
+                        status: gosh_distrobox_core::models::Status::Other(String::new()),
+                        image: String::new(),
+                    }) {
+                        return Self::none();
+                    }
+                    let backend = Arc::clone(&self.backend);
+                    let label = format!("Upgrade {name}");
+                    let toast = self.toast(format!("Upgrading {name}…"));
+                    let spawn = Self::run(async move {
+                        let result = backend.upgrade_container(&name).await;
+                        Message::Tasks(TaskMsg::Started { label, result })
+                    });
+                    return Task::batch(vec![toast, spawn]);
+                }
+                ContainerMsg::ViewAllRequested => {
+                    // Row #23 (dead in Flutter): switch to Containers tab.
+                    views::activate_containers(&mut self.nav_model);
+                }
+                ContainerMsg::NewContainerRequested => {
+                    // Row #28 (dead in Flutter) + row #44 (FAB → header):
+                    // the wizard lands in T7. If already on Containers the
+                    // header button IS the affordance — say so; otherwise
+                    // switch there first.
+                    if self.active_page() == Page::Containers && self.details_for.is_none() {
+                        let toast = self.toast("The create wizard lands in T7.".to_string());
+                        return toast;
+                    }
+                    views::activate_containers(&mut self.nav_model);
+                    let toast = self.toast(
+                        "The create wizard lands in T7 — use the New Container button in the header."
+                            .to_string(),
+                    );
+                    return toast;
+                }
+                ContainerMsg::UpgradeAllRequested => {
+                    // Row #29 (redirect snackbar in Flutter): confirm, then
+                    // spawn one upgrade task per running container.
+                    let running: Vec<String> = self
+                        .containers
+                        .iter()
+                        .filter(|c| icons::is_running(&c.status))
+                        .map(|c| c.name.clone())
+                        .collect();
+                    if running.is_empty() {
+                        return Self::none();
+                    }
+                    self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+                        title: "Upgrade All Containers".to_string(),
+                        body: format!("Upgrade packages in {} running containers?", running.len()),
+                        confirm_label: "Upgrade All".to_string(),
+                        destructive: false,
+                        action: ConfirmAction::UpgradeAll,
+                    }));
+                }
+            },
+            Message::Details(msg) => match msg {
+                DetailsMsg::OpenRequested(container) => {
+                    // Row #26 (dashboard preview tap → details): the details
+                    // page renders under Containers only, so switch there
+                    // first — otherwise the tap is a silent no-op AND leaves
+                    // a stale `details_for` for the next Containers visit.
+                    views::activate_containers(&mut self.nav_model);
+                    self.details_for = Some(container.clone());
+                    // Selecting also loads apps/binaries/stats mirrors —
+                    // reuse the T3 selection fan-out verbatim.
+                    return self
+                        .update(Message::Containers(ContainerMsg::Selected(Some(container))));
+                }
+                DetailsMsg::Closed => {
+                    self.details_for = None;
+                }
+                DetailsMsg::StopRequested(name) => {
+                    return self.update(Message::Containers(ContainerMsg::StopRequested(name)));
+                }
+                DetailsMsg::RemoveRequested(name) => {
+                    return self.update(Message::Containers(ContainerMsg::RemoveRequested(name)));
+                }
+                DetailsMsg::UpgradeRequested(name) => {
+                    return self.update(Message::Containers(ContainerMsg::UpgradeRequested(name)));
+                }
+                DetailsMsg::CloneRequested(source) => {
+                    self.dialog = Some(ActiveDialog::Clone {
+                        source: source.clone(),
+                        name: format!("{source}-clone"),
+                    });
+                }
+                DetailsMsg::CloneNameChanged(name) => {
+                    if let Some(ActiveDialog::Clone { source, .. }) = &self.dialog {
+                        let source = source.clone();
+                        self.dialog = Some(ActiveDialog::Clone { source, name });
+                    }
+                }
+                DetailsMsg::CloneConfirmed { source, name } => {
+                    if is_blocked(self.backend.env()) {
+                        self.error = self.backend.env().message.clone();
+                        return Self::none();
+                    }
+                    match gosh_distrobox_core::models::CreateArgName::new(&name) {
+                        Err(_) => {
+                            let toast = self.toast(format!(
+                                "Invalid container name {name:?}: must match [a-zA-Z0-9][a-zA-Z0-9_.-]* (row #96)."
+                            ));
+                            return toast;
+                        }
+                        Ok(arg_name) => {
+                            use gosh_distrobox_core::models::CreateArgs;
+                            let backend = Arc::clone(&self.backend);
+                            let label = format!("Clone to {name}");
+                            let args = CreateArgs {
+                                init: false,
+                                nvidia: false,
+                                home_path: None,
+                                image: String::new(),
+                                name: arg_name,
+                                volumes: vec![],
+                            };
+                            self.dialog = None;
+                            let toast = self.toast(format!("Cloning {source} to {name}…"));
+                            let spawn = Self::run(async move {
+                                let result = backend.clone_container(&source, args).await;
+                                Message::Tasks(TaskMsg::Started { label, result })
+                            });
+                            return Task::batch(vec![toast, spawn]);
+                        }
+                    }
+                }
+                DetailsMsg::CopyImageRequested(image) => {
+                    // B1: `clipboard::write` is a `task::effect` — dropping
+                    // it discards the write while the toast still claims
+                    // success. Return the effect so the runtime executes it;
+                    // the toast follows as the effect's message. Batch order:
+                    // clipboard first, toast second.
+                    let write = cosmic::iced::clipboard::write(image.clone());
+                    let toast = Self::done(Message::Ui(UiMsg::CopiedToClipboard(image)));
+                    return Task::batch(vec![write, toast]);
+                }
+                DetailsMsg::AppsRequested(name) => {
+                    // Full Apps page lands in T12 — select + switch to the
+                    // Apps tab so the existing Apps view shows this
+                    // container's apps. Position 3 = Apps in Page::ALL.
+                    if let Some(c) = self.containers.iter().find(|c| c.name == name).cloned() {
+                        self.nav_model.activate_position(3);
+                        return self.update(Message::Containers(ContainerMsg::Selected(Some(c))));
+                    }
+                }
+                DetailsMsg::TerminalRequested(name) => {
+                    // Terminal page lands in T9 — record as a toast, not a
+                    // dead button (row #63 disabled state becomes a message).
+                    let toast = self.toast(format!(
+                        "Terminal for {name} lands in T9 — container must be running."
+                    ));
+                    return toast;
+                }
+            },
+            Message::Dialog(msg) => match msg {
+                DialogMsg::Cancelled => {
+                    self.dialog = None;
+                }
+                DialogMsg::Confirmed => {
+                    let Some(dialog) = self.dialog.take() else {
+                        return Self::none();
+                    };
+                    match dialog {
+                        ActiveDialog::Confirm(spec) => match spec.action {
+                            ConfirmAction::RemoveContainer(name) => {
+                                if is_blocked(self.backend.env()) {
+                                    self.error = self.backend.env().message.clone();
+                                    return Self::none();
+                                }
+                                if !self.busy.insert(format!("remove:{name}")) {
+                                    return Self::none();
+                                }
+                                let backend = Arc::clone(&self.backend);
+                                return Self::run(async move {
+                                    let result = backend
+                                        .remove_container(&name)
+                                        .await
+                                        .map(|_| format!("{name} deleted"));
+                                    Message::Containers(ContainerMsg::ActionFinished(result))
+                                });
+                            }
+                            ConfirmAction::StopAll => {
+                                if is_blocked(self.backend.env()) {
+                                    self.error = self.backend.env().message.clone();
+                                    return Self::none();
+                                }
+                                if !self.busy.insert("stop-all".to_string()) {
+                                    return Self::none();
+                                }
+                                let backend = Arc::clone(&self.backend);
+                                return Self::run(async move {
+                                    let result = backend
+                                        .stop_all_containers()
+                                        .await
+                                        .map(|_| "All containers stopped".to_string());
+                                    Message::Containers(ContainerMsg::ActionFinished(result))
+                                });
+                            }
+                            ConfirmAction::UpgradeAll => {
+                                if is_blocked(self.backend.env()) {
+                                    self.error = self.backend.env().message.clone();
+                                    return Self::none();
+                                }
+                                let running: Vec<String> = self
+                                    .containers
+                                    .iter()
+                                    .filter(|c| icons::is_running(&c.status))
+                                    .map(|c| c.name.clone())
+                                    .collect();
+                                let backend = Arc::clone(&self.backend);
+                                let spawns: Vec<Task<Message>> = running
+                                    .into_iter()
+                                    .map(|name| {
+                                        let backend = Arc::clone(&backend);
+                                        let label = format!("Upgrade {name}");
+                                        Self::run(async move {
+                                            let result = backend.upgrade_container(&name).await;
+                                            Message::Tasks(TaskMsg::Started { label, result })
+                                        })
+                                    })
+                                    .collect();
+                                if spawns.is_empty() {
+                                    return Self::none();
+                                }
+                                return Task::batch(spawns);
+                            }
+                        },
+                        ActiveDialog::Clone { .. } => {
+                            // Clone uses its own primary button
+                            // (CloneConfirmed); confirming a stale dialog
+                            // state is a no-op.
+                            return Self::none();
+                        }
                     }
                 }
             },
@@ -551,9 +837,21 @@ impl cosmic::Application for App {
                     }
                 }
                 TaskMsg::Completed { id, success } => {
+                    // Rows #20/#21 + §3.4: a failed task must not render a
+                    // success check — toast the outcome so failure is
+                    // visible even before T11's activity log.
                     if let Some(view) = self.tasks.get_mut(&id) {
                         view.completed = true;
                         view.success = success;
+                    }
+                    if !success {
+                        let label = self
+                            .tasks
+                            .get(&id)
+                            .map(|v| v.label.clone())
+                            .unwrap_or_else(|| "Task".to_string());
+                        let toast = self.toast(format!("{label} failed — see output for details"));
+                        return toast;
                     }
                 }
                 TaskMsg::CancelRequested(id) => {
@@ -600,7 +898,16 @@ impl cosmic::Application for App {
                 // the variant exists so the match stays exhaustive per the §2.3
                 // draft, and re-probe buttons land in T9/T12.
             }
-            Message::Ui(UiMsg::DismissError) => self.error = None,
+            Message::Ui(msg) => match msg {
+                UiMsg::DismissError => self.error = None,
+                UiMsg::ToastClosed(id) => {
+                    self.toasts.remove(id);
+                }
+                UiMsg::CopiedToClipboard(what) => {
+                    let toast = self.toast(format!("Copied {what} to clipboard"));
+                    return toast;
+                }
+            },
         }
         Self::none()
     }
@@ -634,8 +941,27 @@ impl cosmic::Application for App {
                 self.active_page()
             );
         });
+        // Global gates (§3.4): blocked / not-installed render INSTEAD of
+        // the page, once at the shell level — every page inherits them.
+        let blocked = if is_blocked(self.backend.env()) {
+            self.backend.env().message.clone()
+        } else {
+            None
+        };
+        if let Some(page) = views::gate(
+            blocked,
+            self.backend.is_distrobox_installed(),
+            self.loading.containers,
+        ) {
+            return views::with_toasts(&self.toasts, page);
+        }
         let page = match self.active_page() {
-            Page::Containers => self.view_containers(),
+            // Details pushes over Containers (row #53 back pops).
+            Page::Dashboard => self.view_dashboard(),
+            Page::Containers => match &self.details_for {
+                Some(container) => views::view_details(container, self.upgrading(container)),
+                None => self.view_containers_page(),
+            },
             Page::Images => self.view_images(),
             Page::Apps => self.view_apps(),
             Page::Stats => self.view_stats(),
@@ -656,19 +982,127 @@ impl cosmic::Application for App {
                 .spacing(8)
                 .into(),
         };
-        widget::container(body)
+        let padded = widget::container(body)
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(16)
-            .into()
+            .padding(16);
+        views::with_toasts(&self.toasts, padded.into())
     }
 
     fn header_start(&self) -> Vec<cosmic::Element<'_, Self::Message>> {
+        // Row #53: back button on the details page; Refresh otherwise.
+        if self.details_for.is_some() && self.active_page() == Page::Containers {
+            return vec![
+                widget::button::standard("Back")
+                    .on_press(Message::Details(DetailsMsg::Closed))
+                    .into(),
+            ];
+        }
         vec![
             widget::button::standard("Refresh")
                 .on_press(Message::Containers(ContainerMsg::RefreshRequested))
                 .into(),
         ]
+    }
+
+    /// Row #44 (FAB → header): the create affordance lives here, not in a
+    /// floating button. "New Container" on the Containers page (the T7
+    /// wizard consumes the request); Refresh beside it on every page.
+    /// `header_end` (not `header_start`) per the shell contract — Refresh
+    /// in start is the T3 leftover this replaces.
+    fn header_end(&self) -> Vec<cosmic::Element<'_, Self::Message>> {
+        match self.active_page() {
+            Page::Containers if self.details_for.is_none() => vec![
+                widget::button::suggested("New Container")
+                    .on_press(Message::Containers(ContainerMsg::NewContainerRequested))
+                    .into(),
+            ],
+            _ => vec![],
+        }
+    }
+
+    fn dialog(&self) -> Option<cosmic::Element<'_, Self::Message>> {
+        views::dialog_view(&self.dialog)
+    }
+}
+
+impl App {
+    /// Whether this container has an upgrade task in flight (details tile
+    /// inline spinner, row #60). Matches `TaskMsg::Started` labels
+    /// (`Upgrade {name}`) for incomplete mirror entries — the data T5
+    /// already stores, so the button disables while its task runs (and N
+    /// presses cannot spawn N upgrades).
+    fn upgrading(&self, container: &ContainerInfo) -> bool {
+        let want = format!("Upgrade {}", container.name);
+        self.tasks.values().any(|v| !v.completed && v.label == want)
+    }
+
+    /// Dashboard page: counts + task rows from the T5 mirror.
+    fn view_dashboard(&self) -> cosmic::Element<'_, Message> {
+        let running = running_count(&self.containers);
+        let stopped = stopped_count(&self.containers);
+        let total = self.containers.len();
+        let task_rows: Vec<cosmic::Element<'_, Message>> = self
+            .tasks
+            .iter()
+            .map(|(id, view)| {
+                views::task_row(*id, view.label.clone(), view.completed, view.success)
+            })
+            .collect();
+        let n_tasks = task_rows.len();
+        views::view_dashboard(
+            &self.containers,
+            running,
+            stopped,
+            total,
+            n_tasks,
+            task_rows,
+            self.error.clone(),
+        )
+    }
+
+    /// Containers page (§6.3): gate states, then the card list with quick
+    /// actions inline (context_drawer owns the drawer variant — T6 renders
+    /// the actions as rows; the drawer shell lands with the card menu in
+    /// the advocate pass if a drawer proves better than inline rows).
+    fn view_containers_page(&self) -> cosmic::Element<'_, Message> {
+        if self.loading.containers && self.containers.is_empty() {
+            // First load only: keep content during refresh (row #11).
+            return widget::container(widget::text::body("Loading containers…"))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into();
+        }
+        if self.error.is_some() {
+            // Row #36: the Flutter error state was bare Text('Error: …').
+            // The shell banner above already shows the message text — this
+            // page adds ONLY the retry affordance, not a second copy.
+            return widget::Column::new()
+                .push({
+                    let retry: cosmic::Element<'_, Message> = widget::button::standard("Retry")
+                        .on_press(Message::Containers(ContainerMsg::RefreshRequested))
+                        .into();
+                    retry
+                })
+                .spacing(12)
+                .into();
+        }
+        if self.containers.is_empty() {
+            return views::empty_state(
+                "document-open-symbolic",
+                "No containers found.".to_string(),
+                "Create your first container to get started.".to_string(),
+                None,
+            );
+        }
+        let mut col = widget::Column::new().spacing(8);
+        for c in &self.containers {
+            let selected = self.selected_container.as_deref() == Some(c.name.as_str());
+            col = col.push(views::container_row(c, selected));
+        }
+        widget::scrollable(col).into()
     }
 }
 
