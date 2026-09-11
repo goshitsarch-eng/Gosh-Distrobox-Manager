@@ -1,5 +1,5 @@
 Name:           gosh-distrobox-manager
-Version:        1.0.0
+Version:        1.0.2
 Release:        1%{?dist}
 Summary:        A Flutter application for managing Distrobox containers
 
@@ -75,6 +75,8 @@ fi
 /usr/bin/gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
 
 %changelog
+* Fri Sep 11 2026 Gosh Distrobox Manager Team <dev@example.com> - 1.0.2-1
+- Version sync with core/Cargo.toml (D14); no packaging change
 * Fri Jan 24 2025 Gosh Distrobox Manager Team <dev@example.com> - 1.0.0-1
 - Initial RPM release
 - Cross-platform icon system

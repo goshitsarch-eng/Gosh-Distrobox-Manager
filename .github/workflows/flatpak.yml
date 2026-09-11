@@ -1,3 +1,18 @@
+name: Flatpak
+
+# CI job 3 (packaging.md §2.5.1): full verify.sh (stages 1-10: the Rust gates
+# re-run plus the offline flatpak-builder build + install + smoke test), then
+# artifact publish on tags. Tags + workflow_dispatch ONLY — the full COSMIC
+# build takes tens of minutes cold (§5.1) and does not belong on the per-push
+# path. Per-push coverage is jobs 1-2 (rust.yml, packaging-metadata.yml).
+# Redundant with them by design: a release artifact whose own tree fails fmt
+# is not shippable, so the tag build certifies the whole gate independently.
+#
+# T4 wiring; T14 owns the release-shape rewrite (artifact names, release
+# notes, the Flathub git-source switch per §4.2). What T4 guarantees: the job
+# runs verify.sh stages 9-10 (NOT a re-spelled inline build) with the
+# runtimes pre-installed, under xvfb for the smoke test.
+
 on:
   push:
     tags: [ v*.*.* ]
@@ -7,57 +22,51 @@ concurrency:
   group: flatpak
   cancel-in-progress: true
 
-
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build-and-dist:
-    runs-on: ubuntu-latest
+  flatpak:
+    name: offline build + install + smoke test
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: Install Flatpak & Builder
+      - name: Install Flatpak, builder, xvfb, validators
         run: |
           sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder
+          sudo apt-get install -y flatpak flatpak-builder xvfb appstream desktop-file-utils
 
       - name: Add Flathub remote
         run: |
           flatpak --user remote-add --if-not-exists flathub \
             https://dl.flathub.org/repo/flathub.flatpakrepo
-        # Required to pull SDK/runtime deps
 
-      - name: Build & run Meson dist in sandbox
+      - name: Pre-install runtime, SDK, BaseApp
         run: |
-          # Perform a clean build, installing deps from Flathub into 'build' dir
-          flatpak-builder --user \
-                          --force-clean \
-                          --install-deps-from=flathub \
-                          --repo=repo \
-                          --keep-build-dirs \
-                          build \
-                          io.github.gosh_distrobox_manager.json
+          flatpak --user install --noninteractive flathub \
+            org.freedesktop.Platform//25.08 \
+            org.freedesktop.Sdk//25.08 \
+            com.system76.Cosmic.BaseApp//stable
 
-          # Test the build
-          flatpak-builder --run build io.github.gosh_distrobox_manager.json ninja test "-C.flatpak-builder/build/gosh_distrobox_manager/_flatpak_build"
-
-          # Spawn a shell inside the build sandbox and run `meson dist`
-          flatpak-builder --run build io.github.gosh_distrobox_manager.json meson dist --no-tests "-C.flatpak-builder/build/gosh_distrobox_manager/_flatpak_build"
-        # `--run` spawns the build sandbox and executes the given command
-
-      - name: Upload Meson distribution artifact
-        uses: actions/upload-artifact@v4
+      # Cache the flatpak build dir keyed on the vendoring inputs (§2.5/§5.1).
+      # Invalidated by any dependency or manifest change — a stale cache here
+      # is a stale build, so the key covers all three inputs, not just the lock.
+      - name: Cache flatpak build dir
+        uses: actions/cache@v4
         with:
-          name: meson-dist
-          path: '.flatpak-builder/build/gosh_distrobox_manager/_flatpak_build/meson-dist/*.tar.xz'
+          path: .flatpak-builder
+          key: flatpak-${{ runner.os }}-${{ hashFiles('flatpak/cargo-sources.json', 'flatpak/io.github.gosh_distrobox_manager.json', 'Cargo.lock') }}
 
-      - name: Create or update GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}      # defaults to this if omitted
-          name: Release ${{ github.ref_name }}  # defaults to tag name if omitted
-          files: '.flatpak-builder/build/gosh_distrobox_manager/_flatpak_build/meson-dist/*.tar.xz'
-          generate_release_notes: true         # optional: auto-generate notes
+      # Full verify.sh (stages 1-10), not just 9-10: the tag build must
+      # certify the whole gate on the exact tree being released, independent
+      # of what jobs 1-2 did on the branch head. Redundant with them by
+      # design — a release artifact whose own tree fails fmt is not shippable.
+      - name: Build, install, smoke-test (full verify.sh)
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x800x24" \
+            env LIBGL_ALWAYS_SOFTWARE=1 ./scripts/verify.sh

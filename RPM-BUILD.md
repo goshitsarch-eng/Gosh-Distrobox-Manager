@@ -12,18 +12,18 @@ flutter build linux --release
 ./build-rpm.sh
 ```
 
-This will create: `gosh-distrobox-manager-1.0.0-1.fc43.x86_64.rpm`
+This will create: `gosh-distrobox-manager-1.0.2-1.fc43.x86_64.rpm`
 
 ## Installing the RPM
 
 ### Using DNF (recommended)
 ```bash
-sudo dnf install ./gosh-distrobox-manager-1.0.0-1.fc43.x86_64.rpm
+sudo dnf install ./gosh-distrobox-manager-1.0.2-1.fc43.x86_64.rpm
 ```
 
 ### Using RPM directly
 ```bash
-sudo rpm -ivh ./gosh-distrobox-manager-1.0.0-1.fc43.x86_64.rpm
+sudo rpm -ivh ./gosh-distrobox-manager-1.0.2-1.fc43.x86_64.rpm
 ```
 
 ## What Gets Installed
@@ -55,7 +55,7 @@ sudo rpm -e gosh-distrobox-manager
 ## Package Details
 
 - **Package name**: gosh-distrobox-manager
-- **Version**: 1.0.0
+- **Version**: 1.0.2
 - **Architecture**: x86_64
 - **Size**: ~11 MB (installed: ~37 MB)
 - **License**: GPL-3.0-or-later

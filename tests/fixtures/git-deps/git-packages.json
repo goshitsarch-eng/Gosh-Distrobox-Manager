@@ -1,0 +1,88 @@
+{
+ "git+https://github.com/pop-os/dbus-settings-bindings#eed01dd3609e90e3c8cd043656734c500956c793": {
+  "packages": {
+   "cosmic-settings-daemon 0.1.0": {
+    "entries": [
+     "Cargo.toml",
+     "examples",
+     "src"
+    ],
+    "path": "cosmic-settings-daemon"
+   }
+  }
+ },
+ "git+https://github.com/pop-os/freedesktop-icons#ab4c57b8e416c6af9297cb04d101889896fd9a92": {
+  "packages": {
+   "cosmic-freedesktop-icons 0.4.0": {
+    "entries": [
+     "Cargo.toml",
+     "LICENSE",
+     "README.md",
+     "benches",
+     "src"
+    ],
+    "path": "."
+   }
+  }
+ },
+ "git+https://github.com/pop-os/libcosmic?rev=a401af8b1c54a8abd393b8c5b7c8809402f83850#a401af8b1c54a8abd393b8c5b7c8809402f83850": {
+  "packages": {
+   "iced_core 0.14.0": {
+    "entries": [
+     "Cargo.toml",
+     "README.md",
+     "build.rs",
+     "src"
+    ],
+    "path": "iced/core"
+   },
+   "libcosmic 1.0.0": {
+    "entries": [
+     "Cargo.toml",
+     "LICENSE",
+     "README.md",
+     "build.rs",
+     "config.toml",
+     "cosmic-icons",
+     "examples",
+     "i18n",
+     "i18n.toml",
+     "justfile",
+     "res",
+     "rustfmt.toml",
+     "src"
+    ],
+    "path": "."
+   }
+  }
+ },
+ "git+https://github.com/pop-os/winit.git?tag=cosmic-0.14#71ce08c043814514a8fd92d9d0599f115ae854e8": {
+  "packages": {
+   "dpi 0.1.2": {
+    "entries": [
+     "CHANGELOG.md",
+     "Cargo.toml",
+     "LICENSE",
+     "LICENSE-LIBM-MIT",
+     "README.md",
+     "src"
+    ],
+    "path": "dpi"
+   },
+   "winit 0.31.0-beta.2": {
+    "entries": [
+     "Cargo.toml",
+     "FEATURES.md",
+     "LICENSE",
+     "README.md",
+     "build.rs",
+     "docs",
+     "examples",
+     "src",
+     "tests"
+    ],
+    "path": "winit"
+   }
+  }
+ }
+}

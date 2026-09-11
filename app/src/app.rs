@@ -510,6 +510,20 @@ impl cosmic::Application for App {
     }
 
     fn view(&self) -> cosmic::Element<'_, Self::Message> {
+        // D17 readiness signal: the smoke test greps the journal for this
+        // line, proving the app rendered (liveness alone passes for a blank
+        // frozen window). Once per process — `view` runs on every state
+        // change, so a std::sync::Once keeps the log to one line. Harmless in
+        // production: a single info line at startup.
+        use std::sync::OnceLock;
+        static READY: OnceLock<()> = OnceLock::new();
+        READY.get_or_init(|| {
+            tracing::info!(
+                "SMOKE_READY app_id={} page={:?}",
+                APP_ID,
+                self.active_page()
+            );
+        });
         let page = match self.active_page() {
             Page::Containers => self.view_containers(),
             Page::Images => self.view_images(),

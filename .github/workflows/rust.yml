@@ -6,25 +6,21 @@ name: Rust
 # green from the first commit so the S1-S8 strip steps are never gated on a
 # pre-existing red build.
 #
-# Scope: the `core/` crate (the former `rust/`), reached through the workspace
-# whose virtual manifest and lockfile T1 hoisted to the repository root.
+# Scope: the whole workspace (`core/` lib + `app/` binary), reached through
+# the virtual manifest and lockfile T1 hoisted to the repository root.
+# Grown to `--workspace` in T4 (was single-crate until S5/T3 added `app/`).
 #
-# The commands below are deliberately un-`--workspace`d for now: the workspace has
-# exactly one member until S5/T3 adds `app/`, so the flag would be a no-op that
-# reads as coverage it does not provide. **S5 grows them to `--workspace`** when
-# the bin crate joins -- at which point `working-directory` stays `core` and the
-# flag is what pulls `app/` in. Keep this comment and that edit in step.
+# Not here, by design:
+#   * the packaging-metadata job lives in packaging-metadata.yml (T4, §2.5.1
+#     job 2) — `--check`, desktop/metainfo validation, check-versions.sh,
+#     and the stdlib packaging tests. It is a separate job (not steps in
+#     this file) so it runs in parallel and fails under its own name.
+#   * the Flatpak build + smoke test live in flatpak.yml (T4 wires the file
+#     T14 rewrites; tags + workflow_dispatch only, §2.5.1 job 3).
 #
-# Not yet here, by design -- these belong to later tasks and must not be
-# duplicated into this file:
-#   * T2/T4 append the packaging script gates (§2.5): `scripts/verify.sh` and
-#     `flatpak/generate-cargo-sources.py --check` (offline, lockfile vs
-#     git-manifests/ sidecar), plus the `check-versions.sh` stage.
-#   * T4/T14 append the Flatpak build + smoke-test job, keyed on
-#     `flatpak/cargo-sources.json` and the manifest for caching.
-#
-# `.github/workflows/flatpak.yml` is dead as written (it builds a root manifest
-# that does not exist) and is owned by T14 -- deliberately untouched here.
+# `.github/workflows/flatpak.yml` (the OLD meson/ninja workflow) is dead as
+# written (it builds a root manifest that does not exist) and is owned by
+# T14 — deliberately untouched here.
 
 on:
   # Shape ported from the sibling's ci.yml (D24a). Note what the branch filter
@@ -59,19 +55,13 @@ jobs:
     name: fmt + build + clippy + test
     runs-on: ubuntu-24.04
 
-    defaults:
-      run:
-        working-directory: core
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           # libcosmic is a git dependency whose `iced` and `cosmic-icons`
           # submodules are path deps of it; cargo needs them present to resolve
-          # the graph (REVIEW ARCH-Q14). No submodule is read by the current
-          # crate, so this is the cheap hedge that makes the T1/T3 wiring work
-          # on the first run rather than on a debugging detour.
+          # the graph (REVIEW ARCH-Q14).
           submodules: recursive
 
       - name: Install Rust (stable, rustfmt + clippy)
@@ -80,16 +70,16 @@ jobs:
           components: rustfmt, clippy
 
       - name: Formatting (rustfmt)
-        run: cargo fmt --check
+        run: cargo fmt --all -- --check
 
       # `--locked` in CI only, never in the developer loop (D13/PKG-11): CI
       # must fail when Cargo.lock is stale rather than quietly resolving a
       # different graph than the one that gets vendored for the Flatpak.
       - name: Build
-        run: cargo build --locked
+        run: cargo build --workspace --locked
 
       - name: Lint (clippy, warnings are errors)
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Test
-        run: cargo test --locked
+        run: cargo test --workspace --locked

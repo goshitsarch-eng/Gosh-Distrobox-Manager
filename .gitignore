@@ -21,8 +21,17 @@ rust/target/
 target/
 _build/
 
-# Flatpak
+# Flatpak (T4/D26b: verify.sh pins --state-dir and the build dir inside
+# .flatpak-builder/, which flatpak-builder self-ignores via its own
+# .gitignore; `repo/` is named so a future --repo=repo regression fails
+# loudly here instead of landing untracked. `build/` stays Flutter-ignored
+# until T14 deletes the Flutter tree, then it is re-owned.)
 .flatpak/
+.flatpak-builder/
+repo/
+# test_packaging.py imports the generator via importlib, which writes
+# flatpak/__pycache__/ on every run — build bytecode, never committed.
+__pycache__/
 
 # Environment and secrets
 .env

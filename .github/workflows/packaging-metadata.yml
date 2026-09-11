@@ -1,0 +1,42 @@
+name: Packaging metadata
+
+# CI job 2 (packaging.md §2.5.1): the per-push gate. Every push + PR.
+# Runs `./scripts/verify.sh --fast` (stages 1-8: fmt, release build, clippy,
+# tests, versions, metadata, --check, packaging tests) rather than re-spelling
+# the commands, so CI and the local gate cannot drift apart (the sibling
+# shipped a missing manifest arg exactly that way).
+#
+# Deliberately a SUPERSET of §2.5.1's four-command job-2 sketch (--check,
+# desktop/metainfo validation, check-versions.sh): re-running stages 1-4 here
+# costs a second release build but guarantees the metadata gates always run
+# against the exact tree the Rust gates just approved. Not "<1 min" — the
+# release build dominates; the cheap stages (5-8) still fail first on
+# dependency-touching PRs because they run after the cached build.
+#
+# The flatpak build + smoke test are NOT here — they live in flatpak.yml
+# (tags + workflow_dispatch only, §2.5.1 job 3).
+
+on:
+  push:
+    branches:
+      - main
+      - cosmic-migration
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  packaging-metadata:
+    name: versions + metadata + vendoring + packaging tests
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install metadata validators
+        run: sudo apt-get update && sudo apt-get install -y appstream desktop-file-utils
+
+      - name: Fast gate (verify.sh --fast, stages 1-8)
+        run: ./scripts/verify.sh --fast
