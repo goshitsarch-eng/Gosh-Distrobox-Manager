@@ -183,11 +183,39 @@ different things that must both hold.
 | libcosmic | rev `a401af8b1c54a8abd393b8c5b7c8809402f83850` (v1.0.0, 2026-09-10) |
 | → submodule `iced` | `https://github.com/pop-os/iced.git` @ `ffe1f1dbe3cbfd313f9b5fe8e36a4af462cae5d7` |
 | → submodule `cosmic-icons` | `https://github.com/pop-os/cosmic-icons.git` @ `343c007f37cd71716e68f01c43ecf2764b7f7c47` |
+| → git dep `cosmic-settings-daemon` | `https://github.com/pop-os/dbus-settings-bindings` — **no `rev`**; resolved `eed01dd3609e90e3c8cd043656734c500956c793` |
+| → git dep `cosmic-freedesktop-icons` | `https://github.com/pop-os/freedesktop-icons` — **no `rev`**; resolved `ab4c57b8e416c6af9297cb04d101889896fd9a92` |
+
+**There are more than one of these pointers, and two of them are not pinned by anyone.**
+Beyond libcosmic itself and its two submodules, libcosmic's Linux target block
+(`Cargo.toml:175` and `:180`) declares two further git dependencies:
+
+```toml
+cosmic-settings-daemon = { git = "https://github.com/pop-os/dbus-settings-bindings" }
+freedesktop-icons = { package = "cosmic-freedesktop-icons", git = "https://github.com/pop-os/freedesktop-icons" }
+```
+
+Both sit in unconditional `cfg(unix, …)` / `cfg(unix, not(macos))` blocks, so they are
+**always compiled, never feature-gated away** — no feature list of ours can drop them. And
+neither carries a `rev` or `tag`, so unlike the submodule pointers above they are not even
+recorded in *someone's* tree: cargo resolves them to the default branch HEAD at lockfile
+generation time. Our reproducibility therefore rests on **three** git pointers, not one
+(REVIEW A8; `PLAN.md` row "Further git pointers"), and the two unpinned ones are the weaker
+pair. This is exactly what the sidecar mechanism (`git-manifests/` + `git-packages.json`,
+§1.3 procedure below, D12/PKG-3) converts from silent drift into a hard, offline,
+CI-detectable failure: `generate-cargo-sources.py --check` asserts that the lockfile's git
+sources are precisely the ones the sidecar describes.
 
 The submodule SHAs are **recorded here for documentation only** — they are not written into
 the manifest, because flatpak-builder reads them from the libcosmic tree. Recording them
 matters for *reproducibility auditing*: if libcosmic's tree is ever force-dated or the
 submodule pointer moves, these are the values a build must be reproducing.
+
+The two git-dep SHAs are recorded the same way, for the same auditing purpose, with one
+caveat they do not share with the submodules: they are the upstream default-branch HEADs
+*observed on 2026-09-11*, not values anyone pins. They are expected values for "what this
+plan was verified against", not a guarantee — the authoritative record is the sidecar
+committed in T2, which is regenerated with the lockfile and checked in CI.
 
 libcosmic at this rev: `version = 1.0.0`, `edition = "2024"`, `rust-version = "1.93"`,
 `[lib] name = "cosmic"`. All verified from the fetched `Cargo.toml`. MSRV 1.93 < our
@@ -237,8 +265,8 @@ libcosmic feature we need drags in `cosmic-panel-config`, pin it explicitly with
   "--socket=fallback-x11",
   "--device=dri",
   "--talk-name=org.freedesktop.Flatpak",
-  "--filesystem=xdg-config/cosmic:rw",
-  "--filesystem=xdg-data/distroshelf-terminals.json:rw"
+  "--talk-name=org.a11y.Bus",
+  "--filesystem=xdg-config/cosmic:rw"
 ]
 ```
 
@@ -249,8 +277,19 @@ libcosmic feature we need drags in `cosmic-panel-config`, pin it explicitly with
 | `--socket=fallback-x11` | X11 only when no Wayland compositor is present. **Deliberately `fallback-x11`, not `x11`** — `x11` grants X11 access even when Wayland is available, which is a needless widening. CosmicTweaks uses `fallback-x11`. |
 | `--device=dri` | GPU access for wgpu/GL rendering. Without it the app falls back to software rendering or fails to create a surface. |
 | `--talk-name=org.freedesktop.Flatpak` | **Load-bearing.** Permits `flatpak-spawn --host`, which is how *every* distrobox/podman command escapes the sandbox. `rust/src/app_state.rs:18` and `rust/src/api.rs:145` install `map_flatpak_spawn_host` whenever `/.flatpak-info` exists. **Without this argument the app is completely non-functional under Flatpak** — it would appear to launch and then every operation would fail. |
-| `--filesystem=xdg-config/cosmic:rw` | Write access for cosmic-config (`~/.config/cosmic/<app-id>/v1/…`). This is how settings persist under libcosmic; it replaces the GSettings backend being deleted (§1.6). CosmicTweaks carries the equivalent. |
-| `--filesystem=xdg-data/distroshelf-terminals.json:rw` | The **only** direct filesystem access in the sandboxed process: `rust/src/backends/supported_terminals.rs:112-114` computes `dirs::data_dir().join("distroshelf-terminals.json")`, and lines 246/262 read and write it. See §1.4.1. |
+| `--talk-name=org.a11y.Bus` | **Load-bearing for the P0 a11y claim.** AT-SPI lives behind the accessibility bus, which the sandbox does not see by default. Without this name `accesskit_unix` is inert: Orca and any other screen reader would find an app with no accessibility tree at all, making `ux.md §5.3`'s P0 rating false on the only shipping channel (REVIEW E2/UX-16). Measured in the sibling project, whose manifest carries exactly this argument. |
+| `--filesystem=xdg-config/cosmic:rw` | Read-write access for cosmic-config (`~/.config/cosmic/<app-id>/v1/…`). This is how settings persist under libcosmic; it replaces the GSettings backend being deleted (§1.6). CosmicTweaks carries the equivalent. |
+
+**Why `:rw` and not the sibling's `:ro`.** The sibling manifest carries
+`--filesystem=xdg-config/cosmic:ro` and it is tempting to copy the character-for-character
+grant — but the two apps use this directory differently. The sibling only *watches*
+COSMIC's config (it is an observer of system-wide theme keys), so read-only is sufficient
+and strictly safer. **We write into it**: cosmic-config persists this app's own settings at
+`~/.config/cosmic/io.github.gosh_distrobox_manager/v1/`, which is exactly what replaces the
+deleted GSettings backend. Downgrading to `:ro` would make every settings write fail at
+runtime, silently, inside the sandbox — the failure class §5.4 exists to catch. `:rw` is the
+minimum grant that supports stated behaviour; do not "fix" it toward the sibling's `:ro`
+without first removing config persistence.
 
 #### 1.4.1 Deliberate omissions (and why)
 
@@ -262,33 +301,70 @@ libcosmic feature we need drags in `cosmic-panel-config`, pin it explicitly with
   pulls are performed by host `podman`, outside the sandbox. **Open question Q4** if the
   new UI ever fetches anything itself (release notes, icon packs, update checks).
 - **`--socket=x11` — omitted** in favour of `fallback-x11` (§1.4).
-- **`--talk-name=com.system76.CosmicSettingsDaemon` — omitted for now.** CosmicTweaks needs
-  it because it *edits* COSMIC settings. We only need libcosmic's `dbus-config` feature to
-  *watch* our own config file. Add it only if we adopt live theme-following. **Open question Q5.**
+- **`--talk-name=com.system76.CosmicSettingsDaemon` — omitted, permanently.** Q5 is closed
+  by D23: we do **not** enable libcosmic's `dbus-config` feature, so `Cosmic::init` never
+  builds the settings-daemon proxy (`libcosmic/src/app/cosmic.rs:119-124`) and
+  `watch_config` always takes the `config_subscription` file-watcher path
+  (`libcosmic/src/core.rs:392-404`). Nothing we compile ever contacts that daemon, so the
+  name is not needed on COSMIC and its absence costs nothing on GNOME. This is the
+  measured sibling configuration (its D27b), and the 15-errors-per-20s failure it
+  eliminates was the reason. Add this name back only together with `dbus-config`, on a
+  two-build measurement showing a need.
+- **`--filesystem=xdg-data/distroshelf-terminals.json:rw` — removed.** The terminal list
+  moves into cosmic-config (ARCH-Q5/D11), which deletes the file, the path, and this grant
+  together. See §1.4.2 — and note the consequence below: this was the *only* direct
+  filesystem access in the sandboxed process, so the sandbox now holds **no** writable
+  path outside `xdg-config/cosmic`.
 - **`--filesystem=xdg-config/gtk-3.0:ro`, `xdg-config/gtk-4.0:ro`, `xdg-config/kdeglobals:ro`,
   `xdg-data/color-schemes:ro` — omitted.** These are CosmicTweaks-specific (it previews
   GTK/KDE themes). libcosmic themes itself.
 - **`--device=all`, `--allow=devel`, `--socket=session-bus`, `--filesystem=host` — never.**
   Each is a broad escalation with no use here.
 
-#### 1.4.2 The `distroshelf-terminals.json` problem
+**PKG-6 follow-through: the per-file allowlist is now empty.** Because the terminals grant
+was the only host path the sandboxed process touched (A7/C1), the final set has no
+`--filesystem=` entry for a single file and no path that must match a Rust constant
+character-for-character. That removes §5.2's "new direct `std::fs` usage" failure mode at
+the root rather than guarding it, and it is the strongest available answer to §5.2: the
+sandbox can no longer be misconfigured into a silent write error, because it has nothing
+left to misconfigure. Keep it that way — a future `--filesystem=<single file>` grant
+reintroduces the whole class and needs the unit test §1.4.2 used to require.
 
-The only sandbox-visible host path is named after the **pre-rename project name**
-(`distroshelf`). This is rename drift of the same family as the metainfo/spec drift in §4.
-Two options:
+#### 1.4.2 The `distroshelf-terminals.json` problem — resolved by deletion
+
+The only sandbox-visible host path *was* named after the **pre-rename project name**
+(`distroshelf`). This was rename drift of the same family as the metainfo/spec drift in §4.
+The two options were:
 
 1. **Rename it** to `gosh_distrobox_manager-terminals.json`, update
    `supported_terminals.rs:112-114`, and grant `xdg-data/gosh_distrobox_manager-terminals.json:rw`.
    Cost: existing custom terminal lists are silently dropped (a one-time migration shim
    could read the old path, but this is a pre-1.0 app and the drift is already user-visible).
 2. **Fold it into cosmic-config**, making the file disappear and the grant unnecessary.
-   This is the cleaner outcome and is **recommended** — it aligns with §1.6's rationale
-   for deleting GSettings.
+   This is the cleaner outcome — it aligns with §1.6's rationale for deleting GSettings.
 
-Whichever is chosen, the grant must match the code exactly. A mismatch fails *at runtime*,
-silently, as an unlogged write error (line 253 only logs at `error!`), which is exactly
-the class of bug that escapes a smoke test. Add a unit test asserting the resolved path
-constant.
+**Option 2 is taken (ARCH-Q5, D11).** The terminal list becomes a cosmic-config entry
+alongside every other setting, `dirs::data_dir().join("distroshelf-terminals.json")`
+disappears, and with it the grant, the drift, and the whole path-mismatch failure mode:
+
+- **No grant to keep in sync.** The `xdg-data/distroshelf-terminals.json:rw` entry is gone
+  from §1.4. Nothing in the manifest now names a single file, so there is no pair of
+  string constants that can silently disagree.
+- **No silent write error to guard against.** The old failure was a mismatch between the
+  Rust path constant and the manifest grant, which surfaced only at runtime and only as an
+  `error!` log line (the write path logs nothing louder). With the file gone, that failure
+  cannot be constructed.
+- **One persistence mechanism, not two.** Settings and terminals both live under
+  cosmic-config, so the §1.6 GSettings deletion leaves exactly one config backend rather
+  than one-and-a-half.
+- **The unit test §1.4.2 used to mandate is no longer required** — there is no resolved
+  path constant left to assert. The equivalent coverage moves to the config round-trip
+  test in §2.2, which exercises real persistence instead of a path string.
+
+The migration cost is the same one option 1 carried: an existing user's custom terminal
+list is not carried over automatically. That is accepted for a pre-1.0 app; if it proves
+to matter, the DistroShelf import path (PKG-9) is the natural place to read the old file
+once, on the host, through the runner.
 
 ### 1.5 Desktop file, metainfo, and icon fixes
 
@@ -728,11 +804,11 @@ elsewhere; the specific risks are theming, the file picker, and the icon theme.
 |---|---|---|
 | **Window creation / rendering** | winit + `fallback-x11`/Wayland | Launch under a GNOME session; window appears, no surface errors |
 | **Theming** | libcosmic ships its own theme engine; it does not use GTK themes. It will render *COSMIC-styled*, not Adwaita. **This is expected, not a bug** — document it so it is not reported as one | Visual check |
-| **File picker** | Use `ashpd` / XDG **Desktop Portal** (`org.freedesktop.portal.FileChooser`) rather than GTK dialogs. libcosmic exposes an `rfd` feature; configure rfd to use its portal backend, not the GTK backend | Open the export/import picker under GNOME; confirm the GNOME portal dialog appears (not a GTK one) |
+| **File picker** | Use `ashpd` / XDG **Desktop Portal** (`org.freedesktop.portal.FileChooser`) rather than GTK dialogs (D16). This is libcosmic's `xdg-portal` feature, which pulls `ashpd` directly — there is no `rfd` in the build and therefore nothing to configure: the old "configure rfd to use its portal backend, not the GTK backend" step described a knob that does not exist, and is deleted (REVIEW UX-15). Enabling `rfd` at all would be a regression, since its GTK backend needs GTK in the sandbox and would contradict the portal-only decision | Open the export/import picker under GNOME; confirm the portal dialog appears (not a GTK one). Also confirm `xdg-desktop-portal` is running — under Flatpak the picker is portal-mediated by construction, natively it is a runtime dependency |
 | **Icon theme** | On GNOME, `cosmic-icons`/`pop-icon-theme` are not installed. libcosmic resolves icons from the *system* theme at runtime (verified: `build.rs` skips bundled icons on Linux, `src/icon_theme.rs` reads the theme) | Confirm icons fall back gracefully (missing-icon placeholder is acceptable; a panic or blank window is not). Ship a fallback or declare the icon-theme dependency |
 | **Portal availability** | Portals need a running `xdg-desktop-portal` + a GNOME backend | `flatpak run` under GNOME; check the picker and any `OpenURI` call |
 | **Settings persistence** | cosmic-config writes to `~/.config/cosmic/…` regardless of DE. No COSMIC daemon required for plain file persistence | Round-trip test (§2.2 C); then confirm the file appears under GNOME |
-| **`com.system76.CosmicSettingsDaemon`** | Absent on GNOME. Only needed if we adopt libcosmic's `dbus-config` live-watch | Verify the app does not block or error when the daemon is missing. **This is the main GNOME-specific failure risk** for the `dbus-config` feature — see Q5 |
+| **`com.system76.CosmicSettingsDaemon`** | Absent on GNOME — but no longer reached. D23 drops libcosmic's `dbus-config`, so the proxy is never built and `watch_config` always uses the file watcher | The former "main GNOME-specific failure risk" is retired by construction: the failing code path is not compiled. Keep the manual check in §5.4 (run under GNOME, watch for `CosmicSettingsDaemon` errors in the log) as a **negative** assertion — the correct observable is **zero** such errors, which is what the sibling measured after dropping the feature (15/20s → 0) |
 
 **Concrete GNOME verification steps:**
 1. Log into a GNOME (Wayland) session.
@@ -851,8 +927,15 @@ into an automated failure instead of a review comment.
   list must be revisited. **Every new direct `std::fs` call in the sandboxed process is a
   packaging change, not just a code change.** Recommend a CI grep that fails on new
   `std::fs`/`File::` usage outside an allowlist, to keep this honest.
-- **The `distroshelf-terminals.json` grant is fragile** (§1.4.2): a filename/path mismatch
-  fails silently at runtime. Highest-probability silent failure in the whole design.
+- **The `distroshelf-terminals.json` grant — retired, not fixed.** This was called the
+  highest-probability silent failure in the design (§1.4.2): a filename/path mismatch that
+  fails at runtime with nothing louder than an `error!` line. It is no longer a risk,
+  because the grant and the file it named are both gone (ARCH-Q5/D11 — terminals move into
+  cosmic-config). The sandboxed process now holds **no** single-file grant, so there is no
+  path constant that can drift out of agreement with the manifest. The residual obligation
+  is narrower: this was the *only* direct filesystem access in the sandbox, so if a future
+  change adds one, it arrives with the grant *and* the silent-failure mode *and* the need
+  for the path assertion §1.4.2 used to mandate.
 - **`--device=dri` under software rendering** (CI/Xvfb) is present but unused — harmless,
   but do not let a green smoke test under Xvfb be mistaken for proof that GPU rendering works.
 - **Over-granting is a real temptation here** because the app "obviously needs the host".
@@ -925,12 +1008,10 @@ talks to the host correctly" is verifiable. Everything beyond that — that it a
    against the actual Phase 2 feature set before Flathub submission** — adding a permission
    later is easy; removing one after users rely on it is not.
 
-5. **Do we adopt libcosmic's `dbus-config`, and if so what happens on GNOME?** `dbus-config`
-   uses `com.system76.CosmicSettingsDaemon`, which does not exist on GNOME. If we enable it
-   we may need `--talk-name=com.system76.CosmicSettingsDaemon` (§1.4.1) and we must confirm
-   the app degrades gracefully without the daemon — this is the **main GNOME-specific
-   failure risk** (§3). Alternatively use plain cosmic-config file persistence and skip
-   live-watch entirely. **Which, and what is the fallback when the daemon is absent?**
+5. **Do we adopt libcosmic's `dbus-config`, and if so what happens on GNOME? — [closed: D23.]**
+   No: we use plain cosmic-config file persistence (`config_subscription` file watcher) and
+   skip the daemon route entirely, so the former "main GNOME-specific failure risk" (§3) is
+   retired by construction. Revisit only on a two-build measurement showing a need.
 
 6. **Is `--filesystem=home` genuinely avoidable, or does `flatpak-spawn --host` have a
    caveat I have missed?** My C1 analysis is that no sandboxed code touches host home

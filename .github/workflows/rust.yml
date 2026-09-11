@@ -1,0 +1,92 @@
+name: Rust
+
+# The Rust gate stage (PLAN.md T0, REVIEW.md E8). Its job is to make
+# architecture.md's safety story -- "every strip step compiles, tests and
+# clippy-cleans" -- mechanically enforced rather than aspirational, and to be
+# green from the first commit so the S1-S8 strip steps are never gated on a
+# pre-existing red build.
+#
+# Scope today: the `rust/` crate only. That is where the whole application
+# currently lives; T1 adds the `core/`+`app/` workspace split on top of it.
+#
+# Not yet here, by design -- these belong to later tasks and must not be
+# duplicated into this file:
+#   * T2/T4 append the packaging script gates (§2.5): `scripts/verify.sh` and
+#     `flatpak/generate-cargo-sources.py --check` (offline, lockfile vs
+#     git-manifests/ sidecar), plus the `check-versions.sh` stage.
+#   * T4/T14 append the Flatpak build + smoke-test job, keyed on
+#     `flatpak/cargo-sources.json` and the manifest for caching.
+#   * T1 moves `rust/` to `core/` and adds `app/`; when it lands, the
+#     `working-directory` below moves with it and the cargo commands grow
+#     `--workspace` so the new bin crate is covered too.
+#
+# `.github/workflows/flatpak.yml` is dead as written (it builds a root manifest
+# that does not exist) and is owned by T14 -- deliberately untouched here.
+
+on:
+  # Shape ported from the sibling's ci.yml (D24a). Note what the branch filter
+  # does and does not save: GitHub fires `pull_request` on `synchronize`, i.e. on
+  # every push to a branch that already has an open PR. So restricting `push`
+  # avoids CI on work-in-progress branches *before* a PR exists; once review
+  # starts, every push runs the full set regardless. That is deliberate -- it is
+  # not a path filter and must not be turned into one.
+  #
+  # `cosmic-migration` is listed alongside `main` because it is the working
+  # branch for the whole migration: every T1-T14 task lands there, and a CI stage
+  # that does not run on it gates nothing. Both entries come out at T14, when the
+  # migration branch is merged and deleted.
+  push:
+    branches:
+      - main
+      - cosmic-migration
+  pull_request:
+  schedule:
+    # Nightly, so a break on an untouched dependency or toolchain surfaces within
+    # a day rather than at the next release.
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: fmt + build + clippy + test
+    runs-on: ubuntu-24.04
+
+    defaults:
+      run:
+        working-directory: rust
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # libcosmic is a git dependency whose `iced` and `cosmic-icons`
+          # submodules are path deps of it; cargo needs them present to resolve
+          # the graph (REVIEW ARCH-Q14). No submodule is read by the current
+          # crate, so this is the cheap hedge that makes the T1/T3 wiring work
+          # on the first run rather than on a debugging detour.
+          submodules: recursive
+
+      - name: Install Rust (stable, rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Formatting (rustfmt)
+        run: cargo fmt --check
+
+      # `--locked` in CI only, never in the developer loop (D13/PKG-11): CI
+      # must fail when Cargo.lock is stale rather than quietly resolving a
+      # different graph than the one that gets vendored for the Flatpak.
+      - name: Build
+        run: cargo build --locked
+
+      - name: Lint (clippy, warnings are errors)
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked

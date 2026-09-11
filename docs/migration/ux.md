@@ -11,7 +11,7 @@ Every libcosmic API name below was read from the actual source at the pinned rev
 
 **Corrections to the recon brief:**
 
-1. **"Suggested cargo features (UNVERIFIED)"** — verified: `winit`, `tokio`, `wayland`, `x11`, `a11y`, `dbus-config`, `multi-window` are all already in `default = [...]` in `Cargo.toml`. No feature opt-in is needed for any of them. You will want to *add* `about` (gates `widget::about`), `process`, and `rfd` (native file dialogs — see §4.3), which are **not** in default.
+1. **"Suggested cargo features (UNVERIFIED)"** — verified: `winit`, `tokio`, `wayland`, `x11`, `a11y`, `dbus-config`, `multi-window` are all already in `default = [...]` in `Cargo.toml`. But we do **not** build against those defaults: libcosmic is taken with `default-features = false` plus an explicit list written once in PLAN §1, so every feature we need must be *named*, and the defaults above buy us nothing. That list is `winit`, `tokio`, `a11y`, `wayland`, `x11`, `multi-window`, `about`, `xdg-portal`. Two absences are deliberate and load-bearing: `dbus-config` is **not** enabled (D23 — it routes `watch_config` through a `CosmicSettingsDaemon` proxy that does not exist on GNOME), and `rfd` is **not** enabled (D16 — the file picker is `xdg-portal`/`ashpd`, and `rfd`'s GTK backend would drag GTK into the sandbox).
 2. **`nav_bar` is not the app-chrome nav widget.** `widget::nav_bar()` renders a `segmented_button::VerticalSegmentedButton` and its doc comment says "Navigation side panel for switching between views"; it is what `Application::nav_bar()` returns and what panel applets use. It is still the right *widget*, but the app-level integration is `Application::nav_model()` + `on_nav_select()`, and libcosmic builds the chrome and the responsive behaviour for you.
 3. **`container_stats` is real but is not disk usage.** `Distrobox::get_container_stats` shells out to `podman stats --no-stream` (falling back to `docker stats`) and returns `cpu_percent`, `memory_usage`, `memory_limit`, `memory_percent`, `network_io`, `block_io`. There is **no disk-usage field** — see §4.4.
 4. **`images_page` is not a local-image list.** `Distrobox::list_images` runs `distrobox create --compatibility`, i.e. it returns distrobox's curated *distro catalogue*, not local container images. This matters for §4.5.
@@ -83,7 +83,7 @@ Notation: all paths under `cosmic::widget::` unless noted. `Application`/`Core` 
 | 8 | `images_page.dart` | Page 2 view | `text_input::search_input()`; `widget::grid`; empty/error via `widget::text::title3` + `widget::button` (no stock empty-state widget — see §3.4); details → `widget::dialog` |
 | 9 | `package_manager_page.dart` | Page 3 view | `widget::tab_bar::horizontal` + `widget::segmented_control` for the 2 tabs; container picker → `widget::dropdown` (real widget: `dropdown::dropdown`, `popup_dropdown`); PM badge → `widget::container`+`text`; package rows → `list_column`; confirms → `widget::dialog` |
 | 10 | `updates_page.dart` | Page 4 view | Two `settings::section()`s (RUNNING / STOPPED); per-container card → `settings::item` + `widget::button::suggested`; `widget::progress_bar` inline |
-| 11 | `backups_page.dart` | Page 5 view | `tab_bar::horizontal`; snapshot rows → `list_column` + `list::button`; Export/Import/Clone cards → `settings::item::builder().title().description().control(button)`; all five input dialogs → `widget::dialog` + `text_input`; paths → `rfd` file chooser via `cosmic::dialog::file_chooser` (feature `rfd`) |
+| 11 | `backups_page.dart` | Page 5 view | `tab_bar::horizontal`; snapshot rows → `list_column` + `list::button`; Export/Import/Clone cards → `settings::item::builder().title().description().control(button)`; all five input dialogs → `widget::dialog` + `text_input`; paths → portal file chooser via `cosmic::dialog::file_chooser` (feature `xdg-portal`) |
 | 12 | `activity_logs_page.dart` | Page 6 view | `text_input::search_input()`; filter chips → `widget::segmented_control` (single-select) or `widget::radio`; stats bar → `widget::row` of `text`; timeline → `list_column`, with `widget::progress_bar::indeterminate_circular` for in-flight items |
 | 13 | `settings_page.dart` | Page 7 view | **`widget::settings::section()` + `settings::item::builder()`** — this is the canonical COSMIC settings layout and the best-matching widget surface in the whole library; `item::builder(..).toggler()`, `.checkbox()`, `.control(button)`; `widget::about()` (feature `about`) replaces the hand-rolled About card, giving artists/developers/links sections for free |
 | 14 | `apps_page.dart` | Nested page | `search_input`; `widget::grid` + `widget::toggler()` (export switch) per app; manual binary export → `widget::dialog` + `text_input` |
@@ -150,7 +150,7 @@ libcosmic's `ContextDrawer` is the direct equivalent — `Application::context_d
 
 ### 3.3 Confirm dialogs → one pattern, one helper
 
-There are **11** confirm/destructive dialogs across the app, all hand-rolled `AlertDialog`s with `TextButton("Cancel")` + `FilledButton(red/orange, verb)`. Their copy is inconsistent even for the same action (`container_card.dart` says "…cannot be undone." while `container_details_page.dart` says "…cannot be undone and all container data will be lost.").
+There are **10** confirm/destructive dialogs across the app — every one a hand-rolled `AlertDialog` (`AlertDialog` appears **23** times across `lib/`; the other 13 are input dialogs and the 4 progress dialogs) — each pairing `TextButton("Cancel")` + `FilledButton(red/orange, verb)`. Their copy is inconsistent even for the same action (`container_card.dart` says "…cannot be undone." while `container_details_page.dart` says "…cannot be undone and all container data will be lost.").
 
 **Proposal:** one helper that enforces COSMIC conventions.
 
@@ -192,9 +192,9 @@ libcosmic ships **no** generic empty-state or error-boundary widget (verified: g
 | `Colors.green/orange/blue` hard-coded status colours | Theme colours from `cosmic_theme` (success/warning/destructive) so light/dark/high-contrast all work |
 | `Divider()` / `VerticalDivider()` | `widget::divider::horizontal::{default,light,heavy}()` / `divider::vertical::{…}()` |
 
-### 3.6 Kill the duplication that the 8-file icon/colour copy created
+### 3.6 Kill the duplication that the 9-file icon/colour copy created
 
-`_getDistroIcon` is duplicated in **8 files** with **divergent** contents: the 8-branch version (ubuntu/fedora/arch/debian/alpine/centos+rocky/opensuse+gentoo…) appears in `create_container_page`, `images_page`, `dashboard_page`, `container_card`, `container_details_page`, `container_terminal_page`, `updates_page`; but `package_manager_page` and `backups_page` have only the **5-branch** version (missing centos/rocky/opensuse → falls through to the generic icon). `_getDistroColor` is duplicated in 3 files with the same divergence. `_getStatusColor`/`_getStatusText` in 4 files.
+`_getDistroIcon` is duplicated in **9 files** with **three divergent variants** (`grep -rl _getDistroIcon lib/` → 9 files, 19 occurrences). Six files — `create_container_page`, `dashboard_page`, `container_card`, `container_details_page`, `container_terminal_page`, `updates_page` — carry the 8-outcome version (ubuntu/fedora/arch/debian/alpine/centos+rocky/opensuse+suse, else generic); `images_page` carries a 10-outcome **superset** (adds gentoo, void); `package_manager_page` and `backups_page` carry only the 6-outcome version (ubuntu/fedora/arch/debian/alpine, else generic) — missing centos/rocky/opensuse/suse, so those fall through to the generic icon. `_getDistroColor` is duplicated in 3 files (`create_container_page`, `images_page`, `updates_page`), each with the same 7 conditions. Status colour/label is **2 named helpers** (`_getStatusColor`/`_getStatusText` in `dashboard_page`, `container_card`) plus **2 files that re-inline the same switch** as the `statusColor`/`statusText` getters (`container_details_page`, `container_terminal_page`) — the logic is duplicated across 4 files, but there are only 2 named helpers.
 
 **Proposal:** one `theme/icons.rs` (or `distro.rs`) in the new app with `distro_icon(image) -> Icon`, `distro_colour(image) -> Color`, `status_colour(Status) -> Color`, `status_label(Status) -> String`. `package_manager_page`/`backups_page` inheriting the full table is a *behaviour fix*, not just a refactor — call it out in the parity notes as an intended change.
 
@@ -231,7 +231,7 @@ Design: `start_container(name) -> TaskId` (streaming, like upgrade) since `distr
 | Quick action "View all" — `onPressed: () { // This would switch to containers tab in real app }` | `dashboard_page.dart:156-158` | **Implement.** It becomes trivial: `nav_model.activate(containers_id)`. Better in libcosmic than Flutter. |
 | Quick action "Upgrade All" → snackbar 'Navigate to Updates page to upgrade' | `dashboard_page.dart:596-603` | **Implement for real.** Call the upgrade-all path (confirm → for each running container) directly. A redirect snackbar is strictly worse than just doing it. |
 | Settings "Upgrade All Containers" → snackbar 'Go to Updates page to upgrade containers' | `settings_page.dart:170-179` | **Implement for real**, same as above. |
-| Folder icon as `suffixIcon` on Home Directory — a bare `Icon`, no `onPressed`, looks like a native file picker | `create_container_page.dart` | **Implement** with `rfd` (`cosmic::dialog::file_chooser::open`). This is the only "file picker" affordance in the app and it is a lie. |
+| Folder icon as `suffixIcon` on Home Directory — a bare `Icon`, no `onPressed`, looks like a native file picker | `create_container_page.dart` | **Implement** with the portal (`cosmic::dialog::file_chooser::open`, feature `xdg-portal`). This is the only "file picker" affordance in the app and it is a lie. |
 | "Stop All" / "Delete All" / per-container actions with `null` taskId → **no feedback at all** | `package_manager_page`, `backups_page` | **Implement.** Route every mutation result to the toaster. |
 | Silent validation `return` (dialog stays open, no message): Add Volume with empty paths; Create Snapshot / Restore / Export / Import with empty fields | `create_container_page`, `backups_page` | **Fix.** Use `widget::text_input`'s error display or disable the primary action until valid. A button that does nothing is the worst possible feedback. |
 | Install button uses the raw search-box text, **no empty guard** — produces a confirm dialog reading `Install "" in "ubuntu"?` | `package_manager_page` | **Fix.** Disable when empty. |
@@ -239,7 +239,7 @@ Design: `start_container(name) -> TaskId` (streaming, like upgrade) since `distr
 
 ### 4.3 Native file picker — P0 for Backups
 
-`backups_page`'s Export and Import take free-typed filesystem paths (prefilled `/tmp/<name>-export.tar`). Typing a path is a real usability failure and a correctness risk (no existence/overwrite check). libcosmic has this solved: `cosmic::dialog::file_chooser::{open, save}` (`src/dialog/file_chooser/open.rs`, `save.rs`) behind the **`rfd`** cargo feature (not in default — must be enabled). The Home Directory field also benefits.
+`backups_page`'s Export and Import take free-typed filesystem paths (prefilled `/tmp/<name>-export.tar`). Typing a path is a real usability failure and a correctness risk (no existence/overwrite check). libcosmic has this solved: `cosmic::dialog::file_chooser::{open, save}` (`src/dialog/file_chooser/open.rs`, `save.rs`) behind the **`xdg-portal`** cargo feature (not in default — must be enabled). The Home Directory field also benefits.
 
 **Recommendation: P0.** Without it the Backups screen's two headline features require the user to know and type absolute paths.
 
@@ -261,7 +261,7 @@ The taxonomy requested is P0-parity (exists in Flutter, must survive) / P1-gapfi
 | Feature | Class | Rationale / libcosmic approach |
 |---|---|---|
 | Start / restart container | **P1 — blocking** | §4.1. Gates 3 screens' existing copy. New backend fn + buttons + banner CTAs. |
-| Native file picker | **P0** | §4.3. `rfd` feature + `cosmic::dialog::file_chooser`. Backups Export/Import and the Home Directory field are unusable without it. |
+| Native file picker | **P0** | §4.3. `xdg-portal` feature + `cosmic::dialog::file_chooser`. Backups Export/Import and the Home Directory field are unusable without it. |
 | Local image list / pull / delete | **P1** | Genuinely absent, at the **backend** level: `list_images()` is `distrobox create --compatibility`, i.e. the distro catalogue, not local images. A real image manager needs new `podman images` / `pull` / `rmi` plumbing. Note the Flutter page is *named* "Images" but shows a distro picker — so there is no P0 item here, only a naming problem plus optional new capability. Recommend: rename the page's job to "Distro Catalogue" for parity, and scope image management separately as P1. |
 | Container search / filter | **P1** | Absent from `containers_page` (which has no search at all, while images/apps/packages/logs all do). `text_input::search_input()` + a filter over the in-memory list — cheap, high value once you have many containers. |
 | Persistent task history | **P1** | `TaskInfo` lives in `AppStateProvider._activeTasks` only; `_maxOutputLines = 500` truncates; everything is lost on exit. `activity_logs_page` shows "history" that is really the live session. Proposal: persist task records via `cosmic_config` (libcosmic's own config store, `Core::watch_config`, `CosmicConfigEntry`) or a small on-disk log. |
@@ -383,8 +383,8 @@ Status key: **exists** (present and working in Flutter) · **dead** (present but
 | 30 | Quick action: Stop All + confirm | exists | `confirm()` helper (§3.3), destructive class |
 | 31 | Quick action: Refresh | exists | same as #10 |
 | 32 | Pull-to-refresh | exists | **Drop** (touch idiom) |
-| 33 | Distro icon mapping (8-branch) | dup (8 files, 2 divergent versions) | One `distro_icon()` (§3.6) |
-| 34 | Status colour/label mapping | dup (4 files) | One `status_colour()`/`status_label()` |
+| 33 | Distro icon mapping (8-outcome, 3 variants) | dup (9 files, 3 divergent variants) | One `distro_icon()` (§3.6) |
+| 34 | Status colour/label mapping | dup (4 files: 2 named helpers + 2 inline copies) | One `status_colour()`/`status_label()` |
 
 ### 6.3 Containers list + card (12)
 
@@ -463,7 +463,7 @@ Status key: **exists** (present and working in Flutter) · **dead** (present but
 | 85 | Step 1: Init System toggle | exists | `settings::item::builder().toggler()` |
 | 86 | Step 1: NVIDIA toggle | exists | as above |
 | 87 | Step 1: Advanced expansion | exists | `settings::section` (always-expanded) or keep expandable |
-| 88 | Step 1: Home Directory field w/ folder suffix | **dead** (icon is not a button) | `rfd` file chooser (§4.2) |
+| 88 | Step 1: Home Directory field w/ folder suffix | **dead** (icon is not a button) | portal file chooser (§4.2); **re-scoped per D16** — the portal exposes no `directory()`/`file_name()`, so this cannot prefill |
 | 89 | Step 1: Volume mounts list + add/remove | exists | `list_column` + `dialog` |
 | 90 | Add Volume dialog (host, container, read-only) | exists (silent validation) | `dialog` + `text_input` + `checkbox`; **fix silent return** |
 | 91 | Step 1: Back / Create + name validation | exists | `button::standard`/`suggested` |
@@ -538,13 +538,13 @@ Status key: **exists** (present and working in Flutter) · **dead** (present but
 | 140 | Create Snapshot dialog (prefilled name, helper text, info box) | exists | `dialog` + `text_input`; **fix silent empty-name return** |
 | 141 | Delete Snapshot confirm + green/red result toasts | exists | `confirm()` + toaster |
 | 142 | Restore dialog (prefilled new name) | exists | `dialog` + `text_input` |
-| 143 | Export card + dialog (output path, warning box) | exists | **`rfd` save chooser** (§4.3) |
-| 144 | Import card + dialog (archive path, image name) | exists | **`rfd` open chooser** |
+| 143 | Export card + dialog (output path, warning box) | exists | **portal save chooser** (§4.3) |
+| 144 | Import card + dialog (archive path, image name) | exists | **portal open chooser** |
 | 145 | Clone card (disabled w/o container) + dialog | exists | `dialog`; unify with details-page clone |
 | 146 | 5× silent no-op validation on empty fields | **dead** | Inline validation / disabled primary |
 | 147 | 4× silent failure when taskId is `null` | **dead** | Route to toaster |
 | 148 | Clone dialog validation lacks `.trim()` | **bug** | Fix |
-| 149 | Free-text paths, no file picker | **missing** | P0 `rfd` (§4.3) |
+| 149 | Free-text paths, no file picker | **missing** | P0 portal picker (§4.3) |
 | 150 | Task progress dialog | dup | shared task component |
 | 151 | Undisposed `TextEditingController`s in 5 dialogs | **bug** | Moot — widgets are stateless in the new model |
 
@@ -603,8 +603,8 @@ Status key: **exists** (present and working in Flutter) · **dead** (present but
 | # | Item | Status | libcosmic approach |
 |---|---|---|---|
 | 182 | 4× duplicated progress-dialog classes (+1 divergent console) | **dup** | One shared task component (§3.1) |
-| 183 | 11× hand-rolled confirm dialogs w/ inconsistent copy | **dup** | One `confirm()` helper (§3.3) |
-| 184 | Distro icon mapping diverges across 8 files (5-branch vs 8-branch) | **dup/bug** | One `distro_icon()` (§3.6) |
+| 183 | 10× hand-rolled confirm dialogs w/ inconsistent copy (of 23 `AlertDialog` uses) | **dup** | One `confirm()` helper (§3.3) |
+| 184 | Distro icon mapping diverges across 9 files (3 variants: 8-outcome ×6 files, 10-outcome ×1, 6-outcome ×2) | **dup/bug** | One `distro_icon()` (§3.6) |
 | 185 | Distro colour mapping duplicated ×3; status colour ×4 | **dup** | Shared helpers |
 | 186 | Hard-coded `Colors.green/orange/blue/red` palette | exists | `cosmic_theme` roles — required for theme/accent/high-contrast (§4.6) |
 | 187 | Snackbar policy inconsistent (3 / 0 / 4 / silent) | **dup** | Toaster for every mutation result |
@@ -614,6 +614,8 @@ Status key: **exists** (present and working in Flutter) · **dead** (present but
 | 191 | Text scaling | **missing (free)** | COSMIC global scale; avoid fixed px heights (§5.4) |
 | 192 | i18n | **missing** | Fluent via `fl!` + `i18n.toml` (§5.2) |
 | 193 | Theme toggle | **missing** | **Drop** — COSMIC owns it (§4.6) |
+
+**Count corrections folded in before freezing (T0).** Each was re-verified by grep against `lib/` (28 Dart files, 12,364 lines; 8,942 hand-written, i.e. excluding the generated `lib/src/rust/`): `_getDistroIcon` is in **9 files**, not 8 (19 occurrences; §3.6, rows 33/184); the status helpers are **2 named helpers plus 2 files that re-inline the same switch**, not 4 named helpers (row 34); `AlertDialog` appears **23×**, of which **10** are confirm/destructive dialogs — ux.md's old "11" was an off-by-one on the confirm subset, not an `AlertDialog` count (§3.3, row 183); and the repo carries **65 PNGs totalling 3,739,984 bytes (3.57 MiB)**. That last figure is a repo asset count rather than a checklist row, recorded here for the audit trail. Row ids 1–193 are unchanged and no status moved, so the tally below stands as originally written.
 
 **Totals: 193 checklist rows, ids contiguous 1–193.** Counted by status cell: **exists 148 · dead 15 · dup 14 · missing 13 · bug/fragile 3**. The "drop" decisions are recorded in the *approach* column rather than as a status (a dropped item is still "exists" or "missing" today), so `drop` is not a status count; see §4.4 and §4.5 for the 6 explicit drops (`task_page`, `disk_usage_page`-as-mock, terminal emulation, theme toggle, pull-to-refresh, bottom nav bar) plus the FAB.
 
@@ -650,7 +652,7 @@ Higher than the recon's ~110 because it is counted at the affordance level (each
 **Accessibility and i18n**
 
 14. **Is "extract ~600 strings during the port" realistic, or will it double the port's time?** If the team cannot absorb it, is the honest answer "i18n later, and accept re-touching every screen", and who owns that debt?
-15. **Does `rfd` work in the Flatpak build?** `AGENTS.md` is emphatic that all command execution must go through the `CommandRunner` for Flatpak compatibility. A file chooser needs portal access; if the Flatpak sandbox lacks it, the P0 file picker is a P0 only for native installs. Must be verified before committing to it as P0.
+15. **Does the file picker work in the Flatpak build? — [resolved: D16/UX-15.]** The question was asked about `rfd`; `rfd` is not used. The picker is `ashpd` through libcosmic's `xdg-portal` feature, talking to `org.freedesktop.portal.FileChooser`. Under Flatpak that is the *supported* route rather than a risk: portals exist precisely so sandboxed apps can open files, the broker runs outside the sandbox, and no extra `finish-args` entry is required (§1.4). The residual check is only that `xdg-desktop-portal` plus a desktop backend is running (§3). Two corrections came with the resolution: the portal exposes neither `directory()` nor `file_name()`, so prefilled export names are undeliverable and checklist row #88 was re-scoped (D16); and `AGENTS.md`'s "all command execution through `CommandRunner`" rule is unaffected — a file chooser is not command execution, so the portal path does not cross it.
 16. **Has anyone verified Orca against an `a11y`-feature libcosmic app on this distro?** If AT support is unproven in practice, calling it P0 commits us to work we have not scoped.
 17. **Which strings must NOT be localised?** Container names, image URLs, command output, and the `distrobox enter` command must stay verbatim. The Flutter code interpolates user data directly into translatable strings (`'Install "$packageName" in "…"?'`, `'Delete "$name"?'`, `'Upgrading ${containerName}'`). Interpolating into a translatable string is a classic i18n mistake — the port should use Fluent placeholders, and we should decide the rule before extracting.
 

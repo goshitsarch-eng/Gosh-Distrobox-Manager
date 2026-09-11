@@ -1,5 +1,7 @@
 use crate::backends::Distrobox;
-use crate::backends::host_exec::{has_distrobox_host_exec, is_distrobox_container, map_distrobox_host_exec};
+use crate::backends::host_exec::{
+    has_distrobox_host_exec, is_distrobox_container, map_distrobox_host_exec,
+};
 use crate::fakers::CommandRunner;
 use crate::models::Task;
 use std::collections::HashMap;
@@ -9,6 +11,12 @@ use std::sync::{Arc, RwLock};
 pub struct AppState {
     pub distrobox: Distrobox,
     pub tasks: Arc<RwLock<HashMap<String, Task>>>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AppState {

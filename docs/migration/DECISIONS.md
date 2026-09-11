@@ -233,3 +233,39 @@ simplicity/maintainability → COSMIC conventions.
   `run_with` + `OnceLock<Arc<Backend>>` kept per precedent; nested `Message`
   sub-enums; core owns the registry.
 - **Why:** A plan justified by a false premise loses the argument that follows.
+
+## D22 — T0 absorbs the mechanical lint fixes; "verbatim" means behavior-preserving
+
+- **Question:** The reviewer proved CI red at birth: 9 clippy errors at HEAD, 4 in
+  modules slated to "move verbatim" — so T0 cannot close under its own DoD. Widen T0
+  or waive the gate?
+- **Options:** (a) ship the workflow red / `continue-on-error`; (b) widen T0 to fix
+  the 9 lints; (c) waive clippy for T0.
+- **Choice:** (b), with a boundary: redundant closures, collapsible `if`, `Default`
+  impl, type-complexity aliases, `option_map_unit_fn` get fixed; structural lints
+  (`module_inception` on `backends/distrobox/mod.rs`, the `frb_expand` unexpected-cfg)
+  get scoped `#[allow]` + comment citing the closing task (T1 restructure / S7 FRB
+  deletion) instead of renames smuggled into a lint commit.
+- **Why:** A red pipeline on day one is how gates get deleted (process priority, and
+  the DoD is non-negotiable). "Move verbatim" (PLAN §"What is actually changing")
+  always meant behavior-preserving — lint/format churn does not violate it; the two
+  tempting non-mechanical edits (`distrobox.rs:564`, `app_state.rs Default`) must be
+  verified semantics-preserving at sign-off.
+
+## D23 — Drop `dbus-config`: D12's keep-rationale is contradicted by libcosmic's code
+
+- **Question:** D12 kept `dbus-config`, arguing the sibling's measured 15-errors/20s
+  failure was app-specific (that app edits COSMIC settings; ours only watches its own
+  keys). The reviewer cites `libcosmic/src/app/cosmic.rs:119-124` (unconditional
+  `settings_daemon` proxy at every `Cosmic::init` when the feature is on) and
+  `core.rs:392-404` (`watch_config` early-returns the D-Bus watcher whenever the proxy
+  is `Some`, bypassing the file watcher entirely) — the branch depends on the proxy,
+  not on which keys the app watches.
+- **Options:** (a) keep with "unverified" caveat; (b) drop to match the sibling's
+  measured config (file-watcher path, 0 errors).
+- **Choice:** (b) — feature list loses `dbus-config`; `watch_config` goes through
+  `config_subscription` (file watcher) on COSMIC and GNOME alike.
+- **Why:** Standing priority sandbox-correct beats simplicity, and D5 (adopt measured
+  answers) beats D12's theorised distinction now that code evidence contradicts it. A
+  config layer that silently stops updating on GNOME is the exact failure class G.1-5
+  exists to eliminate. Re-add only on a two-build measurement showing a need.

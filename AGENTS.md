@@ -1,4 +1,30 @@
+> **MIGRATION IN PROGRESS — READ THIS FIRST (branch `cosmic-migration`).**
+>
+> Everything below this box describes the **Flutter** application, which is being
+> deleted. The project is migrating to a **libcosmic/Rust** UI on this branch:
+> `flutter_rust_bridge` is removed, `lib/`, `test/`, `pubspec.yaml` and the
+> platform trees go with it (task S8/T14), and the Rust backend is split into
+> `core/` + `app/` (T1). **Treat the Flutter instructions here as historical** —
+> they will actively mislead you if you follow them.
+>
+> Authoritative for the migration: `docs/migration/PLAN.md` (task list and status),
+> `DECISIONS.md` (D1–D23, the settled choices), `architecture.md`, `ux.md`,
+> `packaging.md`, and `REVIEW.md`. Where this file and those disagree, they win.
+>
+> Still true and still binding:
+> - **Never call `std::process::Command` directly in backend logic.** All command
+>   execution goes through the `CommandRunner`/`Command` abstraction so the app works
+>   under Flatpak (`flatpak-spawn --host`) and inside a Distrobox container. This rule
+>   survives the migration unchanged and is enforced by a `clippy.toml`
+>   `disallowed-methods` entry (T1).
+> - Container/runtime logic lives in the Rust backend, never in UI code.
+>
+> The rest of this file is rewritten in T14. Do not add to it before then.
+
 # Gosh Distrobox Manager Copilot Instructions
+
+> The section below is the pre-migration documentation, retained until T14 rewrites
+> it. See the box above before acting on any of it.
 
 ## Project Overview
 Gosh Distrobox Manager is a **Flutter** application for managing [Distrobox](https://distrobox.it/) containers. It uses **Rust** for the backend logic, connected via [flutter_rust_bridge](https://github.com/fzyzcjy/flutter_rust_bridge).

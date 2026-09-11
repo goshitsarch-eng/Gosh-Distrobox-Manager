@@ -1,6 +1,6 @@
+use std::time::Instant;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
-use std::time::Instant;
 
 pub struct Task {
     pub id: String,

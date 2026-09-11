@@ -175,9 +175,13 @@ impl InnerCommandRunner for RealCommandRunner {
     }
 }
 
+/// Canned-response table shared by the null runner and its builder: command args
+/// mapped to a closure producing the stdout text (or an I/O error).
+type ResponseMap = HashMap<Vec<String>, Arc<dyn Fn() -> Result<String, io::Error> + Send + Sync>>;
+
 #[derive(Default, Clone)]
 pub struct NullCommandRunnerBuilder {
-    responses: HashMap<Vec<String>, Arc<dyn Fn() -> Result<String, io::Error> + Send + Sync>>,
+    responses: ResponseMap,
     #[allow(dead_code)]
     fallback_exit_status: ExitStatus,
 }
@@ -219,7 +223,7 @@ impl NullCommandRunnerBuilder {
 
 #[derive(Default, Clone)]
 pub struct NullCommandRunner {
-    responses: HashMap<Vec<String>, Arc<dyn Fn() -> Result<String, io::Error> + Send + Sync>>,
+    responses: ResponseMap,
     #[allow(dead_code)]
     fallback_exit_status: ExitStatus,
 }

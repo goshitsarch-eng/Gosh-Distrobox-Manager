@@ -9,8 +9,8 @@ use std::{
     os::unix::ffi::OsStringExt,
     path::{Path, PathBuf},
     process::Output,
-    sync::Arc,
     str::FromStr,
+    sync::Arc,
 };
 use tracing::{debug, error, info, warn};
 
@@ -387,6 +387,10 @@ pub enum DistroboxCommandRunnerResponse {
     ExportedApps(String, Vec<(String, String, String)>),
 }
 
+/// A canned stdout producer attached to a `Command`: the closure returns the text
+/// the fake runner should report, or an I/O error for the failure paths.
+type ResponseFn = Arc<dyn Fn() -> io::Result<String> + Send + Sync>;
+
 impl DistroboxCommandRunnerResponse {
     pub fn common_distros() -> LazyCell<Vec<ContainerInfo>> {
         LazyCell::new(|| {
@@ -557,11 +561,11 @@ impl DistroboxCommandRunnerResponse {
         commands
     }
 
-    fn wrap_err_fn(output: (Command, String)) -> (Command, Arc<dyn Fn() -> io::Result<String> + Send + Sync>) {
+    fn wrap_err_fn(output: (Command, String)) -> (Command, ResponseFn) {
         (output.0, Arc::new(move || Ok(output.1.clone())))
     }
 
-    pub fn to_commands(self) -> Vec<(Command, Arc<dyn Fn() -> Result<String, io::Error> + Send + Sync>)> {
+    pub fn to_commands(self) -> Vec<(Command, ResponseFn)> {
         match self {
             Self::Version => {
                 let working_response = Self::build_version_response();
@@ -878,7 +882,7 @@ impl Distrobox {
 
     /// Extracts the original binary path from a distrobox exported wrapper script.
     /// The wrapper script contains lines like: exec '/usr/bin/binary' "$@"
-    /// 
+    ///
     /// Uses the shared `extract_quoted_string` utility from desktop_file module for
     /// consistent string parsing across the codebase.
     async fn extract_binary_path_from_wrapper(&self, wrapper_path: &str) -> Option<String> {
@@ -1188,11 +1192,7 @@ impl Distrobox {
 
     /// Run an arbitrary command inside a container and return its output
     /// This is useful for package management, system queries, etc.
-    pub async fn run_in_container(
-        &self,
-        container: &str,
-        command: &str,
-    ) -> Result<String, Error> {
+    pub async fn run_in_container(&self, container: &str, command: &str) -> Result<String, Error> {
         let mut cmd = self.dbcmd();
         cmd.args(["enter", "--name", container, "--", "sh", "-c", command]);
         self.cmd_output_string(cmd).await
@@ -1234,26 +1234,43 @@ impl Distrobox {
     // ============================================================================
 
     /// List installed packages in a container
-    pub async fn list_installed_packages(&self, container: &str) -> Result<Vec<PackageInfo>, Error> {
+    pub async fn list_installed_packages(
+        &self,
+        container: &str,
+    ) -> Result<Vec<PackageInfo>, Error> {
         let pkg_manager = self.detect_package_manager(container).await?;
-        
+
         let script = match pkg_manager.as_str() {
-            "apt" => r#"dpkg-query -W -f='${Package}\t${Version}\t${Description}\n' 2>/dev/null | head -500"#,
-            "dnf" | "yum" => r#"rpm -qa --queryformat '%{NAME}\t%{VERSION}-%{RELEASE}\t%{SUMMARY}\n' 2>/dev/null | head -500"#,
-            "pacman" => r#"pacman -Q 2>/dev/null | while read name ver; do desc=$(pacman -Qi "$name" 2>/dev/null | grep "^Description" | cut -d: -f2- | xargs); echo -e "$name\t$ver\t$desc"; done | head -500"#,
-            "zypper" => r#"rpm -qa --queryformat '%{NAME}\t%{VERSION}-%{RELEASE}\t%{SUMMARY}\n' 2>/dev/null | head -500"#,
-            "apk" => r#"apk list --installed 2>/dev/null | sed 's/ \[installed\]//' | while read pkg; do name=$(echo "$pkg" | cut -d- -f1); ver=$(echo "$pkg" | cut -d- -f2-); echo -e "$name\t$ver\t"; done | head -500"#,
-            "xbps" => r#"xbps-query -l 2>/dev/null | awk '{print $2}' | while read pkg; do ver=$(xbps-query "$pkg" 2>/dev/null | grep "^pkgver:" | cut -d: -f2 | xargs); desc=$(xbps-query "$pkg" 2>/dev/null | grep "^short_desc:" | cut -d: -f2- | xargs); echo -e "$pkg\t$ver\t$desc"; done | head -500"#,
-            _ => return Err(Error::CommandFailed {
-                exit_code: Some(1),
-                command: "detect_package_manager".into(),
-                stderr: format!("Unsupported package manager: {}", pkg_manager),
-            }),
+            "apt" => {
+                r#"dpkg-query -W -f='${Package}\t${Version}\t${Description}\n' 2>/dev/null | head -500"#
+            }
+            "dnf" | "yum" => {
+                r#"rpm -qa --queryformat '%{NAME}\t%{VERSION}-%{RELEASE}\t%{SUMMARY}\n' 2>/dev/null | head -500"#
+            }
+            "pacman" => {
+                r#"pacman -Q 2>/dev/null | while read name ver; do desc=$(pacman -Qi "$name" 2>/dev/null | grep "^Description" | cut -d: -f2- | xargs); echo -e "$name\t$ver\t$desc"; done | head -500"#
+            }
+            "zypper" => {
+                r#"rpm -qa --queryformat '%{NAME}\t%{VERSION}-%{RELEASE}\t%{SUMMARY}\n' 2>/dev/null | head -500"#
+            }
+            "apk" => {
+                r#"apk list --installed 2>/dev/null | sed 's/ \[installed\]//' | while read pkg; do name=$(echo "$pkg" | cut -d- -f1); ver=$(echo "$pkg" | cut -d- -f2-); echo -e "$name\t$ver\t"; done | head -500"#
+            }
+            "xbps" => {
+                r#"xbps-query -l 2>/dev/null | awk '{print $2}' | while read pkg; do ver=$(xbps-query "$pkg" 2>/dev/null | grep "^pkgver:" | cut -d: -f2 | xargs); desc=$(xbps-query "$pkg" 2>/dev/null | grep "^short_desc:" | cut -d: -f2- | xargs); echo -e "$pkg\t$ver\t$desc"; done | head -500"#
+            }
+            _ => {
+                return Err(Error::CommandFailed {
+                    exit_code: Some(1),
+                    command: "detect_package_manager".into(),
+                    stderr: format!("Unsupported package manager: {}", pkg_manager),
+                });
+            }
         };
-        
+
         let output = self.run_in_container(container, script).await?;
         let mut packages = Vec::new();
-        
+
         for line in output.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -1268,32 +1285,56 @@ impl Distrobox {
                 });
             }
         }
-        
+
         Ok(packages)
     }
 
     /// Search for packages in a container
-    pub async fn search_packages(&self, container: &str, query: &str) -> Result<Vec<PackageInfo>, Error> {
+    pub async fn search_packages(
+        &self,
+        container: &str,
+        query: &str,
+    ) -> Result<Vec<PackageInfo>, Error> {
         let pkg_manager = self.detect_package_manager(container).await?;
         let query_escaped = query.replace("'", "'\\''");
-        
+
         let script = match pkg_manager.as_str() {
-            "apt" => format!(r#"apt-cache search '{}' 2>/dev/null | head -100 | while read name rest; do echo -e "$name\t\t$rest"; done"#, query_escaped),
-            "dnf" | "yum" => format!(r#"dnf search '{}' 2>/dev/null | grep -v "^=" | grep -v "^Last metadata" | head -100 | sed 's/\..*:/\t\t/'"#, query_escaped),
-            "pacman" => format!(r#"pacman -Ss '{}' 2>/dev/null | grep -v "^    " | head -100 | sed 's|/| |' | while read repo name ver; do echo -e "$name\t$ver\t"; done"#, query_escaped),
-            "zypper" => format!(r#"zypper search '{}' 2>/dev/null | tail -n +4 | head -100 | awk -F'|' '{{print $2"\t"$4"\t"$3}}'"#, query_escaped),
-            "apk" => format!(r#"apk search -d '{}' 2>/dev/null | head -100 | while read pkg desc; do name=$(echo "$pkg" | cut -d- -f1); ver=$(echo "$pkg" | cut -d- -f2-); echo -e "$name\t$ver\t$desc"; done"#, query_escaped),
-            "xbps" => format!(r#"xbps-query -Rs '{}' 2>/dev/null | head -100 | awk '{{print $2"\t"$1"\t"}}'"#, query_escaped),
-            _ => return Err(Error::CommandFailed {
-                exit_code: Some(1),
-                command: "search_packages".into(),
-                stderr: format!("Unsupported package manager: {}", pkg_manager),
-            }),
+            "apt" => format!(
+                r#"apt-cache search '{}' 2>/dev/null | head -100 | while read name rest; do echo -e "$name\t\t$rest"; done"#,
+                query_escaped
+            ),
+            "dnf" | "yum" => format!(
+                r#"dnf search '{}' 2>/dev/null | grep -v "^=" | grep -v "^Last metadata" | head -100 | sed 's/\..*:/\t\t/'"#,
+                query_escaped
+            ),
+            "pacman" => format!(
+                r#"pacman -Ss '{}' 2>/dev/null | grep -v "^    " | head -100 | sed 's|/| |' | while read repo name ver; do echo -e "$name\t$ver\t"; done"#,
+                query_escaped
+            ),
+            "zypper" => format!(
+                r#"zypper search '{}' 2>/dev/null | tail -n +4 | head -100 | awk -F'|' '{{print $2"\t"$4"\t"$3}}'"#,
+                query_escaped
+            ),
+            "apk" => format!(
+                r#"apk search -d '{}' 2>/dev/null | head -100 | while read pkg desc; do name=$(echo "$pkg" | cut -d- -f1); ver=$(echo "$pkg" | cut -d- -f2-); echo -e "$name\t$ver\t$desc"; done"#,
+                query_escaped
+            ),
+            "xbps" => format!(
+                r#"xbps-query -Rs '{}' 2>/dev/null | head -100 | awk '{{print $2"\t"$1"\t"}}'"#,
+                query_escaped
+            ),
+            _ => {
+                return Err(Error::CommandFailed {
+                    exit_code: Some(1),
+                    command: "search_packages".into(),
+                    stderr: format!("Unsupported package manager: {}", pkg_manager),
+                });
+            }
         };
-        
+
         let output = self.run_in_container(container, &script).await?;
         let mut packages = Vec::new();
-        
+
         for line in output.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -1308,12 +1349,16 @@ impl Distrobox {
                 });
             }
         }
-        
+
         Ok(packages)
     }
 
     /// Install a package in a container (returns Child for streaming output)
-    pub fn install_package(&self, container: &str, package: &str) -> Result<Box<dyn Child + Send>, Error> {
+    pub fn install_package(
+        &self,
+        container: &str,
+        package: &str,
+    ) -> Result<Box<dyn Child + Send>, Error> {
         let pkg_manager_script = r#"
             if command -v apt >/dev/null 2>&1; then echo "apt";
             elif command -v dnf >/dev/null 2>&1; then echo "dnf";
@@ -1324,10 +1369,11 @@ impl Distrobox {
             elif command -v xbps-install >/dev/null 2>&1; then echo "xbps";
             else echo "unknown"; fi
         "#;
-        
+
         // We can't easily await here, so we embed the detection in the install script
         let package_escaped = package.replace("'", "'\\''");
-        let install_script = format!(r#"
+        let install_script = format!(
+            r#"
             PKG_MGR=$({})
             case "$PKG_MGR" in
                 apt) sudo apt-get install -y '{}' ;;
@@ -1339,13 +1385,26 @@ impl Distrobox {
                 xbps) sudo xbps-install -y '{}' ;;
                 *) echo "Unsupported package manager: $PKG_MGR" >&2; exit 1 ;;
             esac
-        "#, pkg_manager_script.trim(), package_escaped, package_escaped, package_escaped, package_escaped, package_escaped, package_escaped, package_escaped);
-        
+        "#,
+            pkg_manager_script.trim(),
+            package_escaped,
+            package_escaped,
+            package_escaped,
+            package_escaped,
+            package_escaped,
+            package_escaped,
+            package_escaped
+        );
+
         self.run_in_container_streaming(container, &install_script)
     }
 
     /// Remove a package from a container (returns Child for streaming output)
-    pub fn remove_package(&self, container: &str, package: &str) -> Result<Box<dyn Child + Send>, Error> {
+    pub fn remove_package(
+        &self,
+        container: &str,
+        package: &str,
+    ) -> Result<Box<dyn Child + Send>, Error> {
         let pkg_manager_script = r#"
             if command -v apt >/dev/null 2>&1; then echo "apt";
             elif command -v dnf >/dev/null 2>&1; then echo "dnf";
@@ -1356,9 +1415,10 @@ impl Distrobox {
             elif command -v xbps-remove >/dev/null 2>&1; then echo "xbps";
             else echo "unknown"; fi
         "#;
-        
+
         let package_escaped = package.replace("'", "'\\''");
-        let remove_script = format!(r#"
+        let remove_script = format!(
+            r#"
             PKG_MGR=$({})
             case "$PKG_MGR" in
                 apt) sudo apt-get remove -y '{}' ;;
@@ -1370,8 +1430,17 @@ impl Distrobox {
                 xbps) sudo xbps-remove -y '{}' ;;
                 *) echo "Unsupported package manager: $PKG_MGR" >&2; exit 1 ;;
             esac
-        "#, pkg_manager_script.trim(), package_escaped, package_escaped, package_escaped, package_escaped, package_escaped, package_escaped, package_escaped);
-        
+        "#,
+            pkg_manager_script.trim(),
+            package_escaped,
+            package_escaped,
+            package_escaped,
+            package_escaped,
+            package_escaped,
+            package_escaped,
+            package_escaped
+        );
+
         self.run_in_container_streaming(container, &remove_script)
     }
 
@@ -1383,18 +1452,32 @@ impl Distrobox {
     async fn get_container_id(&self, container_name: &str) -> Result<String, Error> {
         // Use podman/docker to get the container ID
         let mut cmd = Command::new("podman");
-        cmd.args(["ps", "-a", "--filter", &format!("name=^{}$", container_name), "--format", "{{.ID}}"]);
-        
+        cmd.args([
+            "ps",
+            "-a",
+            "--filter",
+            &format!("name=^{}$", container_name),
+            "--format",
+            "{{.ID}}",
+        ]);
+
         let output = self.cmd_output_string(cmd).await?;
         let id = output.trim().to_string();
-        
+
         if id.is_empty() {
             // Try docker if podman didn't find it
             let mut cmd = Command::new("docker");
-            cmd.args(["ps", "-a", "--filter", &format!("name=^{}$", container_name), "--format", "{{.ID}}"]);
+            cmd.args([
+                "ps",
+                "-a",
+                "--filter",
+                &format!("name=^{}$", container_name),
+                "--format",
+                "{{.ID}}",
+            ]);
             let output = self.cmd_output_string(cmd).await?;
             let id = output.trim().to_string();
-            
+
             if id.is_empty() {
                 return Err(Error::CommandFailed {
                     exit_code: Some(1),
@@ -1409,13 +1492,17 @@ impl Distrobox {
     }
 
     /// Create a snapshot (image) of a container using podman/docker commit
-    pub async fn create_snapshot(&self, container_name: &str, snapshot_name: &str) -> Result<String, Error> {
+    pub async fn create_snapshot(
+        &self,
+        container_name: &str,
+        snapshot_name: &str,
+    ) -> Result<String, Error> {
         let container_id = self.get_container_id(container_name).await?;
-        
+
         // Try podman first, then docker
         let mut cmd = Command::new("podman");
         cmd.args(["commit", &container_id, snapshot_name]);
-        
+
         match self.cmd_output_string(cmd).await {
             Ok(output) => Ok(output.trim().to_string()),
             Err(_) => {
@@ -1427,29 +1514,42 @@ impl Distrobox {
     }
 
     /// List snapshots (images) created from containers
-    pub async fn list_snapshots(&self, filter_prefix: Option<&str>) -> Result<Vec<SnapshotInfo>, Error> {
+    pub async fn list_snapshots(
+        &self,
+        filter_prefix: Option<&str>,
+    ) -> Result<Vec<SnapshotInfo>, Error> {
         // List images with podman, filter by optional prefix
-        let filter = filter_prefix.map(|p| format!("reference={}*", p)).unwrap_or_default();
-        
+        let filter = filter_prefix
+            .map(|p| format!("reference={}*", p))
+            .unwrap_or_default();
+
         let mut cmd = Command::new("podman");
-        cmd.args(["images", "--format", "{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Created}}\t{{.Size}}"]);
+        cmd.args([
+            "images",
+            "--format",
+            "{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Created}}\t{{.Size}}",
+        ]);
         if !filter.is_empty() {
             cmd.args(["--filter", &filter]);
         }
-        
+
         let output = match self.cmd_output_string(cmd).await {
             Ok(out) => out,
             Err(_) => {
                 // Try docker
                 let mut cmd = Command::new("docker");
-                cmd.args(["images", "--format", "{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Created}}\t{{.Size}}"]);
+                cmd.args([
+                    "images",
+                    "--format",
+                    "{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Created}}\t{{.Size}}",
+                ]);
                 if !filter.is_empty() {
                     cmd.args(["--filter", &filter]);
                 }
                 self.cmd_output_string(cmd).await?
             }
         };
-        
+
         let mut snapshots = Vec::new();
         for line in output.lines() {
             let parts: Vec<&str> = line.split('\t').collect();
@@ -1462,7 +1562,7 @@ impl Distrobox {
                 });
             }
         }
-        
+
         Ok(snapshots)
     }
 
@@ -1470,7 +1570,7 @@ impl Distrobox {
     pub async fn delete_snapshot(&self, snapshot_name_or_id: &str) -> Result<String, Error> {
         let mut cmd = Command::new("podman");
         cmd.args(["rmi", snapshot_name_or_id]);
-        
+
         match self.cmd_output_string(cmd).await {
             Ok(output) => Ok(output),
             Err(_) => {
@@ -1482,7 +1582,11 @@ impl Distrobox {
     }
 
     /// Restore a container from a snapshot by creating a new container from the image
-    pub async fn restore_from_snapshot(&self, snapshot_name: &str, new_container_name: &str) -> Result<Box<dyn Child + Send>, Error> {
+    pub async fn restore_from_snapshot(
+        &self,
+        snapshot_name: &str,
+        new_container_name: &str,
+    ) -> Result<Box<dyn Child + Send>, Error> {
         // Create a new distrobox container from the snapshot image
         let args = CreateArgs {
             image: snapshot_name.to_string(),
@@ -1497,7 +1601,11 @@ impl Distrobox {
     // ============================================================================
 
     /// Export a container to a tar archive (returns Child for streaming)
-    pub fn export_container(&self, container_name: &str, output_path: &str) -> Result<Box<dyn Child + Send>, Error> {
+    pub fn export_container(
+        &self,
+        container_name: &str,
+        output_path: &str,
+    ) -> Result<Box<dyn Child + Send>, Error> {
         // Use podman export
         let mut cmd = Command::new("podman");
         cmd.args(["export", "-o", output_path, container_name]);
@@ -1507,7 +1615,11 @@ impl Distrobox {
     }
 
     /// Import a container from a tar archive (returns Child for streaming)
-    pub fn import_container(&self, archive_path: &str, image_name: &str) -> Result<Box<dyn Child + Send>, Error> {
+    pub fn import_container(
+        &self,
+        archive_path: &str,
+        image_name: &str,
+    ) -> Result<Box<dyn Child + Send>, Error> {
         // Use podman import
         let mut cmd = Command::new("podman");
         cmd.args(["import", archive_path, image_name]);
@@ -1524,42 +1636,46 @@ impl Distrobox {
     pub async fn get_container_stats(&self, container_name: &str) -> Result<ContainerStats, Error> {
         let mut cmd = Command::new("podman");
         cmd.args([
-            "stats", "--no-stream", "--format",
+            "stats",
+            "--no-stream",
+            "--format",
             "{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}",
-            container_name
+            container_name,
         ]);
-        
+
         let output = match self.cmd_output_string(cmd).await {
             Ok(out) => out,
             Err(_) => {
                 // Try docker
                 let mut cmd = Command::new("docker");
                 cmd.args([
-                    "stats", "--no-stream", "--format",
+                    "stats",
+                    "--no-stream",
+                    "--format",
                     "{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}",
-                    container_name
+                    container_name,
                 ]);
                 self.cmd_output_string(cmd).await?
             }
         };
-        
+
         let line = output.lines().next().unwrap_or_default();
         let parts: Vec<&str> = line.split('\t').collect();
-        
+
         if parts.len() >= 5 {
             // Parse CPU percentage (e.g., "5.25%")
             let cpu_str = parts[0].trim_end_matches('%');
             let cpu_percent = cpu_str.parse::<f64>().unwrap_or(0.0);
-            
+
             // Parse memory usage (e.g., "256MiB / 8GiB")
             let mem_parts: Vec<&str> = parts[1].split('/').collect();
             let memory_usage = mem_parts.first().unwrap_or(&"0").trim().to_string();
             let memory_limit = mem_parts.get(1).unwrap_or(&"0").trim().to_string();
-            
+
             // Parse memory percentage
             let mem_perc_str = parts[2].trim_end_matches('%');
             let memory_percent = mem_perc_str.parse::<f64>().unwrap_or(0.0);
-            
+
             Ok(ContainerStats {
                 cpu_percent,
                 memory_usage,

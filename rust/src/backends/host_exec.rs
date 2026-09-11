@@ -19,9 +19,13 @@ pub fn is_distrobox_container() -> bool {
 }
 
 pub fn has_distrobox_host_exec() -> bool {
-    ["/usr/bin/distrobox-host-exec", "/usr/local/bin/distrobox-host-exec", "/bin/distrobox-host-exec"]
-        .iter()
-        .any(|path| Path::new(path).exists())
+    [
+        "/usr/bin/distrobox-host-exec",
+        "/usr/local/bin/distrobox-host-exec",
+        "/bin/distrobox-host-exec",
+    ]
+    .iter()
+    .any(|path| Path::new(path).exists())
 }
 
 #[cfg(test)]

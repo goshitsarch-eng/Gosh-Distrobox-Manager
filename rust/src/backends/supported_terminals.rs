@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
-    sync::{LazyLock, Arc, Mutex},
+    sync::{Arc, LazyLock, Mutex},
 };
 
 use tracing::{error, info, warn};
@@ -113,7 +113,7 @@ impl TerminalRepository {
         let custom_list_path = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("distroshelf-terminals.json");
-            
+
         let mut list = SUPPORTED_TERMINALS.clone();
         if let Ok(loaded_list) = Self::load_terminals_from_json(&custom_list_path) {
             list.extend(loaded_list);
@@ -125,17 +125,17 @@ impl TerminalRepository {
         }
 
         list.sort_by(|a, b| a.name.cmp(&b.name));
-        
+
         let repo = Self {
             list: Arc::new(Mutex::new(list)),
             custom_list_path,
             command_runner: command_runner.clone(),
         };
-        
+
         // Asynchronously fetch flatpak terminals
         // Note: In a real async environment we would want to await this or spawn it.
         // For now, we'll just leave the logic here and let the caller handle updates if needed.
-        
+
         repo
     }
 
@@ -151,10 +151,10 @@ impl TerminalRepository {
         let mut found_terminals = Vec::new();
         for terminal in FLATPAK_TERMINAL_CANDIDATES.iter() {
             // Extract app_id from extra_args (e.g., ["run", "org.gnome.Console"])
-            if let Some(app_id) = terminal.extra_args.get(1) {
-                if installed_apps.contains(app_id.as_str()) {
-                    found_terminals.push(terminal.clone());
-                }
+            if let Some(app_id) = terminal.extra_args.get(1)
+                && installed_apps.contains(app_id.as_str())
+            {
+                found_terminals.push(terminal.clone());
             }
         }
 
@@ -255,8 +255,7 @@ impl TerminalRepository {
                 if let Err(e) = std::fs::write(&self.custom_list_path, json) {
                     error!(
                         "Failed to write custom terminals to {:?}: {}",
-                        &self.custom_list_path,
-                        e
+                        &self.custom_list_path, e
                     );
                 }
             }

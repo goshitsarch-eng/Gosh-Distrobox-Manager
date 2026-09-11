@@ -1,25 +1,33 @@
+// `#[frb(init)]` below expands to code gated on `cfg(frb_expand)`, a cfg name the
+// toolchain does not know about. The allow is module-scoped, not item-scoped: the
+// lint is raised from inside the `frb` attribute macro's expansion, where an
+// `#[allow]` on the annotated item does not reach it. Scoping it to this file keeps
+// the allow over exactly the FRB surface, which S7 (T14) deletes whole -- and the
+// allow with it.
+#![allow(unexpected_cfgs)]
+
 use crate::app_state::AppState;
+use crate::fakers::Child;
+use crate::frb_generated::StreamSink;
+use crate::models::Task;
 use flutter_rust_bridge::frb;
+use futures::{AsyncRead, AsyncReadExt};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
-use futures::{AsyncRead, AsyncReadExt};
-use crate::models::Task;
-use crate::fakers::Child;
-use crate::frb_generated::StreamSink;
 
 pub use crate::backends::ContainerInfo;
-pub use crate::backends::CreateArgs;
-pub use crate::backends::Volume;
-pub use crate::backends::VolumeMode;
-pub use crate::backends::Status;
-pub use crate::models::KnownDistro;
-pub use crate::models::known_distros::PackageManager;
+pub use crate::backends::ContainerStats;
 pub use crate::backends::CreateArgName;
-pub use crate::backends::desktop_file::DesktopEntry;
+pub use crate::backends::CreateArgs;
 pub use crate::backends::PackageInfo;
 pub use crate::backends::SnapshotInfo;
-pub use crate::backends::ContainerStats;
+pub use crate::backends::Status;
+pub use crate::backends::Volume;
+pub use crate::backends::VolumeMode;
+pub use crate::backends::desktop_file::DesktopEntry;
+pub use crate::models::KnownDistro;
+pub use crate::models::known_distros::PackageManager;
 
 /// Represents an application that can be exported from a container
 #[derive(Debug, Clone)]
@@ -39,7 +47,7 @@ pub struct ExportedBinary {
     pub exported_path: String,
 }
 
-static STATE: LazyLock<AppState> = LazyLock::new(|| AppState::new());
+static STATE: LazyLock<AppState> = LazyLock::new(AppState::new);
 const MAX_TASK_OUTPUT_LINES: usize = 500;
 const COMPLETED_TASK_TTL: Duration = Duration::from_secs(600);
 
@@ -75,10 +83,7 @@ fn finish_task(task_id: &str, success: bool) {
     });
 }
 
-async fn stream_reader_to_task_output(
-    mut reader: impl AsyncRead + Unpin,
-    task_id: String,
-) {
+async fn stream_reader_to_task_output(mut reader: impl AsyncRead + Unpin, task_id: String) {
     let mut buf = [0u8; 1024];
     loop {
         match reader.read(&mut buf).await {
@@ -135,7 +140,11 @@ pub fn init_app() {
 }
 
 pub async fn get_distrobox_version() -> anyhow::Result<String> {
-    STATE.distrobox.version().await.map_err(|e| anyhow::anyhow!(e))
+    STATE
+        .distrobox
+        .version()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 pub async fn is_distrobox_installed() -> bool {
@@ -161,7 +170,11 @@ pub async fn is_distrobox_installed() -> bool {
 }
 
 pub async fn get_containers() -> anyhow::Result<Vec<ContainerInfo>> {
-    let map = STATE.distrobox.list().await.map_err(|e| anyhow::anyhow!(e))?;
+    let map = STATE
+        .distrobox
+        .list()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     Ok(map.into_values().collect())
 }
 
@@ -169,10 +182,10 @@ pub async fn create_container(args: CreateArgs) -> anyhow::Result<String> {
     let name = args.name.to_string();
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    
+
     let distrobox = STATE.distrobox.clone();
     let args_clone = args.clone();
-    
+
     let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
         let task_id_for_run = task_id_clone.clone();
@@ -198,12 +211,15 @@ pub async fn create_container(args: CreateArgs) -> anyhow::Result<String> {
         finish_task(&task_id_clone, result.is_ok());
         result
     });
-    
+
     {
         let mut tasks = STATE.tasks.write().unwrap();
-        tasks.insert(task_id.clone(), Task::new(task_id.clone(), format!("Create {}", name), handle, tx));
+        tasks.insert(
+            task_id.clone(),
+            Task::new(task_id.clone(), format!("Create {}", name), handle, tx),
+        );
     }
-    
+
     Ok(task_id)
 }
 
@@ -245,27 +261,39 @@ pub fn stream_task_output(task_id: String, sink: StreamSink<String>) -> anyhow::
 
 /// Remove/delete a container
 pub async fn remove_container(name: String) -> anyhow::Result<String> {
-    STATE.distrobox.remove(&name).await.map_err(|e| anyhow::anyhow!(e))
+    STATE
+        .distrobox
+        .remove(&name)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Stop a running container
 pub async fn stop_container(name: String) -> anyhow::Result<String> {
-    STATE.distrobox.stop(&name).await.map_err(|e| anyhow::anyhow!(e))
+    STATE
+        .distrobox
+        .stop(&name)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Stop all running containers
 pub async fn stop_all_containers() -> anyhow::Result<String> {
-    STATE.distrobox.stop_all().await.map_err(|e| anyhow::anyhow!(e))
+    STATE
+        .distrobox
+        .stop_all()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Upgrade packages in a container (returns task_id for streaming output)
 pub async fn upgrade_container(name: String) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    
+
     let distrobox = STATE.distrobox.clone();
     let name_clone = name.clone();
-    
+
     let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
         let task_id_for_run = task_id_clone.clone();
@@ -291,12 +319,15 @@ pub async fn upgrade_container(name: String) -> anyhow::Result<String> {
         finish_task(&task_id_clone, result.is_ok());
         result
     });
-    
+
     {
         let mut tasks = STATE.tasks.write().unwrap();
-        tasks.insert(task_id.clone(), Task::new(task_id.clone(), format!("Upgrade {}", name), handle, tx));
+        tasks.insert(
+            task_id.clone(),
+            Task::new(task_id.clone(), format!("Upgrade {}", name), handle, tx),
+        );
     }
-    
+
     Ok(task_id)
 }
 
@@ -304,10 +335,10 @@ pub async fn upgrade_container(name: String) -> anyhow::Result<String> {
 pub async fn clone_container(source_name: String, args: CreateArgs) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    
+
     let distrobox = STATE.distrobox.clone();
     let new_name = args.name.to_string();
-    
+
     let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
         let task_id_for_run = task_id_clone.clone();
@@ -333,12 +364,20 @@ pub async fn clone_container(source_name: String, args: CreateArgs) -> anyhow::R
         finish_task(&task_id_clone, result.is_ok());
         result
     });
-    
+
     {
         let mut tasks = STATE.tasks.write().unwrap();
-        tasks.insert(task_id.clone(), Task::new(task_id.clone(), format!("Clone to {}", new_name), handle, tx));
+        tasks.insert(
+            task_id.clone(),
+            Task::new(
+                task_id.clone(),
+                format!("Clone to {}", new_name),
+                handle,
+                tx,
+            ),
+        );
     }
-    
+
     Ok(task_id)
 }
 
@@ -356,44 +395,83 @@ pub fn get_enter_command(name: String) -> Vec<String> {
 
 /// List all applications in a container
 pub async fn list_container_apps(container_name: String) -> anyhow::Result<Vec<AppInfo>> {
-    let apps = STATE.distrobox.list_apps(&container_name).await.map_err(|e| anyhow::anyhow!(e))?;
-    Ok(apps.into_iter().map(|app| AppInfo {
-        name: app.entry.name,
-        exec: app.entry.exec,
-        icon: app.entry.icon,
-        desktop_file_path: app.desktop_file_path,
-        is_exported: app.exported,
-    }).collect())
+    let apps = STATE
+        .distrobox
+        .list_apps(&container_name)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    Ok(apps
+        .into_iter()
+        .map(|app| AppInfo {
+            name: app.entry.name,
+            exec: app.entry.exec,
+            icon: app.entry.icon,
+            desktop_file_path: app.desktop_file_path,
+            is_exported: app.exported,
+        })
+        .collect())
 }
 
 /// Export an application from a container to the host
-pub async fn export_app(container_name: String, desktop_file_path: String) -> anyhow::Result<String> {
-    STATE.distrobox.export_app(&container_name, &desktop_file_path).await.map_err(|e| anyhow::anyhow!(e))
+pub async fn export_app(
+    container_name: String,
+    desktop_file_path: String,
+) -> anyhow::Result<String> {
+    STATE
+        .distrobox
+        .export_app(&container_name, &desktop_file_path)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Unexport an application from the host
-pub async fn unexport_app(container_name: String, desktop_file_path: String) -> anyhow::Result<String> {
-    STATE.distrobox.unexport_app(&container_name, &desktop_file_path).await.map_err(|e| anyhow::anyhow!(e))
+pub async fn unexport_app(
+    container_name: String,
+    desktop_file_path: String,
+) -> anyhow::Result<String> {
+    STATE
+        .distrobox
+        .unexport_app(&container_name, &desktop_file_path)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// List exported binaries from a container
 pub async fn list_exported_binaries(container_name: String) -> anyhow::Result<Vec<ExportedBinary>> {
-    let binaries = STATE.distrobox.get_exported_binaries(&container_name).await.map_err(|e| anyhow::anyhow!(e))?;
-    Ok(binaries.into_iter().map(|b| ExportedBinary {
-        name: b.name,
-        source_path: b.source_path,
-        exported_path: b.exported_path,
-    }).collect())
+    let binaries = STATE
+        .distrobox
+        .get_exported_binaries(&container_name)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    Ok(binaries
+        .into_iter()
+        .map(|b| ExportedBinary {
+            name: b.name,
+            source_path: b.source_path,
+            exported_path: b.exported_path,
+        })
+        .collect())
 }
 
 /// Export a binary from a container to the host
 pub async fn export_binary(container_name: String, binary_path: String) -> anyhow::Result<String> {
-    STATE.distrobox.export_binary(&container_name, &binary_path).await.map_err(|e| anyhow::anyhow!(e))
+    STATE
+        .distrobox
+        .export_binary(&container_name, &binary_path)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Unexport a binary from the host
-pub async fn unexport_binary(container_name: String, binary_path: String) -> anyhow::Result<String> {
-    STATE.distrobox.unexport_binary(&container_name, &binary_path).await.map_err(|e| anyhow::anyhow!(e))
+pub async fn unexport_binary(
+    container_name: String,
+    binary_path: String,
+) -> anyhow::Result<String> {
+    STATE
+        .distrobox
+        .unexport_binary(&container_name, &binary_path)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 // ============================================================================
@@ -402,7 +480,11 @@ pub async fn unexport_binary(container_name: String, binary_path: String) -> any
 
 /// List available/compatible images for container creation
 pub async fn list_available_images() -> anyhow::Result<Vec<String>> {
-    STATE.distrobox.list_images().await.map_err(|e| anyhow::anyhow!(e))
+    STATE
+        .distrobox
+        .list_images()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 // ============================================================================
@@ -452,27 +534,45 @@ pub fn cancel_task(task_id: String) -> bool {
 
 /// Detect the package manager used in a container (apt, dnf, pacman, etc.)
 pub async fn detect_package_manager(container_name: String) -> anyhow::Result<String> {
-    STATE.distrobox.detect_package_manager(&container_name).await.map_err(|e| anyhow::anyhow!(e))
+    STATE
+        .distrobox
+        .detect_package_manager(&container_name)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// List installed packages in a container
 pub async fn list_installed_packages(container_name: String) -> anyhow::Result<Vec<PackageInfo>> {
-    STATE.distrobox.list_installed_packages(&container_name).await.map_err(|e| anyhow::anyhow!(e))
+    STATE
+        .distrobox
+        .list_installed_packages(&container_name)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Search for packages in a container's repositories
-pub async fn search_packages(container_name: String, query: String) -> anyhow::Result<Vec<PackageInfo>> {
-    STATE.distrobox.search_packages(&container_name, &query).await.map_err(|e| anyhow::anyhow!(e))
+pub async fn search_packages(
+    container_name: String,
+    query: String,
+) -> anyhow::Result<Vec<PackageInfo>> {
+    STATE
+        .distrobox
+        .search_packages(&container_name, &query)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Install a package in a container (returns task_id for streaming output)
-pub async fn install_package(container_name: String, package_name: String) -> anyhow::Result<String> {
+pub async fn install_package(
+    container_name: String,
+    package_name: String,
+) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    
+
     let distrobox = STATE.distrobox.clone();
     let task_description = format!("Install {} in {}", package_name, container_name);
-    
+
     let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
         let task_id_for_run = task_id_clone.clone();
@@ -498,23 +598,29 @@ pub async fn install_package(container_name: String, package_name: String) -> an
         finish_task(&task_id_clone, result.is_ok());
         result
     });
-    
+
     {
         let mut tasks = STATE.tasks.write().unwrap();
-        tasks.insert(task_id.clone(), Task::new(task_id.clone(), task_description, handle, tx));
+        tasks.insert(
+            task_id.clone(),
+            Task::new(task_id.clone(), task_description, handle, tx),
+        );
     }
-    
+
     Ok(task_id)
 }
 
 /// Remove a package from a container (returns task_id for streaming output)
-pub async fn remove_package(container_name: String, package_name: String) -> anyhow::Result<String> {
+pub async fn remove_package(
+    container_name: String,
+    package_name: String,
+) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    
+
     let distrobox = STATE.distrobox.clone();
     let task_description = format!("Remove {} from {}", package_name, container_name);
-    
+
     let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
         let task_id_for_run = task_id_clone.clone();
@@ -540,12 +646,15 @@ pub async fn remove_package(container_name: String, package_name: String) -> any
         finish_task(&task_id_clone, result.is_ok());
         result
     });
-    
+
     {
         let mut tasks = STATE.tasks.write().unwrap();
-        tasks.insert(task_id.clone(), Task::new(task_id.clone(), task_description, handle, tx));
+        tasks.insert(
+            task_id.clone(),
+            Task::new(task_id.clone(), task_description, handle, tx),
+        );
     }
-    
+
     Ok(task_id)
 }
 
@@ -554,33 +663,54 @@ pub async fn remove_package(container_name: String, package_name: String) -> any
 // ============================================================================
 
 /// Create a snapshot of a container
-pub async fn create_snapshot(container_name: String, snapshot_name: String) -> anyhow::Result<String> {
-    STATE.distrobox.create_snapshot(&container_name, &snapshot_name).await.map_err(|e| anyhow::anyhow!(e))
+pub async fn create_snapshot(
+    container_name: String,
+    snapshot_name: String,
+) -> anyhow::Result<String> {
+    STATE
+        .distrobox
+        .create_snapshot(&container_name, &snapshot_name)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// List available snapshots (optionally filtered by prefix)
 pub async fn list_snapshots(filter_prefix: Option<String>) -> anyhow::Result<Vec<SnapshotInfo>> {
-    STATE.distrobox.list_snapshots(filter_prefix.as_deref()).await.map_err(|e| anyhow::anyhow!(e))
+    STATE
+        .distrobox
+        .list_snapshots(filter_prefix.as_deref())
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Delete a snapshot
 pub async fn delete_snapshot(snapshot_name_or_id: String) -> anyhow::Result<String> {
-    STATE.distrobox.delete_snapshot(&snapshot_name_or_id).await.map_err(|e| anyhow::anyhow!(e))
+    STATE
+        .distrobox
+        .delete_snapshot(&snapshot_name_or_id)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Restore a container from a snapshot (creates a new container)
-pub async fn restore_from_snapshot(snapshot_name: String, new_container_name: String) -> anyhow::Result<String> {
+pub async fn restore_from_snapshot(
+    snapshot_name: String,
+    new_container_name: String,
+) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    
+
     let distrobox = STATE.distrobox.clone();
     let task_description = format!("Restore {} to {}", snapshot_name, new_container_name);
-    
+
     let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
         let task_id_for_run = task_id_clone.clone();
         let result: anyhow::Result<()> = async {
-            match distrobox.restore_from_snapshot(&snapshot_name, &new_container_name).await {
+            match distrobox
+                .restore_from_snapshot(&snapshot_name, &new_container_name)
+                .await
+            {
                 Ok(child) => {
                     run_child_task(
                         task_id_for_run.clone(),
@@ -601,12 +731,15 @@ pub async fn restore_from_snapshot(snapshot_name: String, new_container_name: St
         finish_task(&task_id_clone, result.is_ok());
         result
     });
-    
+
     {
         let mut tasks = STATE.tasks.write().unwrap();
-        tasks.insert(task_id.clone(), Task::new(task_id.clone(), task_description, handle, tx));
+        tasks.insert(
+            task_id.clone(),
+            Task::new(task_id.clone(), task_description, handle, tx),
+        );
     }
-    
+
     Ok(task_id)
 }
 
@@ -615,13 +748,16 @@ pub async fn restore_from_snapshot(snapshot_name: String, new_container_name: St
 // ============================================================================
 
 /// Export a container to a tar archive (returns task_id for streaming output)
-pub async fn export_container_to_file(container_name: String, output_path: String) -> anyhow::Result<String> {
+pub async fn export_container_to_file(
+    container_name: String,
+    output_path: String,
+) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    
+
     let distrobox = STATE.distrobox.clone();
     let task_description = format!("Export {} to {}", container_name, output_path);
-    
+
     let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
         let task_id_for_run = task_id_clone.clone();
@@ -647,23 +783,29 @@ pub async fn export_container_to_file(container_name: String, output_path: Strin
         finish_task(&task_id_clone, result.is_ok());
         result
     });
-    
+
     {
         let mut tasks = STATE.tasks.write().unwrap();
-        tasks.insert(task_id.clone(), Task::new(task_id.clone(), task_description, handle, tx));
+        tasks.insert(
+            task_id.clone(),
+            Task::new(task_id.clone(), task_description, handle, tx),
+        );
     }
-    
+
     Ok(task_id)
 }
 
 /// Import a container from a tar archive (returns task_id for streaming output)
-pub async fn import_container_from_file(archive_path: String, image_name: String) -> anyhow::Result<String> {
+pub async fn import_container_from_file(
+    archive_path: String,
+    image_name: String,
+) -> anyhow::Result<String> {
     let task_id = uuid::Uuid::new_v4().to_string();
     let (tx, _rx) = broadcast::channel(100);
-    
+
     let distrobox = STATE.distrobox.clone();
     let task_description = format!("Import {} as {}", archive_path, image_name);
-    
+
     let task_id_clone = task_id.clone();
     let handle = tokio::spawn(async move {
         let task_id_for_run = task_id_clone.clone();
@@ -689,12 +831,15 @@ pub async fn import_container_from_file(archive_path: String, image_name: String
         finish_task(&task_id_clone, result.is_ok());
         result
     });
-    
+
     {
         let mut tasks = STATE.tasks.write().unwrap();
-        tasks.insert(task_id.clone(), Task::new(task_id.clone(), task_description, handle, tx));
+        tasks.insert(
+            task_id.clone(),
+            Task::new(task_id.clone(), task_description, handle, tx),
+        );
     }
-    
+
     Ok(task_id)
 }
 
@@ -704,10 +849,21 @@ pub async fn import_container_from_file(archive_path: String, image_name: String
 
 /// Get resource usage statistics for a container
 pub async fn get_container_stats(container_name: String) -> anyhow::Result<ContainerStats> {
-    STATE.distrobox.get_container_stats(&container_name).await.map_err(|e| anyhow::anyhow!(e))
+    STATE
+        .distrobox
+        .get_container_stats(&container_name)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Run an arbitrary command inside a container
-pub async fn run_command_in_container(container_name: String, command: String) -> anyhow::Result<String> {
-    STATE.distrobox.run_in_container(&container_name, &command).await.map_err(|e| anyhow::anyhow!(e))
+pub async fn run_command_in_container(
+    container_name: String,
+    command: String,
+) -> anyhow::Result<String> {
+    STATE
+        .distrobox
+        .run_in_container(&container_name, &command)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
 }

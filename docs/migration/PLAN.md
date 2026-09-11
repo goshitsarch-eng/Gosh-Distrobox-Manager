@@ -48,7 +48,7 @@ signed off on the diff; and it is committed.
 
 | # | Task | Owner | State |
 |---|---|---|---|
-| T0 | Rust CI stage + `.github` cleanup (fmt/clippy/test/`--locked`, `submodules: recursive`, `--check`) | pkg | Queued |
+| T0 | Rust CI stage + doc-side G.1/G.2 set + `AGENTS.md` header + `release.prompt.md` fix (fmt commit + lint-fix commit + CI commit; 9 clippy errors fixed or scoped-allowlisted per D22; `dbus-config` dropped per D23; G.1-6 `flatpak.yml` deferred to T14, recorded partial) | pkg | In progress |
 | T1 | S1–S4: workspace scaffold, `git mv rust core`, DTO + task-runtime moves, `clippy.toml` guard | arch | Queued |
 | T2 | Port `generate-cargo-sources.py` + sidecars; `flatpak/` skeleton + manifest (D12 feature set) | pkg | Queued |
 | T3 | S5 skeleton app + S6 `Backend`/`CoreError`/`TaskId` + read-only browser (containers/images/apps/stats) | arch | Queued |
@@ -91,17 +91,18 @@ T16→T14. T6–T11 parallelise across build agents after T5.
 | Toolchain | rustc/cargo 1.98.1 ≥ libcosmic MSRV 1.93 | packaging §0 |
 | Runtime/SDK | freedesktop 25.08 + rust-stable extension | packaging §0 |
 
-**Single libcosmic feature list** (D12 — resolves the arch §1.3 vs packaging §1.3
-contradiction; written here, referenced by both docs):
-`["winit", "tokio", "a11y", "wayland", "x11", "multi-window", "dbus-config", "about",
-"xdg-portal"]`, with `default-features = false`.
+**Single libcosmic feature list** (D12 as amended by D23 — resolves the arch §1.3 vs
+packaging §1.3 contradiction; written here, referenced by both docs):
+`["winit", "tokio", "a11y", "wayland", "x11", "multi-window", "about", "xdg-portal"]`,
+with `default-features = false`.
 Rationale per flag: `winit`/`tokio` (executor + windowing); `a11y` (P0 screen-reader
 path, REVIEW UX-16); `wayland`/`x11` (both display backends); `multi-window` (kept from
 default; page-stack stays single-window per REVIEW §B.f, back affordance mandatory);
-`dbus-config` (kept; sibling D27b dropped it, but that app *edits* COSMIC settings and
-needed no live watch — ours watches its own config keys via `watch_config`, and the
-sibling measured the failure mode as log noise, not breakage); `about`
-(`widget::about()`); `xdg-portal` (the only sandbox file-chooser route, D16).
+`about` (`widget::about()`); `xdg-portal` (the only sandbox file-chooser route, D16).
+`dbus-config` is **dropped**: D12's keep-rationale was contradicted by libcosmic's own
+code (`app/cosmic.rs:119-124` unconditional proxy + `core.rs:392-404` early-return —
+the branch depends on the proxy, not on which keys are watched), so `watch_config`
+goes through the file watcher on COSMIC and GNOME alike (D23, sibling D27b parity).
 Never: `applet`, `desktop` (unpinned `cosmic-panel-config`/`cosmic-settings-config`).
 
 **Binary name** (D15): `gosh_distrobox_manager` (underscores) everywhere Cargo/desktop
@@ -117,12 +118,14 @@ contiguous); this section records the review-mandated corrections and the status
 summary. Counts after correction: **exists 148 · dead 15 · dup 14 · missing 13 ·
 bug/fragile 3**.
 
-Corrections applied before freezing (REVIEW §G.2-4): `_getDistroIcon` is in **9** files
-(not 8); status helpers are **2 named + logic duplicated under other names in 4 files**;
-`AlertDialog` appears **23×** (not 11); PNG total is **3.6 MB across 65 files** (not
-~5 MB). Row #88 re-scoped: portal backend has no `directory()`/`file_name()` — prefilled
-export names are undeliverable (D16). Row #68/#130 start-banners gated on B5 `start`
-(D7). `block_io` ships as the free disk-adjacent column (D18).
+Corrections applied before freezing (T0, verified by grep at sign-off): `_getDistroIcon`
+is in **9 files** (not 8); status helpers are **2 named + 2 inline copies across 4 files**;
+`AlertDialog` appears **23×**, of which **10** are confirm/destructive (the old "11" was an
+off-by-one on that subset); repo PNG total is **65 files / 3.57 MiB** (recorded in the
+ux.md §6 corrections paragraph; REVIEW's "~5 MB" figure refers to no text in any doc and
+is not reproduced). Row #88 re-scoped: portal backend has no `directory()`/`file_name()` —
+prefilled export names are undeliverable (D16). Row #68/#130 start-banners gated on B5
+`start` (D7). `block_io` ships as the free disk-adjacent column (D18).
 
 The 15 `dead` rows are the deliverable: #23, #28, #29, #68, #88, #95, #102, #103, #122,
 #130, #146, #147, #167, #180, #181 — each must become live, re-scoped, or explicitly
@@ -130,9 +133,15 @@ dropped per §4, never silently ported.
 
 ## 3. Risk list
 
-Blocking pre-conditions (REVIEW §G.1) — all closed by D-decisions above: one feature
-list (D12), a11y grant (D12), file picker (D16), binary name (D15), terminals into
-cosmic-config (D11), `.github` cleanup (T0/T14), `start` sequencing (T9 + D7).
+Blocking pre-conditions (REVIEW §G.1) — closed by D-decisions above and applied to
+the docs inside T0: one feature list (D12+D23), a11y grant (D12, applied to
+packaging.md §1.4 in T0 — T2 authors the manifest from it), file picker
+(D16, `rfd`-configure language deleted from both docs in T0), binary name (D15),
+terminals into cosmic-config (D11, grant removed + `xdg-config/cosmic:ro` in T0),
+`.github` cleanup (T0: `AGENTS.md` header + `release.prompt.md` fix; T14:
+`flatpak.yml` — recorded partial, not closed), `start` sequencing (T9 + D7).
+PLAN §2's "Corrections applied" sentence becomes true at T0 close (verified by
+grep at sign-off, per D19).
 
 Residual risks and owners:
 

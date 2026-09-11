@@ -43,20 +43,32 @@ change the shape of the design.
 | `libcosmic` on Linux **unconditionally** depends on `cosmic-config` with `features = ["dbus"]` | `Cargo.toml:174` (target-gated block) | pulls `zbus` + `cosmic-settings-daemon`. Flatpak sandboxes allow the session bus; no blocker, but it is weight you already pay |
 | `libcosmic` requires `rust-version = 1.93`; workspace has 1.98.1 | `Cargo.toml`, local `cargo 1.98.1` | fine |
 
-### 0.2 ⚠ The runtime trap: `update()` does not run inside a tokio runtime
+### 0.2 ⚠ The runtime trap: which callbacks have a runtime entered
 
 `single::Executor` is a **real tokio multi-thread runtime**, but with
-`worker_threads(1)`, and iced only enters it when polling futures
-(`Executor::enter`). `update()` is called from the winit main loop, **not** from
-inside that runtime.
+`worker_threads(1)`, and iced **enters** it around the callbacks it drives
+(`Executor::enter`). Verified in the vendored submodule at the pinned rev
+(`iced/winit/src/lib.rs` @ `ffe1f1dbe3cbfd313f9b5fe8e36a4af462cae5d7`): `:2030`
+`let task = runtime.enter(|| program.update(message));`, `:2054`
+`runtime.enter(|| program.subscription())`, `:2038` the task stream's poll, `:125`
+instance creation — with `:2043` `runtime.run(stream)` driving the task. So
+**`update()` is inside that runtime**: `update()` → `Backend::create_container()` →
+`tokio::spawn(...)` does **not** panic with *"there is no reactor running"*.
 
-Today `api.rs` calls `tokio::spawn` freely because FRB invoked these functions on its
-own tokio runtime. Ported naively, `update()` → `Backend::create_container()` →
-`tokio::spawn(...)` panics with *"there is no reactor running"*.
+The trap is therefore not `update()` but the contexts where **no** runtime is entered:
+a bare `std::thread`, or the body of a `smol`-driven unit test (`smol` is this crate's
+dev-dependency; `tokio::spawn` under `smol::block_on` has no ambient runtime — the
+existing suite already drives async `Distrobox` methods that way,
+`distrobox.rs:1905`). Today `api.rs` calls `tokio::spawn` freely because FRB invoked
+these functions on its own tokio runtime; that ambient runtime exists in neither of
+those two contexts.
 
 **Rule for the whole port:** any core entry point that internally spawns must be
 called from inside a `Task`/`Subscription` future — i.e. wrapped in
-`cosmic::task::future(…)` — never invoked synchronously from `update()`.
+`cosmic::task::future(…)` — never invoked synchronously. The rule is *not* justified by
+a panic out of `update()` (there is none); it is justified because the same core entry
+points are also reached with no runtime at all, and because routing through a `Task` is
+what carries the result — and cancellation — back to the UI.
 `spawn_task` (§4) documents this in its own doc-comment, and `Backend`'s API is shaped
 so the only ergonomic way to call it is from a task.
 
@@ -213,8 +225,8 @@ pure-move commit that relocates whatever the deletion would otherwise strand.
 - Green: no source change.
 
 **S3 — Pure move: DTOs out of `api.rs`.**
-- `api.rs` defines `AppInfo` (`:26`) and `ExportedBinary` (`:36`) and re-exports 11
-  more types (`:11-22`).
+- `api.rs` defines `AppInfo` (`:26`) and `ExportedBinary` (`:36`) and re-exports 12
+  more types (`:11-22` — one `pub use` per line, counted at `e5436a0`).
 - New `core/src/models/dto.rs` holding `AppInfo`, `ExportedBinary` and the
   `pub use` set (`ContainerInfo`, `CreateArgs`, `Volume`, `VolumeMode`, `Status`,
   `CreateArgName`, `DesktopEntry`, `PackageInfo`, `SnapshotInfo`, `ContainerStats`,
@@ -235,7 +247,7 @@ pure-move commit that relocates whatever the deletion would otherwise strand.
 
 **S5 — Create the `app/` bin crate; wire a skeleton `cosmic::Application`.**
 - `app/Cargo.toml`: `name = "gosh-distrobox-manager"`,
-  `libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "a401af8b1c54a8abd393b8c5b7c8809402f83850", features = ["tokio", "wayland", "x11"] }`,
+  `libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "a401af8b1c54a8abd393b8c5b7c8809402f83850", features = [<PLAN §1 list>] }` (PLAN §1 is the single feature list — currently `winit`, `tokio`, `a11y`, `wayland`, `x11`, `multi-window`, `about`, `xdg-portal` with `default-features = false`; D12+D23. Do not copy a shorter list from an older revision of this doc.),
   `gosh-distrobox-core = { path = "../core" }`, plus `tokio`, `futures`.
 - `app/src/main.rs` + `app.rs`: the verified skeleton from §2.3 — `type Executor =
   cosmic::executor::Default`, `fn init(core, ())`, `fn view` returning a placeholder
@@ -768,9 +780,10 @@ pub struct SpawnTask<'a> {
 /// bare `async { … }` block.
 ///
 /// # Runtime
-/// Internally `tokio::spawn`s the runner, so this **must** be awaited from inside
-/// the libcosmic executor's tokio runtime — i.e. from a `Task`/`Subscription`
-/// future, never synchronously from `update()`. See docs/migration/architecture.md §0.2.
+/// Internally `tokio::spawn`s the runner, so this **must** be awaited with the
+/// executor's tokio runtime entered — i.e. from a `Task`/`Subscription` future,
+/// never from a bare thread or a `smol`-driven test body. See
+/// docs/migration/architecture.md §0.2.
 pub async fn spawn_task<F, Fut>(
     registry: &TaskRegistry,
     params: SpawnTask<'_>,
@@ -964,15 +977,24 @@ The `Config` struct uses `#[derive(cosmic_config::cosmic_config_derive::CosmicCo
 `cosmic-config/src/lib.rs:68`; the trait is `pub trait CosmicConfigEntry` at `:494`,
 and libcosmic's own `src/config/mod.rs` imports it the same way). `write_entry`
 (`cosmic-config-derive/src/lib.rs:185`) / `get_entry` (`:191`) serialize each field to
-its own top-level key. **Open question Q6**:
-whether to declare explicit key names or accept the derive's field-name defaults —
-verify the derive's key naming before implementing, since it affects on-disk
-compatibility with the legacy gschema key spellings below.
+its own top-level key. **Q6 is CLOSED** (REVIEW.md §C ARCH-Q6): the derive uses the
+Rust field name verbatim — it emits
+`ConfigSet::set(&tx, stringify!(#field_name), &self.#field_name)?` with the matching
+`ConfigGet::get::<#field_type>(config, stringify!(#field_name))`, and `stringify!`
+takes the identifier as written, so a field `custom_terminals` is the key
+`custom_terminals`, snake_case, no renaming. The §5.3 table below is therefore correct
+as written and its "verify before implementing row 7" gate is satisfied. The one
+consequence to carry into the table: the legacy gschema keys are **kebab-case** while
+cosmic-config keys are snake_case, so the import is a rename, not a copy (§5.3).
 
 ### 5.3 Keys
 
 Legacy keys from `rust/data/io.github.gosh_distrobox_manager.gschema.xml` are read by
-**no code** (§0.4) but define the intent. Mapping, plus new keys:
+**no code** (§0.4) but define the intent. Mapping, plus new keys. **The legacy import is
+a rename, not a copy**: the gschema keys are kebab-case (`selected-terminal`,
+`window-width`, `window-height`, `distrobox-executable`) while cosmic-config keys are the
+snake_case Rust field names (§5.2, Q6 closed), so every imported key must be translated
+by name:
 
 | Key | Type | Source | Notes |
 |---|---|---|---|
@@ -1013,8 +1035,11 @@ No secret or credential is stored, so no keyring/portal consideration is needed.
 
 ### 6.1 T1 — verbatim (move only)
 
-Zero `flutter_rust_bridge` imports (verified). These move in S2/S3/S4 with a `git mv`
-and at most a module-path fix:
+Zero `flutter_rust_bridge` imports. Verified:
+`grep -rn 'flutter_rust_bridge\|frb_generated' rust/src/{backends,fakers,models}` →
+**0 hits** — the whole of `backends/` including its `mod.rs` files, the whole of
+`fakers/`, the whole of `models/`. These move in S2/S3/S4 with a `git mv` and at most a
+module-path fix:
 
 `fakers/command.rs` (259), `fakers/command_runner.rs` (582, incl. the
 `NullCommandRunner` / `StubChild` test infrastructure the whole suite depends on),
@@ -1026,6 +1051,32 @@ and at most a module-path fix:
 
 `distrobox.rs` is T1 in *structure* but receives the §6.4 fixes — those are
 behaviour changes, not port work.
+
+**That list is all of `fakers/`, all of `models/known_distros.rs` and all of the
+`distrobox/` module — but it is not all of `backends/`.** Four more backend files are
+equally FRB-free and move in the same `git mv`, and they are **T2 (adapt), not T1
+(verbatim)** — §6.2 owns them, and none of them is mentioned above:
+
+| File | Lines | Why T2, not T1 |
+|---|---|---|
+| `backends/container_runtime.rs` | 54 | extended or routed-through by §6.2's runtime helper (Q11) |
+| `backends/docker.rs` | 95 | the podman→docker fallback collapses into §6.2 |
+| `backends/podman.rs` | 138 | same; `PodmanEventStream` deferred (Q12) |
+| `backends/supported_terminals.rs` | 312 | revived, and its store moves to `cosmic-config` (ARCH-Q5) |
+| **subtotal** | **599** | |
+
+This is the reconciliation of the three statements that read as contradictory: §0.4
+names only the modules that need no change at all; these 599 lines are unmodified *as
+moved* and are adapted by §6.2 afterwards; and `packaging.md §2.2`'s "zero changes to
+`backends/`" is true of the T1 set above only — read it as "the T1 set moves
+unchanged", which is what S1–S4 actually need.
+
+Counts, with every line count taken from the tree at `e5436a0` (23 `.rs` files under
+`rust/src`, 7,431 lines total): T1 verbatim **3,661**; + the **599** T2 lines above =
+4,260; + the remaining module files `backends/mod.rs` (10), `distrobox/mod.rs` (4),
+`models/mod.rs` (5) and T2's `models/task.rs` (42) + `app_state.rs` (36) + `lib.rs` (7)
+= 4,364 lines of hand-written non-FRB Rust; + T3's `api.rs` (713) +
+`frb_generated.rs` (2,354) = 7,431.
 
 **The one hard rule survives:** never `std::process::Command`; always `CommandRunner`
 — because the env dispatch (Flatpak/host-exec) is implemented as a `map_cmd`
@@ -1183,8 +1234,10 @@ cosmic::executor::multi::Executor` (2+ worker threads, no help for `update()`), 
 replacing `tokio::spawn` in core with `std::thread::spawn` + a blocking executor so
 core has no ambient-runtime requirement at all. That last option also simplifies
 `smol`-based tests (`smol` is already a dev-dependency). Is one option clearly
-correct, or should core expose `spawn_task` in both forms? Getting this wrong is a
-runtime panic that a compiler cannot catch.
+correct, or should core expose `spawn_task` in both forms? The failure mode is a runtime
+panic out of a context the compiler does not model — not `update()`, which iced already
+wraps in `runtime.enter()` (§0.2), but a bare thread or a `smol`-driven test body, which
+is why one contract for every caller is the safe form.
 
 **Q2 — Is per-task `Subscription::run_with` the right unit?** That is one iced
 subscription per *live task*, keyed by `TaskId`, plus a `OnceLock<Arc<Backend>>`
@@ -1214,12 +1267,16 @@ lines using three dependencies already present (`dirs`, `serde`, `toml`) with no
 surface and no watcher. Cost of being wrong: a config format migration, or a Flatpak
 user whose settings silently live in two places.
 
-**Q6 — `cosmic_config_derive` key naming.** Keys are stored one-per-file via
-`key_path` (`lib.rs:396`). Does the derive use the Rust field name verbatim as the key
-string? If it snake_cases or renames, the §5.3 table's key names are wrong and the
-legacy-gschema migration mapping shifts. **Must be verified against
-`cosmic-config-derive/src/lib.rs` before implementing row 7** — this document did not
-resolve it.
+**Q6 — `cosmic_config_derive` key naming. CLOSED** (REVIEW.md §C ARCH-Q6; the decision
+is unchanged — only the doc's own "unresolved" status was wrong). Keys are stored
+one-per-file via `key_path` (`lib.rs:396`). The derive uses the Rust field name verbatim
+as the key string: it emits `ConfigSet::set(&tx, stringify!(#field_name),
+&self.#field_name)?` plus the matching `ConfigGet::get::<#field_type>(config,
+stringify!(#field_name))`, and `stringify!` takes the identifier as written. So the §5.3
+key table is correct as written and the "verify before implementing row 7" gate is
+satisfied. Residual to carry: the legacy gschema keys are kebab-case
+(`selected-terminal`, `window-width`, `window-height`, `distrobox-executable`) and the
+cosmic-config keys snake_case, so the mapping is a rename, not a copy (§5.3).
 
 **Q7 — `selected_terminal` migration semantics (§5.3).** Legacy values are bare
 program names (`'gnome-terminal'`); the revived terminal model identifies a terminal by
