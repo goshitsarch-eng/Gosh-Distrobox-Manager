@@ -25,6 +25,7 @@ pub enum Message {
     Dialog(DialogMsg),
     Wizard(WizardMsg),
     Images(ImageMsg),
+    Packages(PackagesMsg),
     Apps(AppMsg),
     Stats(StatsMsg),
     Tasks(TaskMsg),
@@ -154,6 +155,9 @@ pub enum ConfirmAction {
     RemoveContainer(String),
     StopAll,
     UpgradeAll,
+    InstallPackage { container: String, package: String },
+    RemovePackage { container: String, package: String },
+    UpgradeContainer(String),
 }
 
 #[derive(Clone, Debug)]
@@ -166,6 +170,48 @@ pub enum AppMsg {
     #[allow(dead_code)]
     BinariesLoadRequested(String),
     BinariesLoaded(Result<Vec<ExportedBinary>, CoreFailure>),
+}
+
+/// Package manager (T8, rows #106–#122): picker, tabs, search, install /
+/// remove / upgrade-all confirms, manual command for `Unknown` PM.
+#[derive(Clone, Debug)]
+pub enum PackagesMsg {
+    /// Picker index selected (row #109).
+    ContainerSelected(usize),
+    /// Tab switch (row #107).
+    TabSelected(bool),
+    /// Search box keystrokes.
+    QueryChanged(String),
+    /// Search submitted (Enter) — runs only when running (#112).
+    SearchSubmitted,
+    /// Clear search → back to Installed tab.
+    SearchCleared,
+    /// Reload installed list (Retry + refresh).
+    ReloadRequested(String),
+    /// PM detected (typed B1 — never a bare string).
+    ManagerDetected(
+        String,
+        Result<gosh_distrobox_core::models::PackageManager, CoreFailure>,
+    ),
+    /// Installed list result.
+    InstalledLoaded(
+        String,
+        Result<Vec<gosh_distrobox_core::models::PackageInfo>, CoreFailure>,
+    ),
+    /// Search results.
+    SearchLoaded(Result<Vec<gosh_distrobox_core::models::PackageInfo>, CoreFailure>),
+    /// Install-from-search-box button (#115 — disabled when empty).
+    InstallFromBox,
+    /// Package row Install → confirm (#120).
+    InstallRequested(String),
+    /// Package row Remove → confirm (#120).
+    RemoveRequested(String),
+    /// Upgrade All → confirm (#116).
+    UpgradeAllRequested,
+    /// Manual command box (B1 `Unknown`).
+    /// Manual command box (B1 `Unknown`).
+    ManualCmdChanged(String),
+    ManualRunRequested,
 }
 
 /// Images page: load domain (T3) + page UI (T7, rows #97–#105).

@@ -24,6 +24,7 @@ pub enum Page {
     Dashboard,
     Containers,
     Images,
+    Packages,
     Apps,
     Stats,
 }
@@ -34,15 +35,17 @@ impl Page {
             Page::Dashboard => "Dashboard",
             Page::Containers => "Containers",
             Page::Images => "Images",
+            Page::Packages => "Packages",
             Page::Apps => "Apps",
             Page::Stats => "Stats",
         }
     }
 
-    pub const ALL: [Page; 5] = [
+    pub const ALL: [Page; 6] = [
         Page::Dashboard,
         Page::Containers,
         Page::Images,
+        Page::Packages,
         Page::Apps,
         Page::Stats,
     ];
@@ -56,12 +59,17 @@ pub fn active_page(nav_model: &nav_bar::Model) -> Page {
         .unwrap_or(Page::Containers)
 }
 
+/// Activate a tab by page (replaces positional `activate_position` — the
+/// T6/T7 numeric literals broke silently when pages were added).
+pub fn activate_page(nav_model: &mut nav_bar::Model, page: Page) {
+    if let Some(pos) = Page::ALL.iter().position(|p| *p == page) {
+        nav_model.activate_position(pos as u16);
+    }
+}
+
 /// Activate the Containers tab (row #23 "View all" — dead in Flutter).
 pub fn activate_containers(nav_model: &mut nav_bar::Model) {
-    // Position 1 = Containers in `Page::ALL` order. Positional (not id)
-    // because `on_nav_select` hands us ids but "View all" synthesises the
-    // switch without one.
-    nav_model.activate_position(1);
+    activate_page(nav_model, Page::Containers);
 }
 
 /// Shared empty state (§3.4): icon → title → body → optional action.

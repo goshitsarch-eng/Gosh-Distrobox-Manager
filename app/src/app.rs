@@ -76,6 +76,8 @@ pub struct App {
     /// Create wizard state (T7, rows #78–#96). `Some` = wizard open (pushed
     /// over Containers like details — single level, Back/Close pops).
     wizard: Option<crate::wizard::WizardState>,
+    /// Package manager state (T8, rows #106–#122).
+    packages: crate::packages::PackagesState,
     apps: Vec<AppInfo>,
     exported_binaries: Vec<ExportedBinary>,
     stats: Option<ContainerStats>,
@@ -315,6 +317,7 @@ impl cosmic::Application for App {
             selected_container: None,
             images: Vec::new(),
             images_error: None,
+            packages: crate::packages::PackagesState::default(),
             images_search: String::new(),
             images_custom: String::new(),
             image_details: None,
@@ -369,6 +372,21 @@ impl cosmic::Application for App {
                 }
                 Self::none()
             }
+            Page::Packages => {
+                // First visit: pick a container (first running, else first)
+                // and kick detect + list. Later visits keep state (row #7).
+                if self.packages.container.is_none()
+                    && let Some(name) = self
+                        .containers
+                        .iter()
+                        .find(|c| crate::icons::is_running(&c.status))
+                        .or_else(|| self.containers.first())
+                        .map(|c| c.name.clone())
+                {
+                    return self.select_package_container(name);
+                }
+                Self::none()
+            }
             Page::Apps | Page::Stats => Self::none(),
         }
     }
@@ -410,6 +428,19 @@ impl cosmic::Application for App {
                                     containers.iter().find(|c| c.name == viewing.name).cloned()
                             {
                                 self.details_for = Some(fresh);
+                            }
+                            // Same B2 class for the packages picker: a deleted
+                            // container leaves it stuck on "Not Running".
+                            // Clear everything (the Packages first-visit arm
+                            // re-picks on next visit).
+                            if let Some(selected) = self.packages.container.clone()
+                                && !containers.iter().any(|c| c.name == selected)
+                            {
+                                self.packages.container = None;
+                                self.packages.installed.clear();
+                                self.packages.results.clear();
+                                self.packages.manager = None;
+                                self.packages.error = None;
                             }
                             self.containers = containers;
                             self.error = None;
@@ -539,7 +570,7 @@ impl cosmic::Application for App {
                 }
                 ContainerMsg::ViewAllRequested => {
                     // Row #23 (dead in Flutter): switch to Containers tab.
-                    views::activate_containers(&mut self.nav_model);
+                    views::activate_page(&mut self.nav_model, Page::Containers);
                 }
                 ContainerMsg::NewContainerRequested => {
                     // Rows #28/#44: open a blank wizard (pushed over
@@ -551,7 +582,7 @@ impl cosmic::Application for App {
                     // never fire).
                     self.details_for = None;
                     if self.active_page() != Page::Containers {
-                        views::activate_containers(&mut self.nav_model);
+                        views::activate_page(&mut self.nav_model, Page::Containers);
                     }
                     self.wizard = Some(crate::wizard::WizardState::default());
                 }
@@ -582,7 +613,7 @@ impl cosmic::Application for App {
                     // page renders under Containers only, so switch there
                     // first — otherwise the tap is a silent no-op AND leaves
                     // a stale `details_for` for the next Containers visit.
-                    views::activate_containers(&mut self.nav_model);
+                    views::activate_page(&mut self.nav_model, Page::Containers);
                     self.details_for = Some(container.clone());
                     // Selecting also loads apps/binaries/stats mirrors —
                     // reuse the T3 selection fan-out verbatim.
@@ -662,7 +693,7 @@ impl cosmic::Application for App {
                     // Apps tab so the existing Apps view shows this
                     // container's apps. Position 3 = Apps in Page::ALL.
                     if let Some(c) = self.containers.iter().find(|c| c.name == name).cloned() {
-                        self.nav_model.activate_position(3);
+                        views::activate_page(&mut self.nav_model, Page::Apps);
                         return self.update(Message::Containers(ContainerMsg::Selected(Some(c))));
                     }
                 }
@@ -747,6 +778,47 @@ impl cosmic::Application for App {
                                 }
                                 return Task::batch(spawns);
                             }
+                            ConfirmAction::InstallPackage { container, package } => {
+                                // Row #122: spawn failure reports via
+                                // `TaskMsg::Started Err` → error banner (the
+                                // Started arm toasts too — never silent,
+                                // unlike Flutter null).
+                                if is_blocked(self.backend.env()) {
+                                    self.error = self.backend.env().message.clone();
+                                    return Self::none();
+                                }
+                                let backend = Arc::clone(&self.backend);
+                                let label = format!("Install {package} in {container}");
+                                return Self::run(async move {
+                                    let result =
+                                        backend.install_package(&container, &package).await;
+                                    Message::Tasks(TaskMsg::Started { label, result })
+                                });
+                            }
+                            ConfirmAction::RemovePackage { container, package } => {
+                                if is_blocked(self.backend.env()) {
+                                    self.error = self.backend.env().message.clone();
+                                    return Self::none();
+                                }
+                                let backend = Arc::clone(&self.backend);
+                                let label = format!("Remove {package} from {container}");
+                                return Self::run(async move {
+                                    let result = backend.remove_package(&container, &package).await;
+                                    Message::Tasks(TaskMsg::Started { label, result })
+                                });
+                            }
+                            ConfirmAction::UpgradeContainer(container) => {
+                                if is_blocked(self.backend.env()) {
+                                    self.error = self.backend.env().message.clone();
+                                    return Self::none();
+                                }
+                                let backend = Arc::clone(&self.backend);
+                                let label = format!("Upgrade {container}");
+                                return Self::run(async move {
+                                    let result = backend.upgrade_container(&container).await;
+                                    Message::Tasks(TaskMsg::Started { label, result })
+                                });
+                            }
                         },
                         ActiveDialog::Clone { .. } => {
                             // Clone uses its own primary button
@@ -757,6 +829,7 @@ impl cosmic::Application for App {
                     }
                 }
             },
+            Message::Packages(msg) => return self.update_packages(msg),
             Message::Apps(msg) => match msg {
                 AppMsg::LoadRequested(container) => {
                     self.loading.apps = true;
@@ -824,7 +897,7 @@ impl cosmic::Application for App {
                     }
                     self.wizard = Some(crate::wizard::WizardState::with_preselected(url));
                     self.details_for = None;
-                    self.nav_model.activate_position(1);
+                    views::activate_containers(&mut self.nav_model);
                 }
                 ImageMsg::DetailsRequested(image) => {
                     self.image_details = Some(image);
@@ -838,7 +911,7 @@ impl cosmic::Application for App {
                     self.image_details = None;
                     self.wizard = Some(crate::wizard::WizardState::with_preselected(image));
                     self.details_for = None;
-                    self.nav_model.activate_position(1);
+                    views::activate_containers(&mut self.nav_model);
                 }
             },
             Message::Wizard(msg) => return self.update_wizard(msg),
@@ -863,9 +936,17 @@ impl cosmic::Application for App {
             Message::Tasks(msg) => match msg {
                 TaskMsg::Started { label, result } => match result {
                     Err(e) => {
+                        // Row #122 (ux.md:504 "Route to toaster"): spawn
+                        // failures toast AND banner — Flutter showed nothing.
+                        let toast = self.toast(format!(
+                            "Could not start {}: {}",
+                            label,
+                            Self::error_text(&e)
+                        ));
                         // O2 second leg: a spawn failure must not strand the
                         // wizard on Progress (no task exists to drive it).
-                        // Step back to Config with the error inline.
+                        // Step back to Config with the error inline (the
+                        // toast above already fired — no silent failure).
                         if let Some(w) = self.wizard.as_mut()
                             && w.step == crate::wizard::WizardStep::Progress
                             && label.starts_with("Create ")
@@ -879,6 +960,7 @@ impl cosmic::Application for App {
                         } else {
                             self.error = Some(Self::error_text(&e));
                         }
+                        return toast;
                     }
                     Ok(id) => {
                         // Wire the wizard progress step (row #93): a create
@@ -1077,6 +1159,7 @@ impl cosmic::Application for App {
                 }
             }
             Page::Images => self.view_images(),
+            Page::Packages => self.view_packages(),
             Page::Apps => self.view_apps(),
             Page::Stats => self.view_stats(),
         };
@@ -1183,6 +1266,301 @@ impl cosmic::Application for App {
 }
 
 impl App {
+    /// Select a package container (T8): set picker + manager (Detecting…
+    /// until probed) and kick detect + installed-list loads. Returns the
+    /// batch of follow-up tasks.
+    fn select_package_container(&mut self, name: String) -> Task<Message> {
+        self.packages.container = Some(name.clone());
+        self.packages.manager = None;
+        self.packages.error = None;
+        self.packages.search_tab = false;
+        self.packages.searching = false;
+        self.packages.loading = true;
+        let b1 = Arc::clone(&self.backend);
+        let b2 = Arc::clone(&self.backend);
+        let n1 = name.clone();
+        let n2 = name.clone();
+        Task::batch(vec![
+            Self::run(async move {
+                let result = b1.detect_package_manager(&n1).await;
+                Message::Packages(crate::message::PackagesMsg::ManagerDetected(n1, result))
+            }),
+            Self::run(async move {
+                let result = b2.installed_packages(&n2).await;
+                Message::Packages(crate::message::PackagesMsg::InstalledLoaded(n2, result))
+            }),
+        ])
+    }
+
+    /// Package page view (T8, rows #106–#122).
+    fn view_packages(&self) -> cosmic::Element<'_, Message> {
+        use crate::packages as pkg;
+        // Row #108: no-containers gate (Flutter `_buildNoContainersView`).
+        // Without it an empty tree renders "Container Not Running" for a
+        // container that does not exist — actively misleading.
+        if self.containers.is_empty() {
+            return crate::views::empty_state(
+                "document-open-symbolic",
+                "No containers found.".to_string(),
+                "Create a container before managing packages.".to_string(),
+                None,
+            );
+        }
+        let st = &self.packages;
+        let running = st
+            .container
+            .as_deref()
+            .and_then(|n| self.containers.iter().find(|c| c.name == n))
+            .map(|c| crate::icons::is_running(&c.status))
+            .unwrap_or(false);
+        let mut col = widget::Column::new().spacing(12);
+        col = col.push(pkg::container_picker(
+            &self.containers,
+            st.container.as_deref(),
+        ));
+        if !running && st.container.is_some() {
+            col = col.push(pkg::not_running_banner());
+        }
+        // Search bar (#112): Enter-triggered, disabled when stopped.
+        col = col.push({
+            let search: cosmic::Element<'_, Message> =
+                widget::text_input::search_input("Search for packages...", st.query.clone())
+                    .on_input(|s| Message::Packages(crate::message::PackagesMsg::QueryChanged(s)))
+                    .on_submit(|_| Message::Packages(crate::message::PackagesMsg::SearchSubmitted))
+                    .into();
+            search
+        });
+        // PM badge (#114) + clear-search (#113).
+        col = col.push({
+            let row: cosmic::Element<'_, Message> = widget::Row::new()
+                .push(widget::text::caption(format!(
+                    "Package manager: {}",
+                    pkg::PackagesState::badge(st.manager)
+                )))
+                .push(
+                    widget::button::text("Clear search").on_press(Message::Packages(
+                        crate::message::PackagesMsg::SearchCleared,
+                    )),
+                )
+                .spacing(8)
+                .into();
+            row
+        });
+        // Quick actions: Install-from-box (#115, disabled when empty) +
+        // Upgrade All + confirm (#116).
+        col = col.push({
+            let install_empty = st.query.trim().is_empty();
+            let row: cosmic::Element<'_, Message> = widget::Row::new()
+                .push(widget::button::standard("Install").on_press_maybe(
+                    if running && !install_empty {
+                        Some(Message::Packages(
+                            crate::message::PackagesMsg::InstallFromBox,
+                        ))
+                    } else {
+                        None
+                    },
+                ))
+                .push(
+                    widget::button::standard("Upgrade All").on_press_maybe(if running {
+                        Some(Message::Packages(
+                            crate::message::PackagesMsg::UpgradeAllRequested,
+                        ))
+                    } else {
+                        None
+                    }),
+                )
+                .spacing(12)
+                .into();
+            row
+        });
+        // Manual command for Unknown PM (B1).
+        if st.manager == Some(gosh_distrobox_core::models::PackageManager::Unknown) && running {
+            col = col.push(pkg::manual_cmd_box(&st.manual_cmd));
+        }
+        // Tabs (#107) + lists (#117–#118).
+        col = col.push(pkg::tab_bar(st.search_tab));
+        if st.search_tab {
+            col = col.push(pkg::search_list(st.searching, st.loading, &st.results));
+        } else {
+            col = col.push(pkg::installed_list(
+                running,
+                st.loading,
+                st.error.as_deref(),
+                &st.installed,
+                st.container.as_deref().unwrap_or(""),
+            ));
+        }
+        widget::scrollable(col).into()
+    }
+
+    /// Package message router (T8, rows #106–#122).
+    fn update_packages(&mut self, msg: crate::message::PackagesMsg) -> Task<Message> {
+        use crate::message::PackagesMsg;
+        match msg {
+            PackagesMsg::ContainerSelected(i) => {
+                if let Some(c) = self.containers.get(i).map(|c| c.name.clone()) {
+                    return self.select_package_container(c);
+                }
+                Self::none()
+            }
+            PackagesMsg::TabSelected(search) => {
+                self.packages.search_tab = search;
+                Self::none()
+            }
+            PackagesMsg::QueryChanged(q) => {
+                self.packages.query = q;
+                Self::none()
+            }
+            PackagesMsg::SearchSubmitted => {
+                let (container, query) = match self.packages.container.clone() {
+                    Some(c) if !self.packages.query.trim().is_empty() => {
+                        (c, self.packages.query.trim().to_string())
+                    }
+                    _ => return Self::none(),
+                };
+                if !self.packages_running(&container) {
+                    return Self::none();
+                }
+                self.packages.searching = true;
+                self.packages.search_tab = true;
+                self.packages.loading = true;
+                let backend = Arc::clone(&self.backend);
+                Self::run(async move {
+                    let result = backend.search_packages(&container, &query).await;
+                    Message::Packages(PackagesMsg::SearchLoaded(result))
+                })
+            }
+            PackagesMsg::SearchCleared => {
+                self.packages.query.clear();
+                self.packages.results.clear();
+                self.packages.searching = false;
+                self.packages.search_tab = false;
+                Self::none()
+            }
+            PackagesMsg::ReloadRequested(name) => self.select_package_container(name),
+            PackagesMsg::ManagerDetected(name, result) => {
+                // Stale-response guard: only the current container sticks.
+                if self.packages.container.as_deref() != Some(&name) {
+                    return Self::none();
+                }
+                match result {
+                    Ok(pm) => self.packages.manager = Some(pm),
+                    Err(e) => {
+                        // B1 invariant: `Unknown` ONLY when the script
+                        // reports "unknown" (→ Ok(Unknown)), INSTEAD of an
+                        // error — never both. A failed probe leaves manager
+                        // None ("Detecting…") + the error banner.
+                        self.packages.manager = None;
+                        self.packages.error = Some(Self::error_text(&e));
+                    }
+                }
+                Self::none()
+            }
+            PackagesMsg::InstalledLoaded(name, result) => {
+                if self.packages.container.as_deref() != Some(&name) {
+                    return Self::none();
+                }
+                self.packages.loading = false;
+                match result {
+                    Ok(list) => {
+                        self.packages.installed = list;
+                        self.packages.error = None;
+                    }
+                    Err(e) => {
+                        self.packages.error = Some(Self::error_text(&e));
+                    }
+                }
+                Self::none()
+            }
+            PackagesMsg::SearchLoaded(result) => {
+                self.packages.loading = false;
+                match result {
+                    Ok(list) => {
+                        self.packages.results = list;
+                        Self::none()
+                    }
+                    Err(e) => self.toast(format!("Search failed: {}", Self::error_text(&e))),
+                }
+            }
+            PackagesMsg::InstallFromBox => {
+                // Row #115: disabled when empty (the button enforces it) —
+                // re-check here so a raced empty never spawns.
+                match self.packages.container.clone() {
+                    Some(c) if !self.packages.query.trim().is_empty() => {
+                        let package = self.packages.query.trim().to_string();
+                        self.confirm_install(c, package)
+                    }
+                    _ => Self::none(),
+                }
+            }
+            PackagesMsg::InstallRequested(name) => {
+                if let Some(container) = self.packages.container.clone() {
+                    self.confirm_install(container, name)
+                } else {
+                    Self::none()
+                }
+            }
+            PackagesMsg::RemoveRequested(name) => {
+                if let Some(container) = self.packages.container.clone() {
+                    self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+                        title: "Remove Package".to_string(),
+                        body: format!(
+                            "Remove \"{name}\" from \"{container}\"?\n\nThis may also remove dependent packages."
+                        ),
+                        confirm_label: "Remove".to_string(),
+                        destructive: true,
+                        action: ConfirmAction::RemovePackage {
+                            container,
+                            package: name,
+                        },
+                    }));
+                }
+                Self::none()
+            }
+            PackagesMsg::UpgradeAllRequested => {
+                if let Some(container) = self.packages.container.clone() {
+                    self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+                        title: "Upgrade All Packages".to_string(),
+                        body: format!("Upgrade all packages in \"{container}\"?"),
+                        confirm_label: "Upgrade All".to_string(),
+                        destructive: false,
+                        action: ConfirmAction::UpgradeContainer(container),
+                    }));
+                }
+                Self::none()
+            }
+            PackagesMsg::ManualCmdChanged(c) => {
+                self.packages.manual_cmd = c;
+                Self::none()
+            }
+            PackagesMsg::ManualRunRequested => {
+                // B1 Unknown: T9 owns real execution — record the intent.
+                self.toast("Manual commands run in T9 — container must be running.".to_string())
+            }
+        }
+    }
+
+    /// Install confirm helper (row #120): shared spec, non-destructive.
+    fn confirm_install(&mut self, container: String, package: String) -> Task<Message> {
+        self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+            title: "Install Package".to_string(),
+            body: format!("Install \"{package}\" in \"{container}\"?"),
+            confirm_label: "Install".to_string(),
+            destructive: false,
+            action: ConfirmAction::InstallPackage { container, package },
+        }));
+        Self::none()
+    }
+
+    /// Whether this container is currently running (search/actions gate).
+    fn packages_running(&self, container: &str) -> bool {
+        self.containers
+            .iter()
+            .find(|c| c.name == container)
+            .map(|c| crate::icons::is_running(&c.status))
+            .unwrap_or(false)
+    }
+
     /// Wizard message router (T7, rows #78–#96). Every arm mutates
     /// `self.wizard` (or spawns via `Backend::create_container`); `None`
     /// wizard ignores everything (no dead dispatch).

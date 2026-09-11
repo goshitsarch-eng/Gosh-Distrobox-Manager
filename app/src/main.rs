@@ -7,6 +7,7 @@ mod app;
 mod icons;
 mod images_view;
 mod message;
+mod packages;
 mod views;
 mod wizard;
 mod wizard_view;

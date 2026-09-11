@@ -416,12 +416,15 @@ pub fn cancel_task(task_id: String) -> bool {
 // ============================================================================
 
 /// Detect the package manager used in a container (apt, dnf, pacman, etc.)
+/// FRB shim (T14 deletes it): the typed `PackageManager` is flattened to
+/// its lowercase word here to preserve the Dart-observed strings.
 pub async fn detect_package_manager(container_name: String) -> anyhow::Result<String> {
-    STATE
+    let pm = STATE
         .distrobox
         .detect_package_manager(&container_name)
         .await
-        .map_err(|e| anyhow::anyhow!(e))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    Ok(format!("{pm:?}").to_lowercase())
 }
 
 /// List installed packages in a container

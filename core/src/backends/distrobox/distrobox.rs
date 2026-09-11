@@ -1210,11 +1210,14 @@ impl Distrobox {
         self.cmd_spawn(cmd)
     }
 
-    /// Detect the package manager in use inside a container
-    /// Returns the package manager command (apt, dnf, pacman, etc.)
-    pub async fn detect_package_manager(&self, container: &str) -> Result<String, Error> {
-        // Try to detect package manager by checking which ones exist
-        let detect_script = r#"
+    /// Detect the package manager in use inside a container (B1: typed).
+    /// ONE detection script (the three divergent copies in
+    /// `detect/install/remove` are collapsed here). `yum` reports through
+    /// the shared script and maps to `Dnf` in `from_detected`.
+    /// The single detection script (B1). Reports one word; `yum` and `dnf`
+    /// both reported (callers map both to `Dnf`).
+    fn detect_script() -> &'static str {
+        r#"
             if command -v apt >/dev/null 2>&1; then echo "apt";
             elif command -v dnf >/dev/null 2>&1; then echo "dnf";
             elif command -v yum >/dev/null 2>&1; then echo "yum";
@@ -1224,9 +1227,18 @@ impl Distrobox {
             elif command -v xbps-install >/dev/null 2>&1; then echo "xbps";
             elif command -v emerge >/dev/null 2>&1; then echo "emerge";
             else echo "unknown"; fi
-        "#;
-        let output = self.run_in_container(container, detect_script).await?;
-        Ok(output.trim().to_string())
+        "#
+    }
+
+    pub async fn detect_package_manager(
+        &self,
+        container: &str,
+    ) -> Result<crate::models::PackageManager, Error> {
+        // Single shared script (B1) — no local copy.
+        let output = self
+            .run_in_container(container, Self::detect_script())
+            .await?;
+        Ok(crate::models::PackageManager::from_detected(output.trim()))
     }
 
     // ============================================================================
@@ -1238,32 +1250,36 @@ impl Distrobox {
         &self,
         container: &str,
     ) -> Result<Vec<PackageInfo>, Error> {
+        use crate::models::PackageManager;
         let pkg_manager = self.detect_package_manager(container).await?;
 
-        let script = match pkg_manager.as_str() {
-            "apt" => {
+        let script = match pkg_manager {
+            PackageManager::Apt => {
                 r#"dpkg-query -W -f='${Package}\t${Version}\t${Description}\n' 2>/dev/null | head -500"#
             }
-            "dnf" | "yum" => {
+            PackageManager::Dnf => {
                 r#"rpm -qa --queryformat '%{NAME}\t%{VERSION}-%{RELEASE}\t%{SUMMARY}\n' 2>/dev/null | head -500"#
             }
-            "pacman" => {
+            PackageManager::Pacman => {
                 r#"pacman -Q 2>/dev/null | while read name ver; do desc=$(pacman -Qi "$name" 2>/dev/null | grep "^Description" | cut -d: -f2- | xargs); echo -e "$name\t$ver\t$desc"; done | head -500"#
             }
-            "zypper" => {
+            PackageManager::Zypper => {
                 r#"rpm -qa --queryformat '%{NAME}\t%{VERSION}-%{RELEASE}\t%{SUMMARY}\n' 2>/dev/null | head -500"#
             }
-            "apk" => {
+            PackageManager::Apk => {
                 r#"apk list --installed 2>/dev/null | sed 's/ \[installed\]//' | while read pkg; do name=$(echo "$pkg" | cut -d- -f1); ver=$(echo "$pkg" | cut -d- -f2-); echo -e "$name\t$ver\t"; done | head -500"#
             }
-            "xbps" => {
+            PackageManager::Xbps => {
                 r#"xbps-query -l 2>/dev/null | awk '{print $2}' | while read pkg; do ver=$(xbps-query "$pkg" 2>/dev/null | grep "^pkgver:" | cut -d: -f2 | xargs); desc=$(xbps-query "$pkg" 2>/dev/null | grep "^short_desc:" | cut -d: -f2- | xargs); echo -e "$pkg\t$ver\t$desc"; done | head -500"#
             }
-            _ => {
+            PackageManager::Emerge => {
+                r#"qlist -Iv 2>/dev/null | head -500 | while read atom; do echo -e "$atom\t\t"; done"#
+            }
+            PackageManager::Unknown => {
                 return Err(Error::CommandFailed {
                     exit_code: Some(1),
                     command: "detect_package_manager".into(),
-                    stderr: format!("Unsupported package manager: {}", pkg_manager),
+                    stderr: "No supported package manager found in container".to_string(),
                 });
             }
         };
@@ -1295,39 +1311,44 @@ impl Distrobox {
         container: &str,
         query: &str,
     ) -> Result<Vec<PackageInfo>, Error> {
+        use crate::models::PackageManager;
         let pkg_manager = self.detect_package_manager(container).await?;
         let query_escaped = query.replace("'", "'\\''");
 
-        let script = match pkg_manager.as_str() {
-            "apt" => format!(
+        let script = match pkg_manager {
+            PackageManager::Apt => format!(
                 r#"apt-cache search '{}' 2>/dev/null | head -100 | while read name rest; do echo -e "$name\t\t$rest"; done"#,
                 query_escaped
             ),
-            "dnf" | "yum" => format!(
+            PackageManager::Dnf => format!(
                 r#"dnf search '{}' 2>/dev/null | grep -v "^=" | grep -v "^Last metadata" | head -100 | sed 's/\..*:/\t\t/'"#,
                 query_escaped
             ),
-            "pacman" => format!(
+            PackageManager::Pacman => format!(
                 r#"pacman -Ss '{}' 2>/dev/null | grep -v "^    " | head -100 | sed 's|/| |' | while read repo name ver; do echo -e "$name\t$ver\t"; done"#,
                 query_escaped
             ),
-            "zypper" => format!(
+            PackageManager::Zypper => format!(
                 r#"zypper search '{}' 2>/dev/null | tail -n +4 | head -100 | awk -F'|' '{{print $2"\t"$4"\t"$3}}'"#,
                 query_escaped
             ),
-            "apk" => format!(
+            PackageManager::Apk => format!(
                 r#"apk search -d '{}' 2>/dev/null | head -100 | while read pkg desc; do name=$(echo "$pkg" | cut -d- -f1); ver=$(echo "$pkg" | cut -d- -f2-); echo -e "$name\t$ver\t$desc"; done"#,
                 query_escaped
             ),
-            "xbps" => format!(
+            PackageManager::Xbps => format!(
                 r#"xbps-query -Rs '{}' 2>/dev/null | head -100 | awk '{{print $2"\t"$1"\t"}}'"#,
                 query_escaped
             ),
-            _ => {
+            PackageManager::Emerge => format!(
+                r#"emerge --search '{}' 2>/dev/null | grep "^\*" | head -100 | sed 's/^\* *//;s/ *\[.*//'"#,
+                query_escaped
+            ),
+            PackageManager::Unknown => {
                 return Err(Error::CommandFailed {
                     exit_code: Some(1),
                     command: "search_packages".into(),
-                    stderr: format!("Unsupported package manager: {}", pkg_manager),
+                    stderr: "No supported package manager found in container".to_string(),
                 });
             }
         };
@@ -1353,40 +1374,33 @@ impl Distrobox {
         Ok(packages)
     }
 
-    /// Install a package in a container (returns Child for streaming output)
+    /// Install a package in a container (returns Child for streaming output).
+    /// B1: detection runs through the shared script; the verb comes from the
+    /// single `PackageManager` table (`install_verb` — emerge `--ask=n`).
     pub fn install_package(
         &self,
         container: &str,
         package: &str,
     ) -> Result<Box<dyn Child + Send>, Error> {
-        let pkg_manager_script = r#"
-            if command -v apt >/dev/null 2>&1; then echo "apt";
-            elif command -v dnf >/dev/null 2>&1; then echo "dnf";
-            elif command -v yum >/dev/null 2>&1; then echo "yum";
-            elif command -v pacman >/dev/null 2>&1; then echo "pacman";
-            elif command -v zypper >/dev/null 2>&1; then echo "zypper";
-            elif command -v apk >/dev/null 2>&1; then echo "apk";
-            elif command -v xbps-install >/dev/null 2>&1; then echo "xbps";
-            else echo "unknown"; fi
-        "#;
-
-        // We can't easily await here, so we embed the detection in the install script
+        // Sync context (returns Child, not async): detect inside the script
+        // via the shared words, then dispatch on the single table. The words
+        // match `detect_script` one-to-one so behaviour cannot diverge.
         let package_escaped = package.replace("'", "'\\''");
         let install_script = format!(
             r#"
             PKG_MGR=$({})
             case "$PKG_MGR" in
                 apt) sudo apt-get install -y '{}' ;;
-                dnf) sudo dnf install -y '{}' ;;
-                yum) sudo yum install -y '{}' ;;
+                dnf|yum) sudo dnf install -y '{}' ;;
                 pacman) sudo pacman -S --noconfirm '{}' ;;
                 zypper) sudo zypper install -y '{}' ;;
                 apk) sudo apk add '{}' ;;
                 xbps) sudo xbps-install -y '{}' ;;
-                *) echo "Unsupported package manager: $PKG_MGR" >&2; exit 1 ;;
+                emerge) sudo emerge --ask=n '{}' ;;
+                *) echo "No supported package manager found in container" >&2; exit 1 ;;
             esac
         "#,
-            pkg_manager_script.trim(),
+            Self::detect_script().trim(),
             package_escaped,
             package_escaped,
             package_escaped,
@@ -1399,39 +1413,29 @@ impl Distrobox {
         self.run_in_container_streaming(container, &install_script)
     }
 
-    /// Remove a package from a container (returns Child for streaming output)
+    /// Remove a package from a container (returns Child for streaming output).
+    /// B1: same shared script + single `remove_verb` table as install.
     pub fn remove_package(
         &self,
         container: &str,
         package: &str,
     ) -> Result<Box<dyn Child + Send>, Error> {
-        let pkg_manager_script = r#"
-            if command -v apt >/dev/null 2>&1; then echo "apt";
-            elif command -v dnf >/dev/null 2>&1; then echo "dnf";
-            elif command -v yum >/dev/null 2>&1; then echo "yum";
-            elif command -v pacman >/dev/null 2>&1; then echo "pacman";
-            elif command -v zypper >/dev/null 2>&1; then echo "zypper";
-            elif command -v apk >/dev/null 2>&1; then echo "apk";
-            elif command -v xbps-remove >/dev/null 2>&1; then echo "xbps";
-            else echo "unknown"; fi
-        "#;
-
         let package_escaped = package.replace("'", "'\\''");
         let remove_script = format!(
             r#"
             PKG_MGR=$({})
             case "$PKG_MGR" in
                 apt) sudo apt-get remove -y '{}' ;;
-                dnf) sudo dnf remove -y '{}' ;;
-                yum) sudo yum remove -y '{}' ;;
+                dnf|yum) sudo dnf remove -y '{}' ;;
                 pacman) sudo pacman -R --noconfirm '{}' ;;
                 zypper) sudo zypper remove -y '{}' ;;
                 apk) sudo apk del '{}' ;;
                 xbps) sudo xbps-remove -y '{}' ;;
-                *) echo "Unsupported package manager: $PKG_MGR" >&2; exit 1 ;;
+                emerge) sudo emerge --unmerge '{}' ;;
+                *) echo "No supported package manager found in container" >&2; exit 1 ;;
             esac
         "#,
-            pkg_manager_script.trim(),
+            Self::detect_script().trim(),
             package_escaped,
             package_escaped,
             package_escaped,

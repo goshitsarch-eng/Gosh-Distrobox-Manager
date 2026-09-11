@@ -287,6 +287,49 @@ impl Backend {
         .await
     }
 
+    /// Today's `detect_package_manager`, typed (B1 — not `String`).
+    pub async fn detect_package_manager(
+        &self,
+        container: &str,
+    ) -> Result<crate::models::PackageManager, CoreFailure> {
+        self.guard_ok()?;
+        self.inner
+            .distrobox
+            .detect_package_manager(container)
+            .await
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
+    /// Today's `list_installed_packages`, typed.
+    pub async fn installed_packages(
+        &self,
+        container: &str,
+    ) -> Result<Vec<crate::models::PackageInfo>, CoreFailure> {
+        self.guard_ok()?;
+        self.inner
+            .distrobox
+            .list_installed_packages(container)
+            .await
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
+    /// Today's `search_packages`, typed.
+    pub async fn search_packages(
+        &self,
+        container: &str,
+        query: &str,
+    ) -> Result<Vec<crate::models::PackageInfo>, CoreFailure> {
+        self.guard_ok()?;
+        self.inner
+            .distrobox
+            .search_packages(container, query)
+            .await
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
     /// Today's `install_package`, typed.
     pub async fn install_package(
         &self,
