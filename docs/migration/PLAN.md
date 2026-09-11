@@ -53,7 +53,7 @@ signed off on the diff; and it is committed.
 | T2 | Port `generate-cargo-sources.py` + sidecars; `flatpak/` skeleton + manifest (D12 feature set) | pkg | **Done** (gates per D26: `--check` exit 0, surrogate offline build EXIT=0, sidecar 11/51 validated; rulings D26) |
 | T3 | S5 skeleton app + S6 `Backend`/`CoreError`/`TaskId` + read-only browser (containers/images/apps/stats) + regenerate `cargo-sources.json` for the `app/` lockfile (plain generate; `--refresh-git` only if git set differs — D26) | arch | **Done** (`76b69fe`; 79 core + 6 app + 1 doctest; `CoreFailure` Arc-wrapper; pins dirs 6/thiserror 2; cargo-sources 1385, `--check` green, surrogate `--locked` build clean) |
 | T4 | `scripts/verify.sh` v1 + `scripts/smoke-test.sh` with readiness signal (D13, D17) | pkg | **Done** (`e50923c`; verify.sh EXIT=0 end-to-end: 79+0+6+1 tests, 17/17 packaging, offline build+install, both smoke modes PASS; D26b/c/d closed; advocate no-blocking-objections with 6 findings fixed) |
-| T5 | Task runtime + `spawn_task` + per-task subscriptions (B2 line buffering lands here) | arch | Queued |
+| T5 | Task runtime + `spawn_task` + per-task subscriptions (B2 line buffering lands here) | arch | **Done** (`042646c`; 94+0+6+4+1 green; advocate 4 blocking objections fixed + re-probed, signed off) |
 | T6 | Dashboard + Containers + Details pages | ux | Queued |
 | T7 | Create wizard + Images pages (wire `preselectedImage`) | ux | Queued |
 | T8 | Package manager page (B1 emerge/table fix) | arch + ux | Queued |
