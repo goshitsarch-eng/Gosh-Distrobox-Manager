@@ -51,7 +51,7 @@ signed off on the diff; and it is committed.
 | T0 | Rust CI stage + doc-side G.1/G.2 set + `AGENTS.md` header + `release.prompt.md` fix (9 clippy errors fixed or scoped-allowlisted per D22; `dbus-config` dropped per D23; G.1-6 `flatpak.yml` deferred to T14, recorded partial; sign-off rulings D24) | pkg | **Done** (`a1c2556`; gates green, 70 passed; + D24 commit) |
 | T1 | S1–S4: workspace scaffold, `git mv rust core`, DTO + task-runtime moves, `clippy.toml` guard | arch | **Done** (`f2ffa5c`; 70+1 tests; D25) |
 | T2 | Port `generate-cargo-sources.py` + sidecars; `flatpak/` skeleton + manifest (D12 feature set) | pkg | **Done** (gates per D26: `--check` exit 0, surrogate offline build EXIT=0, sidecar 11/51 validated; rulings D26) |
-| T3 | S5 skeleton app + S6 `Backend`/`CoreError`/`TaskId` + read-only browser (containers/images/apps/stats) + regenerate `cargo-sources.json` for the `app/` lockfile (plain generate; `--refresh-git` only if git set differs — D26) | arch | Queued |
+| T3 | S5 skeleton app + S6 `Backend`/`CoreError`/`TaskId` + read-only browser (containers/images/apps/stats) + regenerate `cargo-sources.json` for the `app/` lockfile (plain generate; `--refresh-git` only if git set differs — D26) | arch | **Done** (`76b69fe`; 79 core + 6 app + 1 doctest; `CoreFailure` Arc-wrapper; pins dirs 6/thiserror 2; cargo-sources 1385, `--check` green, surrogate `--locked` build clean) |
 | T4 | `scripts/verify.sh` v1 + `scripts/smoke-test.sh` with readiness signal (D13, D17) | pkg | Queued |
 | T5 | Task runtime + `spawn_task` + per-task subscriptions (B2 line buffering lands here) | arch | Queued |
 | T6 | Dashboard + Containers + Details pages | ux | Queued |
