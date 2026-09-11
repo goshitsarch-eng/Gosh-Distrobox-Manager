@@ -4,7 +4,7 @@
 # crate; `app/` (the libcosmic binary) joins as a member in S5.
 # See docs/migration/architecture.md §1.
 [workspace]
-members = ["core"]
+members = ["core", "app"]
 # Edition 2024 implies resolver 3, but a virtual manifest must state it.
 resolver = "3"
 
@@ -17,14 +17,14 @@ anyhow = "1.0.92"
 async-channel = "2.3.1"
 async-process = "2.3.0"
 async-trait = "0.1.89"
-dirs = "5.0"
+dirs = "6.0"
 futures = "0.3.31"
 once_cell = "1.19"
 regex = "1.11.1"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0.140"
+serde_json = "1.0"
 smol = "2.0.2"
-thiserror = "1.0.64"
+thiserror = "2.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 toml = "0.9.8"
 tracing = "0.1"

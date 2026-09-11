@@ -1,0 +1,28 @@
+[package]
+# Binary name uses underscores (D15): this is what Cargo/desktop controls --
+# `command:`, `Exec=`, and the installed `/app/bin/` entry. The `.spec` `Name:`
+# stays hyphenated (RPM convention); that rename is T14's.
+name = "gosh_distrobox_manager"
+version = "1.0.2"
+edition = "2024"
+
+[[bin]]
+name = "gosh_distrobox_manager"
+path = "src/main.rs"
+
+[dependencies]
+# Single feature list lives in docs/migration/PLAN.md §1 (D12 as amended by
+# D23): winit/tokio (executor + windowing), a11y (P0 screen-reader path),
+# wayland/x11 (both display backends), multi-window (kept from default; the
+# page-stack stays single-window, back affordance mandatory), about
+# (widget::about()), xdg-portal (the only sandbox file-chooser route, D16).
+# dbus-config is dropped (D23). Never: applet, desktop.
+libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "a401af8b1c54a8abd393b8c5b7c8809402f83850", default-features = false, features = ["winit", "tokio", "a11y", "wayland", "x11", "multi-window", "about", "xdg-portal"] }
+gosh-distrobox-core = { path = "../core" }
+tokio.workspace = true
+futures.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+smol.workspace = true
