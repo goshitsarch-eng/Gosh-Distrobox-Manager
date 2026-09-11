@@ -27,6 +27,7 @@ pub enum Message {
     Images(ImageMsg),
     Packages(PackagesMsg),
     Backups(BackupsMsg),
+    Activity(ActivityMsg),
     /// Reserved namespace (T9+: the Updates page reads shared state and
     /// needs no page-local messages today).
     #[allow(dead_code)]
@@ -46,9 +47,9 @@ pub enum Message {
 /// `TaskView.output` (ring-buffered); `Expired` is TTL-sweep evidence from
 /// core so the UI drops its mirror entry.
 ///
-/// `ClearCompleted` / `Cancelled` payload have no producers until T11
-/// drives them. No global allow: a variant still dead after its owner task
-/// is a real finding.
+/// `Cancelled` payload closes a swept drawer watching the id (B2 class).
+/// No global allow: a variant still dead after its owner task is a real
+/// finding.
 #[derive(Clone, Debug)]
 pub enum TaskMsg {
     Started {
@@ -66,8 +67,7 @@ pub enum TaskMsg {
     CancelRequested(TaskId),
     /// Fired back after the registry confirms cancel (the id rides along so
     /// the T11 log can mark the row without re-reading the registry).
-    Cancelled(#[allow(dead_code)] TaskId),
-    #[allow(dead_code)]
+    Cancelled(TaskId),
     ClearCompleted,
     Expired(Vec<TaskId>),
     /// The 30 s sweep tick. Carries nothing (subscription builders cannot
@@ -233,6 +233,17 @@ pub enum BackupsMsg {
     CloneDialogRequested,
     /// Any backups dialog cancelled.
     DialogCancelled,
+}
+
+/// Activity log (T11, rows #152–#162): search, filter, expanded drawer.
+#[derive(Clone, Debug)]
+pub enum ActivityMsg {
+    SearchChanged(String),
+    FilterSelected(crate::activity::ActivityFilter),
+    /// Open the full-output drawer for this task (row #158).
+    Expanded(gosh_distrobox_core::TaskId),
+    /// Close the drawer.
+    DrawerClosed,
 }
 
 /// Updates page (T9, rows #123–#132): upgrade-all confirm state lives in

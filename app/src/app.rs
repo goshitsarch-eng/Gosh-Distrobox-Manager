@@ -80,6 +80,8 @@ pub struct App {
     packages: crate::packages::PackagesState,
     /// Backups state (T10, rows #133–#151).
     backups: crate::backups::BackupsState,
+    /// Activity state (T11, rows #152–#162).
+    activity: crate::activity::ActivityState,
     /// Terminal page state (T9, rows #66–#77 + D8).
     terminal: crate::terminal::TerminalState,
     apps: Vec<AppInfo>,
@@ -114,7 +116,6 @@ pub struct TaskView {
     pub output: Vec<String>,
     pub completed: bool,
     pub success: bool,
-    #[allow(dead_code)]
     pub started_at: std::time::Instant,
 }
 
@@ -323,6 +324,7 @@ impl cosmic::Application for App {
             images_error: None,
             packages: crate::packages::PackagesState::default(),
             backups: crate::backups::BackupsState::default(),
+            activity: crate::activity::ActivityState::default(),
             terminal: crate::terminal::TerminalState::default(),
             images_search: String::new(),
             images_custom: String::new(),
@@ -380,6 +382,7 @@ impl cosmic::Application for App {
                 }
                 Self::none()
             }
+            Page::Activity => Self::none(),
             Page::Backups => {
                 // First visit: pick a container and load snapshots.
                 if self.backups.container.is_none()
@@ -767,7 +770,8 @@ impl cosmic::Application for App {
                 DetailsMsg::AppsRequested(name) => {
                     // Full Apps page lands in T12 — select + switch to the
                     // Apps tab so the existing Apps view shows this
-                    // container's apps. Position 3 = Apps in Page::ALL.
+                    // container's apps (named `activate_page`, never a
+                    // positional literal).
                     if let Some(c) = self.containers.iter().find(|c| c.name == *name).cloned() {
                         views::activate_page(&mut self.nav_model, Page::Apps);
                         return self.update(Message::Containers(ContainerMsg::Selected(Some(c))));
@@ -921,6 +925,7 @@ impl cosmic::Application for App {
             },
             Message::Packages(msg) => return self.update_packages(msg),
             Message::Backups(msg) => return self.update_backups(msg),
+            Message::Activity(msg) => return self.update_activity(msg),
             Message::Updates(_) => return Self::none(), // namespace reserved (T9+)
             Message::Terminal(msg) => return self.update_terminal(msg),
             Message::Apps(msg) => match msg {
@@ -1119,16 +1124,32 @@ impl cosmic::Application for App {
                         return Self::done(Message::Tasks(TaskMsg::Cancelled(id)));
                     }
                 }
-                TaskMsg::Cancelled(_) => {
-                    // Mirror already marked in `CancelRequested`; the arm
-                    // exists so Activity-page producers (T11) typecheck.
+                TaskMsg::Cancelled(id) => {
+                    // Mirror already marked in `CancelRequested`. If the
+                    // task was swept before cancel landed, close a drawer
+                    // watching the gone id (B2 class).
+                    if self.activity.expanded == Some(id) {
+                        self.activity.expanded = None;
+                    }
                 }
                 TaskMsg::ClearCompleted => {
                     self.tasks.retain(|_, v| !v.completed);
+                    // A drawer open on a cleared task closes (same B2
+                    // class as Expired/Cancelled above).
+                    if let Some(id) = self.activity.expanded
+                        && !self.tasks.contains_key(&id)
+                    {
+                        self.activity.expanded = None;
+                    }
                 }
                 TaskMsg::Expired(ids) => {
                     for id in ids {
                         self.tasks.remove(&id);
+                        // A swept drawer closes (same B2 class — the guard
+                        // above only covers the cancel path).
+                        if self.activity.expanded == Some(id) {
+                            self.activity.expanded = None;
+                        }
                         // O2: the sweep must not orphan the wizard progress
                         // step — a swept create task would flip success back
                         // to "Creating…" with only a dead Cancel. The mirror
@@ -1257,6 +1278,7 @@ impl cosmic::Application for App {
             Page::Images => self.view_images(),
             Page::Packages => self.view_packages(),
             Page::Backups => self.view_backups(),
+            Page::Activity => self.view_activity_page(),
             Page::Updates => self.view_updates(),
             Page::Apps => self.view_apps(),
             Page::Stats => self.view_stats(),
@@ -1336,6 +1358,11 @@ impl cosmic::Application for App {
             ],
             // Row #134: the FAB's all-states bug disappears with the move —
             // header-only affordance (no empty-list dependence).
+            Page::Activity => vec![
+                widget::button::standard("Clear completed")
+                    .on_press(Message::Tasks(TaskMsg::ClearCompleted))
+                    .into(),
+            ],
             Page::Backups => vec![
                 widget::button::suggested("New Snapshot")
                     .on_press(Message::Backups(
@@ -1345,6 +1372,15 @@ impl cosmic::Application for App {
             ],
             _ => vec![],
         }
+    }
+
+    fn context_drawer(&self) -> Option<cosmic::app::ContextDrawer<'_, Self::Message>> {
+        // Row #158: full-output drawer over the activity page. Only when
+        // the Activity tab is active and a task is expanded.
+        if self.active_page() == Page::Activity {
+            return self.activity_drawer();
+        }
+        None
     }
 
     fn dialog(&self) -> Option<cosmic::Element<'_, Self::Message>> {
@@ -1446,6 +1482,50 @@ impl App {
             );
         }
         self.view_containers_page()
+    }
+
+    /// Activity page (T11, rows #152–#162) + its router + drawer.
+    fn view_activity_page(&self) -> cosmic::Element<'_, Message> {
+        crate::activity::view_activity(&self.tasks, &self.activity)
+    }
+
+    /// Activity message router (T11).
+    fn update_activity(&mut self, msg: crate::message::ActivityMsg) -> Task<Message> {
+        use crate::message::ActivityMsg;
+        match msg {
+            ActivityMsg::SearchChanged(s) => {
+                self.activity.search = s;
+                Self::none()
+            }
+            ActivityMsg::FilterSelected(f) => {
+                self.activity.filter = f;
+                Self::none()
+            }
+            ActivityMsg::Expanded(id) => {
+                // Row #158: open the full-output drawer (only for known
+                // tasks — a swept id is ignored, not crashed on).
+                if self.tasks.contains_key(&id) {
+                    self.activity.expanded = Some(id);
+                }
+                Self::none()
+            }
+            ActivityMsg::DrawerClosed => {
+                self.activity.expanded = None;
+                Self::none()
+            }
+        }
+    }
+
+    /// Full-output drawer (row #158): `context_drawer` over the activity
+    /// page when a task is expanded. The draggable 0.5–0.95 resize range is
+    /// lost (accepted per ux.md) — the drawer is fixed width.
+    fn activity_drawer(&self) -> Option<cosmic::app::ContextDrawer<'_, Message>> {
+        let id = self.activity.expanded?;
+        let view = self.tasks.get(&id)?;
+        Some(cosmic::app::context_drawer(
+            crate::activity::output_drawer(view),
+            Message::Activity(crate::message::ActivityMsg::DrawerClosed),
+        ))
     }
 
     /// Backups page (T10, rows #133–#151): picker + tabs + snapshots /

@@ -3,6 +3,7 @@
 //! Entry point only: logging init (moved out of the dropped `api.rs::init_app`)
 //! plus `cosmic::app::run`. Everything else lives in `app.rs`/`message.rs`.
 
+mod activity;
 mod app;
 mod backups;
 mod icons;
