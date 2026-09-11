@@ -57,7 +57,7 @@ signed off on the diff; and it is committed.
 | T6 | Dashboard + Containers + Details pages | ux | **Done** (`ad984d5`; 94+3+6+6+4+1 green; advocate 2 blocking + 9 secondary fixed, signed off) |
 | T7 | Create wizard + Images pages (wire `preselectedImage`) | ux | **Done** (`abc1629`; 94+7+4+6+6+4+1 green; advocate O1–O6 + cancel-strand fixed, signed off) |
 | T8 | Package manager page (B1 emerge/table fix) | arch + ux | **Done** (`0a89a78`; 98+8+4+6+4+6+4+1 green; advocate 1 blocking + 9 secondary fixed, signed off) |
-| T9 | Updates + Terminal-launch pages (B5 `start` lands before banners freeze) | arch + ux | Queued |
+| T9 | Updates + Terminal-launch pages (B5 `start` lands before banners freeze) | arch + ux | **Done** (`e2845d4`; 99+8+5+4+6+4+6+4+1 green; advocate O1–O6 + strand/latch rounds fixed, signed off) |
 | T10 | Backups page (snapshots/export/import/clone; xdg-portal picker per D16) | arch + ux | Queued |
 | T11 | Activity log + TaskState enum (kills string-sniffing) | arch + ux | Queued |
 | T12 | Apps export page + Settings/about + config persistence (one-time DistroShelf import) | arch + ux | Queued |
