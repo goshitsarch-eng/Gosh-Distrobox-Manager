@@ -43,7 +43,7 @@ signed off on the diff; and it is committed.
 | Phase | State |
 |---|---|
 | Phase 1 — Plan | **Complete.** All three docs signed off with changes, 45 questions answered (38) or recorded (7), 21 decisions recorded. |
-| Phase 2 — Build | **Underway.** T0 done; T1–T4 unblocked; T5+ sequenced below. |
+| Phase 2 — Build | **Underway.** T0–T12 done; T13–T15 sequenced below (T13→T3, T14→{T6..T13}, T15→{T6..T12}); T16 gates Phase 3. |
 | Phase 3 — Harden | Not started. |
 
 | # | Task | Owner | State |
@@ -60,7 +60,7 @@ signed off on the diff; and it is committed.
 | T9 | Updates + Terminal-launch pages (B5 `start` lands before banners freeze) | arch + ux | **Done** (`e2845d4`; 99+8+5+4+6+4+6+4+1 green; advocate O1–O6 + strand/latch rounds fixed, signed off) |
 | T10 | Backups page (snapshots/export/import/clone; xdg-portal picker per D16) | arch + ux | **Done** (`48160a0`; 99+9+5+4+6+4+6+4+5+1 green; advocate 3 blocking + guard gap fixed, signed off) |
 | T11 | Activity log + TaskState enum (kills string-sniffing) | arch + ux | **Done** (`fa507ce`; 99+13+5+4+6+4+6+4+5+1 green; advocate 5 + doc rounds fixed, signed off) |
-| T12 | Apps export page + Settings/about + config persistence (one-time DistroShelf import) | arch + ux | Queued |
+| T12 | Apps export page + Settings/about + config persistence (one-time DistroShelf import) | arch + ux | **Done** (`59ef837`; 109+18+5+5+4+6+4+6+4+5+1 green; advocate 7 (2 HIGH) + re-review 5 fixed, signed off; `verify.sh` 11/11 stages) |
 | T13 | B3 tolerant parsing + `show_skipped_lines`; B4 field codes; B7 runtime helper | arch | Queued |
 | T14 | S7 + S8 deletions (tagged pre-deletion commit) + spec/scripts/AGENTS/README/CI rewrite | arch + pkg | Queued |
 | T15 | i18n extraction pass 1 (per-screen Fluent strings; user-data placeables rule) | ux | Queued |
