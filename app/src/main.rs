@@ -4,6 +4,7 @@
 //! plus `cosmic::app::run`. Everything else lives in `app.rs`/`message.rs`.
 
 mod app;
+mod backups;
 mod icons;
 mod images_view;
 mod message;

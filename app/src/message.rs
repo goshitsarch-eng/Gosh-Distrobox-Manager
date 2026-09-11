@@ -26,6 +26,7 @@ pub enum Message {
     Wizard(WizardMsg),
     Images(ImageMsg),
     Packages(PackagesMsg),
+    Backups(BackupsMsg),
     /// Reserved namespace (T9+: the Updates page reads shared state and
     /// needs no page-local messages today).
     #[allow(dead_code)]
@@ -166,6 +167,7 @@ pub enum ConfirmAction {
     InstallPackage { container: String, package: String },
     RemovePackage { container: String, package: String },
     UpgradeContainer(String),
+    DeleteSnapshot(String),
 }
 
 #[derive(Clone, Debug)]
@@ -178,6 +180,59 @@ pub enum AppMsg {
     #[allow(dead_code)]
     BinariesLoadRequested(String),
     BinariesLoaded(Result<Vec<ExportedBinary>, CoreFailure>),
+}
+
+/// Backups page (T10, rows #133–#151): picker, tabs, snapshot CRUD,
+/// export/import/clone dialogs, portal choosers (P0 §4.3).
+#[derive(Clone, Debug)]
+pub enum BackupsMsg {
+    /// Picker index selected (row #136).
+    ContainerSelected(usize),
+    /// Snapshots vs transfer tab (row #133).
+    TabSelected(bool),
+    /// Reload snapshots (Retry + refresh).
+    ReloadRequested,
+    /// Snapshot list result, scoped to a container (stale-response guard:
+    /// only the current container sticks — same as InstalledLoaded).
+    SnapshotsLoaded(
+        String,
+        Result<Vec<gosh_distrobox_core::models::SnapshotInfo>, CoreFailure>,
+    ),
+    /// Create dialog open (row #140, prefilled name).
+    CreateDialogRequested,
+    CreateNameChanged(String),
+    CreateConfirmed,
+    /// Create result (toast + reload — without the reload the page
+    /// strands "No snapshots yet" inviting a duplicate).
+    CreateFinished(Result<String, CoreFailure>),
+    /// Delete result (row #141 green/red toasts + reload).
+    DeleteFinished(Result<String, CoreFailure>),
+    /// Delete → confirm (row #141).
+    DeleteRequested(String),
+    /// Restore dialog open (row #142, prefilled new name).
+    RestoreDialogRequested(String),
+    RestoreNameChanged(String),
+    RestoreConfirmed,
+    /// Export dialog open (row #143).
+    ExportDialogRequested,
+    ExportPathChanged(String),
+    /// Portal save picker finished (P0 — replaces free-text path).
+    ExportPathPicked(Result<String, String>),
+    ExportBrowseRequested,
+    ExportConfirmed,
+    /// Import dialog open (row #144).
+    ImportDialogRequested,
+    ImportPathChanged(String),
+    ImportImageChanged(String),
+    /// Portal open picker finished.
+    ImportPathPicked(Result<String, String>),
+    ImportBrowseRequested,
+    ImportConfirmed,
+    /// Clone dialog open (row #145): opens the SHARED details-clone
+    /// dialog directly (§4.5 unification — no page-local clone state).
+    CloneDialogRequested,
+    /// Any backups dialog cancelled.
+    DialogCancelled,
 }
 
 /// Updates page (T9, rows #123–#132): upgrade-all confirm state lives in

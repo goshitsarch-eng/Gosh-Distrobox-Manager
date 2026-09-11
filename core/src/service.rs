@@ -236,6 +236,43 @@ impl Backend {
             .map_err(CoreFailure::from)
     }
 
+    /// Snapshot list (typed).
+    pub async fn list_snapshots(&self) -> Result<Vec<crate::models::SnapshotInfo>, CoreFailure> {
+        self.guard_ok()?;
+        self.inner
+            .distrobox
+            .list_snapshots(None)
+            .await
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
+    /// Snapshot create (typed, short — `podman/docker commit` returns promptly).
+    pub async fn create_snapshot(
+        &self,
+        container: &str,
+        snapshot: &str,
+    ) -> Result<String, CoreFailure> {
+        self.guard_ok()?;
+        self.inner
+            .distrobox
+            .create_snapshot(container, snapshot)
+            .await
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
+    /// Snapshot delete (typed, short).
+    pub async fn delete_snapshot(&self, snapshot: &str) -> Result<String, CoreFailure> {
+        self.guard_ok()?;
+        self.inner
+            .distrobox
+            .delete_snapshot(snapshot)
+            .await
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
     /// Today's `stop_all_containers`, typed.
     pub async fn stop_all_containers(&self) -> Result<String, CoreFailure> {
         self.guard_ok()?;

@@ -78,6 +78,8 @@ pub struct App {
     wizard: Option<crate::wizard::WizardState>,
     /// Package manager state (T8, rows #106–#122).
     packages: crate::packages::PackagesState,
+    /// Backups state (T10, rows #133–#151).
+    backups: crate::backups::BackupsState,
     /// Terminal page state (T9, rows #66–#77 + D8).
     terminal: crate::terminal::TerminalState,
     apps: Vec<AppInfo>,
@@ -320,6 +322,7 @@ impl cosmic::Application for App {
             images: Vec::new(),
             images_error: None,
             packages: crate::packages::PackagesState::default(),
+            backups: crate::backups::BackupsState::default(),
             terminal: crate::terminal::TerminalState::default(),
             images_search: String::new(),
             images_custom: String::new(),
@@ -374,6 +377,21 @@ impl cosmic::Application for App {
                 if self.images.is_empty() && !self.loading.images {
                     self.loading.images = true;
                     return Self::load_images(&self.backend);
+                }
+                Self::none()
+            }
+            Page::Backups => {
+                // First visit: pick a container and load snapshots.
+                if self.backups.container.is_none()
+                    && let Some(name) = self.containers.first().map(|c| c.name.clone())
+                {
+                    self.backups.container = Some(name.clone());
+                    self.backups.loading = true;
+                    let backend = Arc::clone(&self.backend);
+                    return Self::run(async move {
+                        let result = backend.list_snapshots().await;
+                        Message::Backups(crate::message::BackupsMsg::SnapshotsLoaded(name, result))
+                    });
                 }
                 Self::none()
             }
@@ -455,6 +473,16 @@ impl cosmic::Application for App {
                                 self.packages.results.clear();
                                 self.packages.manager = None;
                                 self.packages.error = None;
+                            }
+                            // Same class for the backups picker + snapshot
+                            // list (a deleted container leaves a dead
+                            // selection and a stale list).
+                            if let Some(selected) = self.backups.container.clone()
+                                && !containers.iter().any(|c| c.name == selected)
+                            {
+                                self.backups.container = None;
+                                self.backups.snapshots.clear();
+                                self.backups.error = None;
                             }
                             self.containers = containers;
                             self.error = None;
@@ -689,6 +717,10 @@ impl cosmic::Application for App {
                     }
                 }
                 DetailsMsg::CloneConfirmed { source, name } => {
+                    // Row #148: `.trim()` like the four siblings (the
+                    // backups clone dialog was the one missing it) — a
+                    // trailing space errors instead of trimming.
+                    let name = name.trim().to_string();
                     if is_blocked(self.backend.env()) {
                         self.error = self.backend.env().message.clone();
                         return Self::none();
@@ -849,6 +881,22 @@ impl cosmic::Application for App {
                                     Message::Tasks(TaskMsg::Started { label, result })
                                 });
                             }
+                            ConfirmAction::DeleteSnapshot(id) => {
+                                // Row #141: delete is short (no child to
+                                // stream); toast green/red via ActionFinished,
+                                // then reload the list in the same future.
+                                if is_blocked(self.backend.env()) {
+                                    self.error = self.backend.env().message.clone();
+                                    return Self::none();
+                                }
+                                let backend = Arc::clone(&self.backend);
+                                return Self::run(async move {
+                                    let delete = backend.delete_snapshot(&id).await;
+                                    Message::Backups(crate::message::BackupsMsg::DeleteFinished(
+                                        delete,
+                                    ))
+                                });
+                            }
                             ConfirmAction::UpgradeContainer(container) => {
                                 if is_blocked(self.backend.env()) {
                                     self.error = self.backend.env().message.clone();
@@ -872,6 +920,7 @@ impl cosmic::Application for App {
                 }
             },
             Message::Packages(msg) => return self.update_packages(msg),
+            Message::Backups(msg) => return self.update_backups(msg),
             Message::Updates(_) => return Self::none(), // namespace reserved (T9+)
             Message::Terminal(msg) => return self.update_terminal(msg),
             Message::Apps(msg) => match msg {
@@ -1207,6 +1256,7 @@ impl cosmic::Application for App {
             }
             Page::Images => self.view_images(),
             Page::Packages => self.view_packages(),
+            Page::Backups => self.view_backups(),
             Page::Updates => self.view_updates(),
             Page::Apps => self.view_apps(),
             Page::Stats => self.view_stats(),
@@ -1284,13 +1334,26 @@ impl cosmic::Application for App {
                     .on_press(Message::Containers(ContainerMsg::UpgradeAllRequested))
                     .into(),
             ],
+            // Row #134: the FAB's all-states bug disappears with the move —
+            // header-only affordance (no empty-list dependence).
+            Page::Backups => vec![
+                widget::button::suggested("New Snapshot")
+                    .on_press(Message::Backups(
+                        crate::message::BackupsMsg::CreateDialogRequested,
+                    ))
+                    .into(),
+            ],
             _ => vec![],
         }
     }
 
     fn dialog(&self) -> Option<cosmic::Element<'_, Self::Message>> {
-        // Single modal slot (§3.3): wizard sub-dialogs (volume, image
-        // details) take precedence over the page-level dialog.
+        // Single modal slot (§3.3): backups dialogs first (they belong to
+        // the visible page), then wizard volume, image details, then the
+        // page-level dialog.
+        if self.backups.dialog.is_some() {
+            return self.backups_dialog();
+        }
         if let Some(wizard) = &self.wizard
             && let Some(volume) = &wizard.volume_dialog
         {
@@ -1383,6 +1446,380 @@ impl App {
             );
         }
         self.view_containers_page()
+    }
+
+    /// Backups page (T10, rows #133–#151): picker + tabs + snapshots /
+    /// transfer + dialogs (rendered through the single modal slot).
+    fn view_backups(&self) -> cosmic::Element<'_, Message> {
+        use crate::backups as bk;
+        if self.containers.is_empty() {
+            return crate::views::empty_state(
+                "document-open-symbolic",
+                "No containers found.".to_string(),
+                "Create a container before managing backups.".to_string(),
+                None,
+            );
+        }
+        let st = &self.backups;
+        let mut col = widget::Column::new().spacing(12);
+        col = col.push(crate::packages::container_picker_mapped(
+            &self.containers,
+            st.container.as_deref(),
+            |i| Message::Backups(crate::message::BackupsMsg::ContainerSelected(i)),
+        ));
+        // Tabs (row #133): Snapshots vs Export/Import.
+        col = col.push(
+            widget::Row::new()
+                .push(
+                    widget::button::standard("Snapshots").on_press(Message::Backups(
+                        crate::message::BackupsMsg::TabSelected(false),
+                    )),
+                )
+                .push(
+                    widget::button::standard("Export / Import").on_press(Message::Backups(
+                        crate::message::BackupsMsg::TabSelected(true),
+                    )),
+                )
+                .spacing(12),
+        );
+        if st.transfer_tab {
+            col = col.push(bk::transfer_tab(
+                st.container.as_deref(),
+                st.container.is_some(),
+            ));
+        } else {
+            col = col.push(bk::snapshots_tab(
+                st.loading,
+                st.error.as_deref(),
+                &st.snapshots,
+                st.container.as_deref(),
+            ));
+        }
+        widget::scrollable(col).into()
+    }
+
+    /// Backups message router (T10, rows #133–#151).
+    fn update_backups(&mut self, msg: crate::message::BackupsMsg) -> Task<Message> {
+        use crate::backups::{BackupsDialog, BackupsState};
+        use crate::message::BackupsMsg;
+        match msg {
+            BackupsMsg::ContainerSelected(i) => {
+                if let Some(c) = self.containers.get(i).map(|c| c.name.clone()) {
+                    self.backups.container = Some(c.clone());
+                    self.backups.loading = true;
+                    self.backups.error = None;
+                    let backend = Arc::clone(&self.backend);
+                    return Self::run(async move {
+                        let result = backend.list_snapshots().await;
+                        Message::Backups(BackupsMsg::SnapshotsLoaded(c, result))
+                    });
+                }
+                Self::none()
+            }
+            BackupsMsg::TabSelected(transfer) => {
+                self.backups.transfer_tab = transfer;
+                Self::none()
+            }
+            BackupsMsg::DeleteFinished(result) => {
+                // Row #141 green/red result toasts + list reload.
+                let toast = match &result {
+                    Ok(_) => self.toast("Snapshot deleted".to_string()),
+                    Err(e) => self.toast(format!(
+                        "Could not delete snapshot: {}",
+                        Self::error_text(e)
+                    )),
+                };
+                self.backups.loading = true;
+                let name = self.backups.container.clone().unwrap_or_default();
+                let backend = Arc::clone(&self.backend);
+                let reload = Self::run(async move {
+                    let result = backend.list_snapshots().await;
+                    Message::Backups(BackupsMsg::SnapshotsLoaded(name, result))
+                });
+                Task::batch(vec![toast, reload])
+            }
+            BackupsMsg::ReloadRequested => {
+                self.backups.loading = true;
+                self.backups.error = None;
+                let name = self.backups.container.clone().unwrap_or_default();
+                let backend = Arc::clone(&self.backend);
+                Self::run(async move {
+                    let result = backend.list_snapshots().await;
+                    Message::Backups(BackupsMsg::SnapshotsLoaded(name, result))
+                })
+            }
+            BackupsMsg::SnapshotsLoaded(name, result) => {
+                // Stale-response guard (T8 InstalledLoaded pattern): only
+                // the current container sticks — an out-of-order response
+                // must not render A's snapshots under B.
+                if self.backups.container.as_deref() != Some(&name) {
+                    return Self::none();
+                }
+                self.backups.loading = false;
+                match result {
+                    Ok(list) => {
+                        self.backups.snapshots = list;
+                        self.backups.error = None;
+                    }
+                    Err(e) => {
+                        self.backups.error = Some(Self::error_text(&e));
+                    }
+                }
+                Self::none()
+            }
+            BackupsMsg::CreateDialogRequested => {
+                // Row #140: prefilled name + helper text live in the dialog;
+                // empty-name submit is LOUD (not a silent return).
+                let container = match self.backups.container.clone() {
+                    Some(c) => c,
+                    None => {
+                        let toast = self.toast("Select a container first.".to_string());
+                        return toast;
+                    }
+                };
+                self.backups.create_name = BackupsState::default_snapshot_name(&container);
+                self.backups.create_error = None;
+                self.backups.dialog = Some(BackupsDialog::Create);
+                Self::none()
+            }
+            BackupsMsg::CreateNameChanged(n) => {
+                self.backups.create_name = n;
+                self.backups.create_error = None;
+                Self::none()
+            }
+            BackupsMsg::CreateConfirmed => {
+                // Row #140/#146: LOUD on empty (Flutter silently returned).
+                let (container, name) = match (
+                    self.backups.container.clone(),
+                    self.backups.create_name.trim().to_string(),
+                ) {
+                    (Some(c), n) if !n.is_empty() => (c, n),
+                    _ => {
+                        self.backups.create_error = Some("Snapshot name is required.".to_string());
+                        return Self::none();
+                    }
+                };
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                self.backups.dialog = None;
+                let backend = Arc::clone(&self.backend);
+                Self::run(async move {
+                    let result = backend.create_snapshot(&container, &name).await;
+                    Message::Backups(BackupsMsg::CreateFinished(result))
+                })
+            }
+            BackupsMsg::CreateFinished(result) => {
+                // The snapshot list reloads after create (delete already
+                // did — an omitted reload strands "No snapshots yet"
+                // inviting a duplicate).
+                let toast = match &result {
+                    Ok(_) => self.toast("Snapshot created".to_string()),
+                    Err(e) => self.toast(format!(
+                        "Could not create snapshot: {}",
+                        Self::error_text(e)
+                    )),
+                };
+                self.backups.loading = true;
+                let name = self.backups.container.clone().unwrap_or_default();
+                let backend = Arc::clone(&self.backend);
+                let reload = Self::run(async move {
+                    let result = backend.list_snapshots().await;
+                    Message::Backups(BackupsMsg::SnapshotsLoaded(name, result))
+                });
+                Task::batch(vec![toast, reload])
+            }
+            BackupsMsg::DeleteRequested(id) => {
+                // Row #141: shared destructive confirm (§3.3).
+                let name = self
+                    .backups
+                    .snapshots
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| s.name.clone())
+                    .unwrap_or(id.clone());
+                self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+                    title: "Delete Snapshot".to_string(),
+                    body: format!(
+                        "Are you sure you want to delete \"{name}\"?\n\nThis action cannot be undone."
+                    ),
+                    confirm_label: "Delete".to_string(),
+                    destructive: true,
+                    action: ConfirmAction::DeleteSnapshot(id),
+                }));
+                Self::none()
+            }
+            BackupsMsg::RestoreDialogRequested(snapshot) => {
+                // Row #142: prefilled new name.
+                self.backups.restore = Some((snapshot.clone(), "restored-container".to_string()));
+                self.backups.restore_error = None;
+                self.backups.dialog = Some(BackupsDialog::Restore(snapshot));
+                Self::none()
+            }
+            BackupsMsg::RestoreNameChanged(n) => {
+                if let Some((_, name)) = self.backups.restore.as_mut() {
+                    *name = n;
+                }
+                self.backups.restore_error = None;
+                Self::none()
+            }
+            BackupsMsg::RestoreConfirmed => {
+                // Rows #142/#146: LOUD on empty (Flutter silently returned);
+                // failure toasts via Started Err (#147).
+                let (snapshot, name) = match self.backups.restore.clone() {
+                    Some((s, n)) if !n.trim().is_empty() => (s, n.trim().to_string()),
+                    _ => {
+                        self.backups.restore_error =
+                            Some("New container name is required.".to_string());
+                        return Self::none();
+                    }
+                };
+                // Row #148: `.trim()` consistency (the backups clone dialog
+                // was the one missing it).
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                self.backups.dialog = None;
+                let backend = Arc::clone(&self.backend);
+                let label = format!("Restore {snapshot} to {name}");
+                Self::run(async move {
+                    let result = backend.restore_from_snapshot(&snapshot, &name).await;
+                    Message::Tasks(TaskMsg::Started { label, result })
+                })
+            }
+            BackupsMsg::ExportDialogRequested => {
+                // Row #143: prefilled path; the portal picker replaces
+                // free-text (#149) at confirm time — Browse opens it now.
+                if let Some(container) = self.backups.container.clone() {
+                    self.backups.export_path = BackupsState::default_export_path(&container);
+                    self.backups.export_error = None;
+                    self.backups.dialog = Some(BackupsDialog::Export);
+                } else {
+                    let toast = self.toast("Select a container first.".to_string());
+                    return toast;
+                }
+                Self::none()
+            }
+            BackupsMsg::ExportPathChanged(p) => {
+                self.backups.export_path = p;
+                self.backups.export_error = None;
+                Self::none()
+            }
+            BackupsMsg::ExportBrowseRequested => {
+                // P0 portal save chooser (§4.3): runs async; the result
+                // returns as `ExportPathPicked` (Cancel is silent).
+                Self::run(async move {
+                    let path = portal_save_suggested("export.tar").await;
+                    Message::Backups(BackupsMsg::ExportPathPicked(path))
+                })
+            }
+            BackupsMsg::ExportPathPicked(result) => {
+                // Cancel: silent by portal convention.
+                if let Ok(path) = result {
+                    self.backups.export_path = path;
+                    self.backups.export_error = None;
+                }
+                Self::none()
+            }
+            BackupsMsg::ExportConfirmed => {
+                // Rows #143/#146/#147: LOUD on empty; failure toasts.
+                let (container, path) = match (
+                    self.backups.container.clone(),
+                    self.backups.export_path.trim().to_string(),
+                ) {
+                    (Some(c), p) if !p.is_empty() => (c, p),
+                    _ => {
+                        self.backups.export_error = Some("Output path is required.".to_string());
+                        return Self::none();
+                    }
+                };
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                self.backups.dialog = None;
+                let backend = Arc::clone(&self.backend);
+                let label = format!("Export {container} to {path}");
+                Self::run(async move {
+                    let result = backend.export_container(&container, &path).await;
+                    Message::Tasks(TaskMsg::Started { label, result })
+                })
+            }
+            BackupsMsg::ImportDialogRequested => {
+                // Row #144: archive path + image name, both LOUD on empty.
+                self.backups.import_path.clear();
+                self.backups.import_image.clear();
+                self.backups.import_error = None;
+                self.backups.dialog = Some(BackupsDialog::Import);
+                Self::none()
+            }
+            BackupsMsg::ImportPathChanged(p) => {
+                self.backups.import_path = p;
+                self.backups.import_error = None;
+                Self::none()
+            }
+            BackupsMsg::ImportImageChanged(i) => {
+                self.backups.import_image = i;
+                self.backups.import_error = None;
+                Self::none()
+            }
+            BackupsMsg::ImportPathPicked(result) => {
+                if let Ok(path) = result {
+                    self.backups.import_path = path;
+                    self.backups.import_error = None;
+                }
+                Self::none()
+            }
+            BackupsMsg::ImportBrowseRequested => Self::run(async move {
+                let path = portal_open_archive().await;
+                Message::Backups(BackupsMsg::ImportPathPicked(path))
+            }),
+            BackupsMsg::ImportConfirmed => {
+                let (path, image) = match (
+                    self.backups.import_path.trim().to_string(),
+                    self.backups.import_image.trim().to_string(),
+                ) {
+                    (p, i) if !p.is_empty() && !i.is_empty() => (p, i),
+                    _ => {
+                        self.backups.import_error =
+                            Some("Archive path and image name are required.".to_string());
+                        return Self::none();
+                    }
+                };
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                self.backups.dialog = None;
+                let backend = Arc::clone(&self.backend);
+                let label = format!("Import {path} as {image}");
+                Self::run(async move {
+                    let result = backend.import_container(&path, &image).await;
+                    Message::Tasks(TaskMsg::Started { label, result })
+                })
+            }
+            BackupsMsg::CloneDialogRequested => {
+                // Row #145: unified with the details clone (§4.5) — opens
+                // the SHARED `ActiveDialog::Clone` (same `-clone` default,
+                // same `.trim()` validation #148, same confirm path).
+                if let Some(container) = self.backups.container.clone() {
+                    self.dialog = Some(ActiveDialog::Clone {
+                        source: container.clone(),
+                        name: format!("{container}-clone"),
+                    });
+                } else {
+                    let toast = self.toast("Select a container first.".to_string());
+                    return toast;
+                }
+                Self::none()
+            }
+            BackupsMsg::DialogCancelled => {
+                self.backups.dialog = None;
+                Self::none()
+            }
+        }
     }
 
     /// Package page view (T8, rows #106–#122).
@@ -1761,6 +2198,225 @@ impl App {
             .unwrap_or(false)
     }
 
+    /// Backups dialogs (T10, rows #140/#142–#145): create/restore/export/
+    /// import/clone bodies through the single modal slot. Every input
+    /// validates LOUD (#146 — no silent returns); browse buttons open the
+    /// portal choosers (P0 #149).
+    fn backups_dialog(&self) -> Option<cosmic::Element<'_, Message>> {
+        use crate::backups::BackupsDialog;
+        use crate::message::BackupsMsg;
+        let st = &self.backups;
+        match st.dialog.as_ref()? {
+            BackupsDialog::Create => {
+                let body: cosmic::Element<'_, Message> = widget::Column::new()
+                    .push(widget::text::body(format!(
+                        "Create a snapshot of \"{}\"",
+                        st.container.as_deref().unwrap_or("")
+                    )))
+                    .push({
+                        let input: cosmic::Element<'_, Message> = widget::text_input::text_input(
+                            "e.g. mybox-snapshot",
+                            st.create_name.clone(),
+                        )
+                        .on_input(|s| Message::Backups(BackupsMsg::CreateNameChanged(s)))
+                        .into();
+                        input
+                    })
+                    .push(widget::text::caption(
+                        "Snapshots are saved as container images using podman/docker commit.",
+                    ))
+                    .spacing(8)
+                    .into();
+                let body = match st.create_error.clone() {
+                    Some(err) => widget::Column::new()
+                        .push(body)
+                        .push(widget::warning(err))
+                        .spacing(8)
+                        .into(),
+                    None => body,
+                };
+                Some(
+                    widget::dialog()
+                        .title("Create Snapshot")
+                        .control(body)
+                        .primary_action({
+                            let create: cosmic::Element<'_, Message> =
+                                widget::button::suggested("Create")
+                                    .on_press(Message::Backups(BackupsMsg::CreateConfirmed))
+                                    .into();
+                            create
+                        })
+                        .secondary_action({
+                            let cancel: cosmic::Element<'_, Message> =
+                                widget::button::standard("Cancel")
+                                    .on_press(Message::Backups(BackupsMsg::DialogCancelled))
+                                    .into();
+                            cancel
+                        })
+                        .into(),
+                )
+            }
+            BackupsDialog::Restore(snapshot) => {
+                let name = st
+                    .restore
+                    .as_ref()
+                    .map(|(_, n)| n.clone())
+                    .unwrap_or_default();
+                let body: cosmic::Element<'_, Message> = widget::Column::new()
+                    .push(widget::text::body(format!(
+                        "Create a new container from \"{snapshot}\""
+                    )))
+                    .push({
+                        let input: cosmic::Element<'_, Message> =
+                            widget::text_input::text_input("New container name", name)
+                                .on_input(|s| Message::Backups(BackupsMsg::RestoreNameChanged(s)))
+                                .into();
+                        input
+                    })
+                    .spacing(8)
+                    .into();
+                let body = match st.restore_error.clone() {
+                    Some(err) => widget::Column::new()
+                        .push(body)
+                        .push(widget::warning(err))
+                        .spacing(8)
+                        .into(),
+                    None => body,
+                };
+                Some(
+                    widget::dialog()
+                        .title("Restore from Snapshot")
+                        .control(body)
+                        .primary_action({
+                            let restore: cosmic::Element<'_, Message> =
+                                widget::button::suggested("Restore")
+                                    .on_press(Message::Backups(BackupsMsg::RestoreConfirmed))
+                                    .into();
+                            restore
+                        })
+                        .secondary_action({
+                            let cancel: cosmic::Element<'_, Message> =
+                                widget::button::standard("Cancel")
+                                    .on_press(Message::Backups(BackupsMsg::DialogCancelled))
+                                    .into();
+                            cancel
+                        })
+                        .into(),
+                )
+            }
+            BackupsDialog::Export => {
+                let body: cosmic::Element<'_, Message> = widget::Column::new()
+                    .push(widget::text::body(format!(
+                        "Export \"{}\" as a tar archive",
+                        st.container.as_deref().unwrap_or("")
+                    )))
+                    .push({
+                        let input: cosmic::Element<'_, Message> = widget::text_input::text_input(
+                            "/tmp/mybox-export.tar",
+                            st.export_path.clone(),
+                        )
+                        .on_input(|s| Message::Backups(BackupsMsg::ExportPathChanged(s)))
+                        .into();
+                        input
+                    })
+                    .push(
+                        widget::button::standard("Browse…")
+                            .on_press(Message::Backups(BackupsMsg::ExportBrowseRequested)),
+                    )
+                    .push(widget::warning(
+                        "The archive may be several gigabytes. Ensure the destination has space.",
+                    ))
+                    .spacing(8)
+                    .into();
+                let body = match st.export_error.clone() {
+                    Some(err) => widget::Column::new()
+                        .push(body)
+                        .push(widget::warning(err))
+                        .spacing(8)
+                        .into(),
+                    None => body,
+                };
+                Some(
+                    widget::dialog()
+                        .title("Export Container")
+                        .control(body)
+                        .primary_action({
+                            let export: cosmic::Element<'_, Message> =
+                                widget::button::suggested("Export")
+                                    .on_press(Message::Backups(BackupsMsg::ExportConfirmed))
+                                    .into();
+                            export
+                        })
+                        .secondary_action({
+                            let cancel: cosmic::Element<'_, Message> =
+                                widget::button::standard("Cancel")
+                                    .on_press(Message::Backups(BackupsMsg::DialogCancelled))
+                                    .into();
+                            cancel
+                        })
+                        .into(),
+                )
+            }
+            BackupsDialog::Import => {
+                let body: cosmic::Element<'_, Message> = widget::Column::new()
+                    .push(widget::text::body("Archive path"))
+                    .push({
+                        let input: cosmic::Element<'_, Message> = widget::text_input::text_input(
+                            "/tmp/mybox-export.tar",
+                            st.import_path.clone(),
+                        )
+                        .on_input(|s| Message::Backups(BackupsMsg::ImportPathChanged(s)))
+                        .into();
+                        input
+                    })
+                    .push(
+                        widget::button::standard("Browse…")
+                            .on_press(Message::Backups(BackupsMsg::ImportBrowseRequested)),
+                    )
+                    .push(widget::text::body("Image name"))
+                    .push({
+                        let input: cosmic::Element<'_, Message> = widget::text_input::text_input(
+                            "mybox-imported",
+                            st.import_image.clone(),
+                        )
+                        .on_input(|s| Message::Backups(BackupsMsg::ImportImageChanged(s)))
+                        .into();
+                        input
+                    })
+                    .spacing(8)
+                    .into();
+                let body = match st.import_error.clone() {
+                    Some(err) => widget::Column::new()
+                        .push(body)
+                        .push(widget::warning(err))
+                        .spacing(8)
+                        .into(),
+                    None => body,
+                };
+                Some(
+                    widget::dialog()
+                        .title("Import Container")
+                        .control(body)
+                        .primary_action({
+                            let import: cosmic::Element<'_, Message> =
+                                widget::button::suggested("Import")
+                                    .on_press(Message::Backups(BackupsMsg::ImportConfirmed))
+                                    .into();
+                            import
+                        })
+                        .secondary_action({
+                            let cancel: cosmic::Element<'_, Message> =
+                                widget::button::standard("Cancel")
+                                    .on_press(Message::Backups(BackupsMsg::DialogCancelled))
+                                    .into();
+                            cancel
+                        })
+                        .into(),
+                )
+            }
+        }
+    }
+
     /// Wizard message router (T7, rows #78–#96). Every arm mutates
     /// `self.wizard` (or spawns via `Backend::create_container`); `None`
     /// wizard ignores everything (no dead dispatch).
@@ -2120,6 +2776,41 @@ impl App {
             col = col.push(views::container_row(c, selected));
         }
         widget::scrollable(col).into()
+    }
+}
+
+/// Portal save picker (P0 §4.3): suggests a file name, returns the chosen
+/// path or `Err` on cancel/error. Runs inside a `Task` future (§0.2);
+/// cancel is silent by portal convention (matches the doc example).
+async fn portal_save_suggested(suggested: &str) -> Result<String, String> {
+    use cosmic::dialog::file_chooser;
+    let dialog = file_chooser::save::Dialog::new()
+        .title("Export container".to_string())
+        .file_name(suggested.to_string());
+    match dialog.save_file().await {
+        Ok(response) => response
+            .url()
+            .and_then(|u| u.to_file_path().ok())
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+            .ok_or_else(|| "no path selected".to_string()),
+        Err(file_chooser::Error::Cancelled) => Err("cancelled".to_string()),
+        Err(why) => Err(format!("{why:?}")),
+    }
+}
+
+/// Portal open picker for archives (P0 §4.3).
+async fn portal_open_archive() -> Result<String, String> {
+    use cosmic::dialog::file_chooser;
+    let dialog = file_chooser::open::Dialog::new().title("Import container archive".to_string());
+    match dialog.open_file().await {
+        Ok(response) => response
+            .url()
+            .to_file_path()
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+            .ok_or_else(|| "no path selected".to_string()),
+        Err(file_chooser::Error::Cancelled) => Err("cancelled".to_string()),
+        Err(why) => Err(format!("{why:?}")),
     }
 }
 

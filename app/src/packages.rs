@@ -61,12 +61,22 @@ pub fn container_picker(
     containers: &[gosh_distrobox_core::models::ContainerInfo],
     selected: Option<&str>,
 ) -> cosmic::Element<'static, Message> {
-    let names: Vec<String> = containers.iter().map(|c| c.name.clone()).collect();
-    let selected_idx = selected.and_then(|s| names.iter().position(|n| n == s));
-    let picker: cosmic::Element<'static, Message> = widget::dropdown(names, selected_idx, |i| {
+    container_picker_mapped(containers, selected, |i| {
         Message::Packages(PackagesMsg::ContainerSelected(i))
     })
-    .into();
+}
+
+/// Same picker with a caller-provided selection message (Backups reuses the
+/// widget with its own namespace — row #136).
+pub fn container_picker_mapped(
+    containers: &[gosh_distrobox_core::models::ContainerInfo],
+    selected: Option<&str>,
+    on_select: impl Fn(usize) -> Message + Send + Sync + 'static,
+) -> cosmic::Element<'static, Message> {
+    let names: Vec<String> = containers.iter().map(|c| c.name.clone()).collect();
+    let selected_idx = selected.and_then(|s| names.iter().position(|n| n == s));
+    let picker: cosmic::Element<'static, Message> =
+        widget::dropdown(names, selected_idx, on_select).into();
     let pill = match selected
         .and_then(|s| containers.iter().find(|c| c.name == s))
         .map(|c| is_running(&c.status))
