@@ -59,7 +59,7 @@ signed off on the diff; and it is committed.
 | T8 | Package manager page (B1 emerge/table fix) | arch + ux | **Done** (`0a89a78`; 98+8+4+6+4+6+4+1 green; advocate 1 blocking + 9 secondary fixed, signed off) |
 | T9 | Updates + Terminal-launch pages (B5 `start` lands before banners freeze) | arch + ux | **Done** (`e2845d4`; 99+8+5+4+6+4+6+4+1 green; advocate O1–O6 + strand/latch rounds fixed, signed off) |
 | T10 | Backups page (snapshots/export/import/clone; xdg-portal picker per D16) | arch + ux | **Done** (`48160a0`; 99+9+5+4+6+4+6+4+5+1 green; advocate 3 blocking + guard gap fixed, signed off) |
-| T11 | Activity log + TaskState enum (kills string-sniffing) | arch + ux | Queued |
+| T11 | Activity log + TaskState enum (kills string-sniffing) | arch + ux | **Done** (`fa507ce`; 99+13+5+4+6+4+6+4+5+1 green; advocate 5 + doc rounds fixed, signed off) |
 | T12 | Apps export page + Settings/about + config persistence (one-time DistroShelf import) | arch + ux | Queued |
 | T13 | B3 tolerant parsing + `show_skipped_lines`; B4 field codes; B7 runtime helper | arch | Queued |
 | T14 | S7 + S8 deletions (tagged pre-deletion commit) + spec/scripts/AGENTS/README/CI rewrite | arch + pkg | Queued |
