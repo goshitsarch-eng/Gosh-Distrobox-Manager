@@ -11,13 +11,16 @@
 //! no task-output subscriptions yet — those land with T5's `spawn_task`.
 
 use crate::message::{
-    AppMsg, ContainerMsg, EnvMsg, ImageMsg, Message, StatsMsg, UiMsg, is_blocked,
+    AppMsg, ContainerMsg, EnvMsg, ImageMsg, Message, StatsMsg, TaskMsg, UiMsg, is_blocked,
 };
 use cosmic::app::{Core, Task};
 use cosmic::iced::{Length, Subscription};
 use cosmic::widget::{self, nav_bar};
 use gosh_distrobox_core::models::{AppInfo, ContainerInfo, ContainerStats, ExportedBinary};
-use gosh_distrobox_core::{Backend, CoreError, CoreFailure};
+use gosh_distrobox_core::{
+    Backend, CoreError, CoreFailure, MAX_TASK_OUTPUT_LINES, TaskEvent, TaskId,
+};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Reverse-domain id (D15-adjacent): same string as the gschema id, the
@@ -74,6 +77,34 @@ pub struct App {
     stats: Option<ContainerStats>,
     stats_for: Option<String>,
     loading: Loading,
+    /// UI-side mirror of core's registry (§3.1): `output` is a view buffer
+    /// appended from `TaskMsg::Output` (ring-capped at
+    /// `MAX_TASK_OUTPUT_LINES`); the authoritative buffer lives in core and
+    /// `Expired` drops the mirror entry.
+    tasks: BTreeMap<TaskId, TaskView>,
+}
+
+/// The UI-side mirror of a core task (§3.1). `label`/`started_at` render in
+/// the Activity page (T11); no reader yet, hence the scoped allow (not a
+/// global one — T11 removes it by using them).
+pub struct TaskView {
+    #[allow(dead_code)]
+    pub label: String,
+    pub output: Vec<String>,
+    pub completed: bool,
+    pub success: bool,
+    #[allow(dead_code)]
+    pub started_at: std::time::Instant,
+}
+
+impl TaskView {
+    fn push_lines(&mut self, lines: Vec<String>) {
+        self.output.extend(lines);
+        if self.output.len() > MAX_TASK_OUTPUT_LINES {
+            let drain_to = self.output.len() - MAX_TASK_OUTPUT_LINES;
+            self.output.drain(0..drain_to);
+        }
+    }
 }
 
 impl App {
@@ -301,6 +332,10 @@ impl cosmic::Application for App {
 
         let backend = Arc::new(Backend::new_host());
         let blocked = is_blocked(backend.env());
+        // `init` runs before any subscription is polled, so publishing the
+        // backend here is race-free (§3.4: the same pattern as libcosmic's
+        // `text_context_menu` OnceLock sender).
+        let _ = BACKEND.set(Arc::clone(&backend));
 
         let mut app = App {
             core,
@@ -315,6 +350,7 @@ impl cosmic::Application for App {
             stats: None,
             stats_for: None,
             loading: Loading::default(),
+            tasks: BTreeMap::new(),
         };
         app.core_mut()
             .set_header_title("Gosh Distrobox Manager".to_string());
@@ -493,6 +529,72 @@ impl cosmic::Application for App {
                     }
                 }
             },
+            Message::Tasks(msg) => match msg {
+                TaskMsg::Started { label, result } => match result {
+                    Ok(id) => {
+                        self.tasks.insert(
+                            id,
+                            TaskView {
+                                label,
+                                output: Vec::new(),
+                                completed: false,
+                                success: false,
+                                started_at: std::time::Instant::now(),
+                            },
+                        );
+                    }
+                    Err(e) => self.error = Some(Self::error_text(&e)),
+                },
+                TaskMsg::Output { id, lines } => {
+                    if let Some(view) = self.tasks.get_mut(&id) {
+                        view.push_lines(lines);
+                    }
+                }
+                TaskMsg::Completed { id, success } => {
+                    if let Some(view) = self.tasks.get_mut(&id) {
+                        view.completed = true;
+                        view.success = success;
+                    }
+                }
+                TaskMsg::CancelRequested(id) => {
+                    // Synchronous registry call — `cancel` takes no lock
+                    // across blocking calls, so this is safe in `update`.
+                    if self.backend.cancel_task(id) {
+                        if let Some(view) = self.tasks.get_mut(&id) {
+                            view.completed = true;
+                        }
+                        return Self::done(Message::Tasks(TaskMsg::Cancelled(id)));
+                    }
+                }
+                TaskMsg::Cancelled(_) => {
+                    // Mirror already marked in `CancelRequested`; the arm
+                    // exists so Activity-page producers (T11) typecheck.
+                }
+                TaskMsg::ClearCompleted => {
+                    self.tasks.retain(|_, v| !v.completed);
+                }
+                TaskMsg::Expired(ids) => {
+                    for id in ids {
+                        self.tasks.remove(&id);
+                    }
+                }
+                TaskMsg::ExpiredTick => {
+                    // The subscription tick cannot carry the sweep result
+                    // (plain-`fn` builders capture nothing), so sweep here in
+                    // `update` — synchronous, lock-free across blocking calls
+                    // — and route the evidence through `Expired`, the same
+                    // message a future core-driven sweep would send. One arm
+                    // handles both, so the evidence path is tested even
+                    // before any second producer exists.
+                    let evicted = match BACKEND.get() {
+                        Some(b) => b.sweep_expired(),
+                        None => Vec::new(),
+                    };
+                    if !evicted.is_empty() {
+                        return Self::done(Message::Tasks(TaskMsg::Expired(evicted)));
+                    }
+                }
+            },
             Message::Env(EnvMsg::Probed(_)) => {
                 // No producer in T3 (the probe runs synchronously in `init`);
                 // the variant exists so the match stays exhaustive per the §2.3
@@ -503,10 +605,18 @@ impl cosmic::Application for App {
         Self::none()
     }
 
-    /// No subscriptions in T3: no live tasks yet (those land with T5's
-    /// `Subscription::run_with` wiring), no config watching yet (T12).
+    /// T5 subscriptions (§3.4): (a) per-task output streams, keyed by `TaskId`
+    /// so iced tears each down when the task leaves `self.tasks`; (b) the TTL
+    /// sweep tick. The tick carries nothing — iced subscriptions cannot borrow
+    /// `self.backend` (the builder is a plain `fn`), so the sweep runs in the
+    /// `ExpiredTick` arm via `BACKEND`, and the resulting ids flow back as
+    /// `TaskMsg::Expired`. Config watching lands in T12.
     fn subscription(&self) -> Subscription<Self::Message> {
-        Subscription::none()
+        Subscription::batch(vec![
+            Subscription::batch(self.tasks.keys().copied().map(task_output_subscription)),
+            cosmic::iced::time::every(std::time::Duration::from_secs(TASK_SWEEP_INTERVAL_SECS))
+                .map(|_| Message::Tasks(TaskMsg::ExpiredTick)),
+        ])
     }
 
     fn view(&self) -> cosmic::Element<'_, Self::Message> {
@@ -560,4 +670,44 @@ impl cosmic::Application for App {
                 .into(),
         ]
     }
+}
+
+/// Shared backend for the `fn`-pointer subscription builders (§3.4).
+/// `Subscription::run_with` takes a plain `fn`, so builders cannot capture
+/// `self.backend` — they read it here instead. Set once in `init`, before any
+/// subscription is polled (race-free, mirroring libcosmic's own OnceLock
+/// sender pattern).
+static BACKEND: std::sync::OnceLock<Arc<Backend>> = std::sync::OnceLock::new();
+
+/// Sweep interval for expired tasks (§3.3): core's 600 s TTL with a 30 s
+/// poll. Read by the subscription above — one documented number, not two
+/// literals.
+pub const TASK_SWEEP_INTERVAL_SECS: u64 = 30;
+
+/// Plain `fn` — no captures, per `Subscription::run_with`'s signature.
+/// `data` is the `TaskId`, so iced keys each stream by task and tears it
+/// down when the task leaves `App::tasks`. `subscribe()` replays the ring
+/// buffer, then yields live events; `Finished` terminates the stream
+/// (`None` future) and `Completed` carries the outcome to the UI.
+fn task_output_subscription(id: TaskId) -> Subscription<Message> {
+    Subscription::run_with(id, |id: &TaskId| {
+        let id = *id;
+        let rx = BACKEND.get().and_then(|b| b.tasks().subscribe(id));
+        futures::stream::unfold(rx, move |rx| async move {
+            let rx = rx?;
+            match rx.recv().await {
+                Ok(TaskEvent::Output(line)) => Some((
+                    Message::Tasks(TaskMsg::Output {
+                        id,
+                        lines: vec![line],
+                    }),
+                    Some(rx),
+                )),
+                Ok(TaskEvent::Finished { success }) => {
+                    Some((Message::Tasks(TaskMsg::Completed { id, success }), None))
+                }
+                Err(_) => None,
+            }
+        })
+    })
 }
