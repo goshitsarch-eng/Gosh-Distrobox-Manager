@@ -121,6 +121,13 @@ impl Display for Command {
     }
 }
 
+// This `From` impl is the one sanctioned real-spawn indirection in the tree: it is
+// where a `fakers::Command` becomes a real OS command, and every caller reaches it
+// through `CommandRunner`, which is what applies the Flatpak / distrobox-host-exec
+// mapping. It is the single `#[allow]` site for the `clippy.toml` guard on
+// `async_process::Command::new` -- keep it that way, and add no others
+// (D25, architecture.md §6.4/ARCH-Q10).
+#[allow(clippy::disallowed_methods)]
 impl From<Command> for async_process::Command {
     fn from(val: Command) -> Self {
         let mut cmd = async_process::Command::new(val.program);

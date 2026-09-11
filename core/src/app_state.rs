@@ -3,14 +3,12 @@ use crate::backends::host_exec::{
     has_distrobox_host_exec, is_distrobox_container, map_distrobox_host_exec,
 };
 use crate::fakers::CommandRunner;
-use crate::models::Task;
-use std::collections::HashMap;
+use crate::task_runtime::{TaskRegistry, new_registry};
 use std::path::Path;
-use std::sync::{Arc, RwLock};
 
 pub struct AppState {
     pub distrobox: Distrobox,
-    pub tasks: Arc<RwLock<HashMap<String, Task>>>,
+    pub tasks: TaskRegistry,
 }
 
 impl Default for AppState {
@@ -38,7 +36,7 @@ impl AppState {
 
         Self {
             distrobox,
-            tasks: Arc::new(RwLock::new(HashMap::new())),
+            tasks: new_registry(),
         }
     }
 }

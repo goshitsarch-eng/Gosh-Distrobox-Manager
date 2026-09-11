@@ -6,8 +6,14 @@ name: Rust
 # green from the first commit so the S1-S8 strip steps are never gated on a
 # pre-existing red build.
 #
-# Scope today: the `rust/` crate only. That is where the whole application
-# currently lives; T1 adds the `core/`+`app/` workspace split on top of it.
+# Scope: the `core/` crate (the former `rust/`), reached through the workspace
+# whose virtual manifest and lockfile T1 hoisted to the repository root.
+#
+# The commands below are deliberately un-`--workspace`d for now: the workspace has
+# exactly one member until S5/T3 adds `app/`, so the flag would be a no-op that
+# reads as coverage it does not provide. **S5 grows them to `--workspace`** when
+# the bin crate joins -- at which point `working-directory` stays `core` and the
+# flag is what pulls `app/` in. Keep this comment and that edit in step.
 #
 # Not yet here, by design -- these belong to later tasks and must not be
 # duplicated into this file:
@@ -16,9 +22,6 @@ name: Rust
 #     git-manifests/ sidecar), plus the `check-versions.sh` stage.
 #   * T4/T14 append the Flatpak build + smoke-test job, keyed on
 #     `flatpak/cargo-sources.json` and the manifest for caching.
-#   * T1 moves `rust/` to `core/` and adds `app/`; when it lands, the
-#     `working-directory` below moves with it and the cargo commands grow
-#     `--workspace` so the new bin crate is covered too.
 #
 # `.github/workflows/flatpak.yml` is dead as written (it builds a root manifest
 # that does not exist) and is owned by T14 -- deliberately untouched here.
@@ -58,7 +61,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: rust
+        working-directory: core
 
     steps:
       - name: Check out repository

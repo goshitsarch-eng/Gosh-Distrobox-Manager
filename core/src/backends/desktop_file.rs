@@ -12,8 +12,9 @@ pub struct DesktopEntry {
 ///
 /// # Examples
 /// ```
+/// # use gosh_distrobox_core::backends::desktop_file::extract_quoted_string;
 /// let line = "exec '/usr/bin/vim' \"$@\"";
-/// assert_eq!(extract_quoted_string(line, '\''), Some("/usr/bin/vim"));
+/// assert_eq!(extract_quoted_string(line, '\'').as_deref(), Some("/usr/bin/vim"));
 /// ```
 pub fn extract_quoted_string(line: &str, quote_char: char) -> Option<String> {
     let start = line.find(quote_char)?;

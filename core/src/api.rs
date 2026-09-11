@@ -6,133 +6,16 @@
 // allow with it.
 #![allow(unexpected_cfgs)]
 
-use crate::app_state::AppState;
-use crate::fakers::Child;
 use crate::frb_generated::StreamSink;
-use crate::models::Task;
+use crate::task_runtime::{STATE, finish_task, push_task_output, run_child_task};
 use flutter_rust_bridge::frb;
-use futures::{AsyncRead, AsyncReadExt};
-use std::sync::LazyLock;
-use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
-pub use crate::backends::ContainerInfo;
-pub use crate::backends::ContainerStats;
-pub use crate::backends::CreateArgName;
-pub use crate::backends::CreateArgs;
-pub use crate::backends::PackageInfo;
-pub use crate::backends::SnapshotInfo;
-pub use crate::backends::Status;
-pub use crate::backends::Volume;
-pub use crate::backends::VolumeMode;
-pub use crate::backends::desktop_file::DesktopEntry;
-pub use crate::models::KnownDistro;
-pub use crate::models::known_distros::PackageManager;
-
-/// Represents an application that can be exported from a container
-#[derive(Debug, Clone)]
-pub struct AppInfo {
-    pub name: String,
-    pub exec: String,
-    pub icon: String,
-    pub desktop_file_path: String,
-    pub is_exported: bool,
-}
-
-/// Represents a binary that has been exported from a container
-#[derive(Debug, Clone)]
-pub struct ExportedBinary {
-    pub name: String,
-    pub source_path: String,
-    pub exported_path: String,
-}
-
-static STATE: LazyLock<AppState> = LazyLock::new(AppState::new);
-const MAX_TASK_OUTPUT_LINES: usize = 500;
-const COMPLETED_TASK_TTL: Duration = Duration::from_secs(600);
-
-fn push_task_output(task_id: &str, line: String) {
-    let mut tasks = STATE.tasks.write().unwrap();
-    if let Some(task) = tasks.get_mut(task_id) {
-        task.push_output(line.clone(), MAX_TASK_OUTPUT_LINES);
-        if let Some(tx) = task.tx.as_ref() {
-            let _ = tx.send(line);
-        }
-    }
-}
-
-fn finish_task(task_id: &str, success: bool) {
-    let mut tasks = STATE.tasks.write().unwrap();
-    if let Some(task) = tasks.get_mut(task_id) {
-        task.completed = true;
-        task.success = success;
-        task.completed_at = Some(Instant::now());
-        task.tx.take();
-    }
-
-    let now = Instant::now();
-    tasks.retain(|_, task| {
-        if task.completed {
-            match task.completed_at {
-                Some(when) => now.duration_since(when) < COMPLETED_TASK_TTL,
-                None => true,
-            }
-        } else {
-            true
-        }
-    });
-}
-
-async fn stream_reader_to_task_output(mut reader: impl AsyncRead + Unpin, task_id: String) {
-    let mut buf = [0u8; 1024];
-    loop {
-        match reader.read(&mut buf).await {
-            Ok(0) => break,
-            Ok(n) => {
-                let s = String::from_utf8_lossy(&buf[..n]).to_string();
-                push_task_output(&task_id, s);
-            }
-            Err(_) => break,
-        }
-    }
-}
-
-async fn run_child_task(
-    task_id: String,
-    mut child: Box<dyn Child + Send>,
-    success_message: &'static str,
-    failure_message: &'static str,
-) -> anyhow::Result<()> {
-    let stdout = match child.take_stdout() {
-        Some(stdout) => stdout,
-        None => {
-            push_task_output(&task_id, "Error: No stdout".into());
-            return Err(anyhow::anyhow!("No stdout"));
-        }
-    };
-    let stderr = match child.take_stderr() {
-        Some(stderr) => stderr,
-        None => {
-            push_task_output(&task_id, "Error: No stderr".into());
-            return Err(anyhow::anyhow!("No stderr"));
-        }
-    };
-
-    let out_task = tokio::spawn(stream_reader_to_task_output(stdout, task_id.clone()));
-    let err_task = tokio::spawn(stream_reader_to_task_output(stderr, task_id.clone()));
-
-    let status = child.wait().await?;
-    let _ = out_task.await;
-    let _ = err_task.await;
-
-    if status.success() {
-        push_task_output(&task_id, success_message.to_string());
-        Ok(())
-    } else {
-        push_task_output(&task_id, failure_message.to_string());
-        Err(anyhow::anyhow!(failure_message))
-    }
-}
+/// The DTO surface this module exposes to flutter_rust_bridge. The names are the
+/// ones FRB scans, so they are re-exported rather than moved again -- `api.rs`
+/// keeps resolving every type it did before, even though the definitions now
+/// live in `models::dto` (S3, architecture.md §1.3).
+pub use crate::models::*;
 
 #[frb(init)]
 pub fn init_app() {

@@ -1,0 +1,30 @@
+# Workspace-root clippy configuration.
+#
+# ARCH-Q10 as corrected by D25 -- read D25 before changing this file. The original
+# ARCH-Q10 answer was ported from a neighbouring codebase's history and does not
+# describe this tree: `std::process::Command` appears in `core/src` only in two
+# comments, and REVIEW's "already violated once" narrative (`checked_run_command`
+# re-established in `host_exec.rs`) is false here -- `checked_run_command` never
+# existed in this repo's history, and `map_flatpak_spawn_host` only rewrites
+# program/args without spawning anything. Same failure class as D21.
+#
+# What IS true, and why the guard is worth keeping: `AGENTS.md` states "NEVER use
+# `std::process::Command` directly in backend logic", and REVIEW's failure mode is
+# the worst in the plan -- a command that bypasses the Flatpak / distrobox-host-exec
+# mapping works on the developer's host and silently breaks every sandboxed user.
+# A guard that cannot fire would certify that exact failure mode as "enforced", so
+# BOTH the stated path and the live one are banned:
+#
+#   * `std::process::Command::new` -- the `AGENTS.md` rule as written. Nothing calls
+#     it today; this is the regression net for a future hand-written spawn.
+#   * `async_process::Command::new` -- the actually-live path today
+#     (`core/src/fakers/command.rs:126`, reached from `CommandRunner::spawn`/`output`).
+#
+# The one sanctioned real-spawn indirection point carries the single
+# `#[allow(clippy::disallowed_methods)]`: the `From<Command> for async_process::Command`
+# impl in `core/src/fakers/command.rs`, which is where a `fakers::Command` becomes a
+# real OS command for `CommandRunner` to run. Add no other allow sites.
+disallowed-methods = [
+    { path = "std::process::Command::new", reason = "Build commands as `fakers::Command` and run them through `fakers::CommandRunner`, so the Flatpak / distrobox-host-exec mapping is applied (AGENTS.md; ARCH-Q10 as corrected by D25)." },
+    { path = "async_process::Command::new", reason = "The live spawn path, and the one ARCH-Q10 actually needed to guard: constructing a command here bypasses `fakers::CommandRunner` and therefore the Flatpak / distrobox-host-exec mapping in `backends::flatpak::map_flatpak_spawn_host` and `backends::host_exec::map_distrobox_host_exec` (D25). The single allow is on the `From<Command> for async_process::Command` impl in `core/src/fakers/command.rs`." },
+]
