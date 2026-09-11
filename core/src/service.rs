@@ -38,6 +38,11 @@ struct BackendInner {
     distrobox: Distrobox,
     tasks: TaskRegistry,
     env: EnvGuard,
+    /// The terminal list the UI indexes into, owned HERE rather than
+    /// re-derived per call site (T12): a `Vec` per render would let a
+    /// custom terminal imported mid-session shift the index under a
+    /// picker's own selection.
+    terminals: std::sync::Mutex<crate::backends::TerminalRepository>,
 }
 
 impl Backend {
@@ -45,12 +50,14 @@ impl Backend {
     /// `NullCommandRunner`-backed runner here; the app passes `detect_host`'s).
     pub fn new(runner: CommandRunner, env: EnvGuard) -> Self {
         let distrobox = Distrobox::new(runner.clone(), default_cmd_factory());
+        let terminals = crate::backends::TerminalRepository::new(runner.clone());
         Self {
             inner: Arc::new(BackendInner {
                 runner,
                 distrobox,
                 tasks: TaskRegistry::new(),
                 env,
+                terminals: std::sync::Mutex::new(terminals),
             }),
         }
     }
@@ -68,6 +75,20 @@ impl Backend {
 
     pub fn tasks(&self) -> &TaskRegistry {
         &self.inner.tasks
+    }
+
+    /// Install the persisted/imported `AppConfig::custom_terminals` into the
+    /// terminal list (T12). Called whenever the config changes, so the list
+    /// the pickers index is always the same list the ids resolve against.
+    pub fn set_custom_terminals(&self, customs: Vec<crate::backends::Terminal>) {
+        *self.inner.terminals.lock().unwrap() =
+            crate::backends::TerminalRepository::with_customs(self.inner.runner.clone(), customs);
+    }
+
+    /// The ONE terminal list (built-ins + customs): every picker renders it
+    /// and every index resolves against it.
+    pub fn terminals(&self) -> Vec<crate::backends::Terminal> {
+        self.inner.terminals.lock().unwrap().all_terminals()
     }
 
     /// Today's `is_distrobox_installed`, without the throwaway runner +
@@ -195,6 +216,12 @@ impl Backend {
         argv
     }
 
+    /// Env-mapped runner handle (T12 legacy import): probes run host-side
+    /// under Flatpak through the same mapping as everything else.
+    pub fn command_runner(&self) -> &crate::fakers::CommandRunner {
+        &self.inner.runner
+    }
+
     /// Terminal launch (D8): spawn `terminal` attached to `container`
     /// through the env-mapped runner. Fire-and-forget (no output
     /// subscription — the terminal owns its window).
@@ -234,6 +261,79 @@ impl Backend {
             .await
             .map_err(CoreError::from)
             .map_err(CoreFailure::from)
+    }
+
+    /// App export toggle (typed, short).
+    pub async fn export_app(
+        &self,
+        container: &str,
+        desktop_file: &str,
+    ) -> Result<String, CoreFailure> {
+        self.guard_ok()?;
+        self.inner
+            .distrobox
+            .export_app(container, desktop_file)
+            .await
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
+    /// App unexport (typed, short).
+    pub async fn unexport_app(
+        &self,
+        container: &str,
+        desktop_file: &str,
+    ) -> Result<String, CoreFailure> {
+        self.guard_ok()?;
+        self.inner
+            .distrobox
+            .unexport_app(container, desktop_file)
+            .await
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
+    /// Binary export (typed, short).
+    pub async fn export_binary(
+        &self,
+        container: &str,
+        binary: &str,
+    ) -> Result<String, CoreFailure> {
+        self.guard_ok()?;
+        self.inner
+            .distrobox
+            .export_binary(container, binary)
+            .await
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
+    /// Open a URL in the host browser (row #169): `xdg-open` through the
+    /// env-mapped runner (flatpak-spawn/host-exec mapping applies — a bare
+    /// spawn would break sandboxed users, ARCH-Q10/D25).
+    ///
+    /// Fire-and-forget: `Ok` means the launcher STARTED, not that a browser
+    /// opened. A host with no URL handler registers one only once the child
+    /// runs (`xdg-open` exits non-zero) and that exit is not observed here —
+    /// awaiting it would equally mean blocking the UI on handlers that stay
+    /// in the foreground. So the caller's toast means "could not launch a
+    /// handler", never "the link opened".
+    pub fn open_url(&self, url: &str) -> Result<(), CoreFailure> {
+        self.guard_ok()?;
+        use crate::fakers::Command;
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(url);
+        self.inner
+            .distrobox
+            .runner()
+            .spawn(cmd)
+            .map(|_| ())
+            .map_err(|e| {
+                CoreFailure::from(CoreError::Spawn {
+                    command: "xdg-open".to_string(),
+                    source: e,
+                })
+            })
     }
 
     /// Snapshot list (typed).

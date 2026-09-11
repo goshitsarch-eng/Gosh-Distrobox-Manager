@@ -16,7 +16,7 @@ use crate::message::{
     Message, StatsMsg, TaskMsg, UiMsg, is_blocked, running_count, stopped_count,
 };
 use crate::views::{self, Page, active_page};
-use cosmic::app::{Core, Task};
+use cosmic::app::{ApplicationExt, Core, Task};
 use cosmic::iced::{Length, Subscription};
 use cosmic::widget::toaster::Toasts;
 use cosmic::widget::{self, nav_bar};
@@ -68,6 +68,16 @@ pub struct App {
     /// every unrelated failure render as "Could not load images". Set on
     /// `Images Loaded(Err)`, cleared on request/success.
     images_error: Option<String>,
+    /// Apps page state (T12, rows #174/#179): search + binary dialog.
+    apps_search: String,
+    apps_binary_path: String,
+    apps_binary_error: Option<String>,
+    /// Apps page's OWN load error (same reasoning as `images_error`): the
+    /// global banner would render every unrelated failure as "Could not
+    /// load apps". Set on `Apps Loaded/BinariesLoaded(Err)`, cleared on
+    /// request and on success.
+    apps_error: Option<String>,
+    apps_binary_dialog: bool,
     /// Images page state (T7, rows #99/#103): live search + custom URL.
     images_search: String,
     images_custom: String,
@@ -84,6 +94,16 @@ pub struct App {
     activity: crate::activity::ActivityState,
     /// Terminal page state (T9, rows #66–#77 + D8).
     terminal: crate::terminal::TerminalState,
+    /// Persisted preferences (T12 §5: cosmic-config, degrade-don't-crash).
+    /// `None` = config dir unavailable (defaults render, writes toast).
+    config: Option<gosh_distrobox_core::AppConfig>,
+    /// D11/PKG-9 one-time gate: `true` while the legacy keys were absent at
+    /// load. Cleared on the import result (applied or not) — never re-run,
+    /// so a user who deletes an imported key keeps it deleted.
+    legacy_import_pending: bool,
+    /// Distrobox version display (row #163).
+    distrobox_version: String,
+    loading_version: bool,
     apps: Vec<AppInfo>,
     exported_binaries: Vec<ExportedBinary>,
     stats: Option<ContainerStats>,
@@ -145,6 +165,25 @@ impl App {
         Task::done(cosmic::Action::App(m))
     }
 
+    /// Destructive-confirm gate (§5.3 `confirm_destructive_actions`): open
+    /// the dialog, or — when the user disabled confirms — dispatch the
+    /// follow-up immediately as if confirmed. Non-destructive specs always
+    /// open (the key gates destructive class only).
+    fn confirm_or_run(&mut self, spec: ConfirmSpec) -> Task<Message> {
+        let destructive = spec.destructive;
+        let enabled = self
+            .config
+            .as_ref()
+            .map(|c| c.confirm_destructive_actions)
+            .unwrap_or(true);
+        if destructive && !enabled {
+            self.dialog = None;
+            return self.dispatch_confirm_action(spec.action);
+        }
+        self.dialog = Some(ActiveDialog::Confirm(spec));
+        Self::none()
+    }
+
     /// Push a toast; returns the auto-dismiss follow-up task.
     fn toast(&mut self, text: String) -> Task<Message> {
         views::push_toast(&mut self.toasts, text)
@@ -201,41 +240,76 @@ impl App {
         )
     }
 
-    fn view_apps(&self) -> cosmic::Element<'_, Message> {
-        let Some(selected) = self.selected_container.clone() else {
-            return widget::container(widget::text::body("Select a container to list its apps."))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
+    /// Settings page (T12, rows #163–#171): system info, quick actions,
+    /// preferences (cosmic-config, best-effort), danger zone, about.
+    fn view_settings_page(&self) -> cosmic::Element<'_, Message> {
+        use crate::settings as st;
+        let mut col = widget::Column::new().spacing(16);
+        col = col.push(st::system_info(
+            &self.distrobox_version,
+            self.loading_version,
+            self.containers.len(),
+            crate::message::running_count(&self.containers),
+            self.backend.is_distrobox_installed(),
+        ));
+        // Quick actions (rows #165–#168).
+        col = col.push(widget::text::caption_heading("QUICK ACTIONS"));
+        col =
+            col.push({
+                let row: cosmic::Element<'_, Message> =
+                    widget::Row::new()
+                        .push(widget::button::standard("Refresh All Data").on_press(
+                            Message::Settings(crate::message::SettingsMsg::RefreshAllRequested),
+                        ))
+                        .push(widget::button::standard("Stop All Containers").on_press(
+                            Message::Settings(crate::message::SettingsMsg::StopAllRequested),
+                        ))
+                        .spacing(12)
+                        .into();
+                row
+            });
+        col = col.push({
+            let row: cosmic::Element<'_, Message> = widget::Row::new()
+                .push(widget::button::standard("Upgrade All Containers").on_press(
+                    Message::Settings(crate::message::SettingsMsg::UpgradeAllRequested),
+                ))
+                .push(widget::button::standard("Clear Completed Tasks").on_press(
+                    Message::Settings(crate::message::SettingsMsg::ClearCompleted),
+                ))
+                .spacing(12)
                 .into();
-        };
-        if self.loading.apps {
-            return widget::container(widget::text::body(format!("Loading apps for {selected}…")))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .into();
+            row
+        });
+        // Preferences (row #171): config or degrade notice.
+        match self.config.as_ref() {
+            Some(cfg) => {
+                col = col.push(crate::settings::preferences(cfg, &self.terminal_list()));
+            }
+            None => {
+                col = col.push(crate::settings::config_unavailable());
+            }
         }
-        let mut col = widget::Column::new()
-            .push(widget::text::title3(format!("Apps in {selected}")))
-            .spacing(4);
-        if self.apps.is_empty() {
-            col = col.push(widget::text::body("No apps found."));
-        }
-        for app in &self.apps {
-            let marker = if app.is_exported { " [exported]" } else { "" };
-            col = col.push(widget::text::body(format!("{}{}", app.name, marker)));
-        }
-        col = col.push(widget::text::title3("Exported binaries"));
-        if self.exported_binaries.is_empty() {
-            col = col.push(widget::text::body("No exported binaries."));
-        }
-        for bin in &self.exported_binaries {
-            col = col.push(widget::text::body(bin.name.clone()));
-        }
+        // Danger zone (row #170).
+        col = col.push(crate::settings::danger_zone(!self.containers.is_empty()));
+        // About (row #169, I5): `widget::about()` owns the card.
+        col = col.push(widget::text::caption_heading("ABOUT"));
+        col = col.push(st::about());
         widget::scrollable(col).into()
+    }
+
+    /// Apps page (T12, rows #172–#179): full catalogue view over the
+    /// T3 mirrors (selected container). Binary dialog through the modal slot.
+    fn view_apps_page(&self) -> cosmic::Element<'_, Message> {
+        crate::apps_view::view_apps_page(
+            self.selected_container.as_deref(),
+            &self.apps,
+            &self.exported_binaries,
+            self.loading.apps || self.loading.binaries,
+            self.apps_error.as_deref(),
+            &crate::apps_view::AppsViewState {
+                search: self.apps_search.clone(),
+            },
+        )
     }
 
     fn view_stats(&self) -> cosmic::Element<'_, Message> {
@@ -313,6 +387,17 @@ impl cosmic::Application for App {
         // `text_context_menu` OnceLock sender).
         let _ = BACKEND.set(Arc::clone(&backend));
 
+        // Config load (T12 §5): an unavailable config dir degrades to
+        // `None` (defaults render, writes toast) rather than crashing.
+        let (config, legacy_import_pending) = match crate::settings::load_entry() {
+            Some((cfg, needs_import)) => (Some(cfg), needs_import),
+            None => (None, false),
+        };
+        // The legacy import probes the host; without a config handle to
+        // persist into, importing would invent settings that vanish on
+        // restart. Arm the gate only when there is somewhere to write.
+        let legacy_import_pending = legacy_import_pending && config.is_some();
+
         let mut app = App {
             core,
             nav_model,
@@ -322,10 +407,19 @@ impl cosmic::Application for App {
             selected_container: None,
             images: Vec::new(),
             images_error: None,
+            apps_search: String::new(),
+            apps_binary_path: String::new(),
+            apps_binary_error: None,
+            apps_error: None,
+            apps_binary_dialog: false,
             packages: crate::packages::PackagesState::default(),
             backups: crate::backups::BackupsState::default(),
             activity: crate::activity::ActivityState::default(),
             terminal: crate::terminal::TerminalState::default(),
+            config,
+            legacy_import_pending,
+            distrobox_version: "Unknown".to_string(),
+            loading_version: true,
             images_search: String::new(),
             images_custom: String::new(),
             image_details: None,
@@ -341,6 +435,7 @@ impl cosmic::Application for App {
             toasts: Toasts::new(|id| Message::Ui(UiMsg::ToastClosed(id))),
             busy: std::collections::BTreeSet::new(),
         };
+        app.sync_terminals();
         app.core_mut()
             .set_header_title("Gosh Distrobox Manager".to_string());
 
@@ -349,7 +444,28 @@ impl cosmic::Application for App {
             return (app, Self::none());
         }
         app.loading.containers = true;
-        let task = Self::refresh_containers(&backend);
+        app.loading_version = true;
+        let b1 = Arc::clone(&backend);
+        let b2 = Arc::clone(&backend);
+        let mut tasks = vec![
+            Self::refresh_containers(&b1),
+            Self::run(async move {
+                let result = b2.distrobox_version().await;
+                Message::Settings(crate::message::SettingsMsg::VersionLoaded(result))
+            }),
+        ];
+        // D11/PKG-9 one-time import: the probes are async (`gsettings`,
+        // host file read) and must run through the env-mapped runner, so
+        // this is a `Task` like every other backend call (§0.2) — never a
+        // synchronous probe in `init`.
+        if legacy_import_pending {
+            let b3 = Arc::clone(&backend);
+            tasks.push(Self::run(async move {
+                let legacy = gosh_distrobox_core::import_legacy(b3.command_runner()).await;
+                Message::Settings(crate::message::SettingsMsg::LegacyImported(legacy))
+            }));
+        }
+        let task = Task::batch(tasks);
         (app, task)
     }
 
@@ -383,6 +499,7 @@ impl cosmic::Application for App {
                 Self::none()
             }
             Page::Activity => Self::none(),
+            Page::Settings => Self::none(),
             Page::Backups => {
                 // First visit: pick a container and load snapshots.
                 if self.backups.container.is_none()
@@ -501,6 +618,7 @@ impl cosmic::Application for App {
                         self.selected_container = name.clone();
                         self.apps.clear();
                         self.exported_binaries.clear();
+                        self.apps_error = None;
                         self.stats = None;
                         self.stats_for = None;
                         if let Some(container) = name {
@@ -516,11 +634,11 @@ impl cosmic::Application for App {
                             return Task::batch(vec![
                                 Self::run(async move {
                                     let result = b1.container_apps(&c1).await;
-                                    Message::Apps(AppMsg::Loaded(result))
+                                    Message::Apps(AppMsg::Loaded(c1, result))
                                 }),
                                 Self::run(async move {
                                     let result = b2.exported_binaries(&c2).await;
-                                    Message::Apps(AppMsg::BinariesLoaded(result))
+                                    Message::Apps(AppMsg::BinariesLoaded(c2, result))
                                 }),
                                 Self::run(async move {
                                     let result = b3.container_stats(&c3).await;
@@ -588,7 +706,7 @@ impl cosmic::Application for App {
                 }
                 ContainerMsg::RemoveRequested(name) => {
                     // Destructive → shared confirm (§3.3), not a direct run.
-                    self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+                    return self.confirm_or_run(ConfirmSpec {
                         title: "Delete Container".to_string(),
                         body: format!(
                             "Are you sure you want to delete \"{name}\"?\n\nThis action cannot be undone and all container data will be lost."
@@ -596,21 +714,32 @@ impl cosmic::Application for App {
                         confirm_label: "Delete".to_string(),
                         destructive: true,
                         action: ConfirmAction::RemoveContainer(name),
-                    }));
+                    });
                 }
                 ContainerMsg::StopAllRequested => {
                     let count = running_count(&self.containers);
-                    if count == 0 || !self.busy.insert("stop-all".to_string()) {
-                        return Self::none();
+                    if count == 0 {
+                        // Sibling of UpgradeAll's toast (#167). The buttons
+                        // that produce this (Containers, Settings) are always
+                        // enabled, so a silent return reads as a dead
+                        // control.
+                        let toast = self.toast("No running containers to stop.".to_string());
+                        return toast;
                     }
-                    self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+                    // No guard here: `dispatch_confirm_action` owns the
+                    // "stop-all" key (as `RemoveContainer` does). Inserting
+                    // it at request time made the confirmed action re-insert
+                    // an already-present key, and `BTreeSet::insert` says
+                    // `false` for that — so every Stop All, dialog and
+                    // no-confirm path alike, bailed before spawning and left
+                    // the key stuck, muting the button for the session.
+                    return self.confirm_or_run(ConfirmSpec {
                         title: "Stop All Containers".to_string(),
                         body: format!("Stop all {count} running containers?"),
                         confirm_label: "Stop All".to_string(),
                         destructive: true,
                         action: ConfirmAction::StopAll,
-                    }));
-                    self.busy.remove("stop-all");
+                    });
                 }
                 ContainerMsg::UpgradeRequested(name) => {
                     if is_blocked(self.backend.env()) {
@@ -672,13 +801,13 @@ impl cosmic::Application for App {
                         let toast = self.toast("No running containers to upgrade.".to_string());
                         return toast;
                     }
-                    self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+                    return self.confirm_or_run(ConfirmSpec {
                         title: "Upgrade All Containers".to_string(),
                         body: format!("Upgrade packages in {} running containers?", running.len()),
                         confirm_label: "Upgrade All".to_string(),
                         destructive: false,
                         action: ConfirmAction::UpgradeAll,
-                    }));
+                    });
                 }
             },
             Message::Details(msg) => match msg {
@@ -793,127 +922,9 @@ impl cosmic::Application for App {
                         return Self::none();
                     };
                     match dialog {
-                        ActiveDialog::Confirm(spec) => match spec.action {
-                            ConfirmAction::RemoveContainer(name) => {
-                                if is_blocked(self.backend.env()) {
-                                    self.error = self.backend.env().message.clone();
-                                    return Self::none();
-                                }
-                                if !self.busy.insert(format!("remove:{name}")) {
-                                    return Self::none();
-                                }
-                                let backend = Arc::clone(&self.backend);
-                                return Self::run(async move {
-                                    let result = backend
-                                        .remove_container(&name)
-                                        .await
-                                        .map(|_| format!("{name} deleted"));
-                                    Message::Containers(ContainerMsg::ActionFinished(result))
-                                });
-                            }
-                            ConfirmAction::StopAll => {
-                                if is_blocked(self.backend.env()) {
-                                    self.error = self.backend.env().message.clone();
-                                    return Self::none();
-                                }
-                                if !self.busy.insert("stop-all".to_string()) {
-                                    return Self::none();
-                                }
-                                let backend = Arc::clone(&self.backend);
-                                return Self::run(async move {
-                                    let result = backend
-                                        .stop_all_containers()
-                                        .await
-                                        .map(|_| "All containers stopped".to_string());
-                                    Message::Containers(ContainerMsg::ActionFinished(result))
-                                });
-                            }
-                            ConfirmAction::UpgradeAll => {
-                                if is_blocked(self.backend.env()) {
-                                    self.error = self.backend.env().message.clone();
-                                    return Self::none();
-                                }
-                                let running: Vec<String> = self
-                                    .containers
-                                    .iter()
-                                    .filter(|c| icons::is_running(&c.status))
-                                    .map(|c| c.name.clone())
-                                    .collect();
-                                let backend = Arc::clone(&self.backend);
-                                let spawns: Vec<Task<Message>> = running
-                                    .into_iter()
-                                    .map(|name| {
-                                        let backend = Arc::clone(&backend);
-                                        let label = format!("Upgrade {name}");
-                                        Self::run(async move {
-                                            let result = backend.upgrade_container(&name).await;
-                                            Message::Tasks(TaskMsg::Started { label, result })
-                                        })
-                                    })
-                                    .collect();
-                                if spawns.is_empty() {
-                                    return Self::none();
-                                }
-                                return Task::batch(spawns);
-                            }
-                            ConfirmAction::InstallPackage { container, package } => {
-                                // Row #122: spawn failure reports via
-                                // `TaskMsg::Started Err` → error banner (the
-                                // Started arm toasts too — never silent,
-                                // unlike Flutter null).
-                                if is_blocked(self.backend.env()) {
-                                    self.error = self.backend.env().message.clone();
-                                    return Self::none();
-                                }
-                                let backend = Arc::clone(&self.backend);
-                                let label = format!("Install {package} in {container}");
-                                return Self::run(async move {
-                                    let result =
-                                        backend.install_package(&container, &package).await;
-                                    Message::Tasks(TaskMsg::Started { label, result })
-                                });
-                            }
-                            ConfirmAction::RemovePackage { container, package } => {
-                                if is_blocked(self.backend.env()) {
-                                    self.error = self.backend.env().message.clone();
-                                    return Self::none();
-                                }
-                                let backend = Arc::clone(&self.backend);
-                                let label = format!("Remove {package} from {container}");
-                                return Self::run(async move {
-                                    let result = backend.remove_package(&container, &package).await;
-                                    Message::Tasks(TaskMsg::Started { label, result })
-                                });
-                            }
-                            ConfirmAction::DeleteSnapshot(id) => {
-                                // Row #141: delete is short (no child to
-                                // stream); toast green/red via ActionFinished,
-                                // then reload the list in the same future.
-                                if is_blocked(self.backend.env()) {
-                                    self.error = self.backend.env().message.clone();
-                                    return Self::none();
-                                }
-                                let backend = Arc::clone(&self.backend);
-                                return Self::run(async move {
-                                    let delete = backend.delete_snapshot(&id).await;
-                                    Message::Backups(crate::message::BackupsMsg::DeleteFinished(
-                                        delete,
-                                    ))
-                                });
-                            }
-                            ConfirmAction::UpgradeContainer(container) => {
-                                if is_blocked(self.backend.env()) {
-                                    self.error = self.backend.env().message.clone();
-                                    return Self::none();
-                                }
-                                let backend = Arc::clone(&self.backend);
-                                let label = format!("Upgrade {container}");
-                                return Self::run(async move {
-                                    let result = backend.upgrade_container(&container).await;
-                                    Message::Tasks(TaskMsg::Started { label, result })
-                                });
-                            }
-                        },
+                        ActiveDialog::Confirm(spec) => {
+                            return self.dispatch_confirm_action(spec.action);
+                        }
                         ActiveDialog::Clone { .. } => {
                             // Clone uses its own primary button
                             // (CloneConfirmed); confirming a stale dialog
@@ -929,37 +940,162 @@ impl cosmic::Application for App {
             Message::Updates(_) => return Self::none(), // namespace reserved (T9+)
             Message::Terminal(msg) => return self.update_terminal(msg),
             Message::Apps(msg) => match msg {
-                AppMsg::LoadRequested(container) => {
-                    self.loading.apps = true;
-                    let backend = Arc::clone(&self.backend);
-                    return Self::run(async move {
-                        let result = backend.container_apps(&container).await;
-                        Message::Apps(AppMsg::Loaded(result))
-                    });
-                }
-                AppMsg::Loaded(result) => {
+                AppMsg::Loaded(container, result) => {
+                    // Stale-response guard (T8 pattern, and load-bearing here
+                    // because every export triggers a re-sync that can land
+                    // after the user has moved to another container).
+                    if !self.apps_reply_is_current(&container) {
+                        return Self::none();
+                    }
                     self.loading.apps = false;
                     match result {
-                        Ok(apps) => self.apps = apps,
-                        Err(e) => self.error = Some(Self::error_text(&e)),
+                        Ok(apps) => {
+                            self.apps = apps;
+                            self.apps_error = None;
+                        }
+                        Err(e) => self.apps_error = Some(Self::error_text(&e)),
                     }
                 }
-                AppMsg::BinariesLoadRequested(container) => {
-                    self.loading.binaries = true;
-                    let backend = Arc::clone(&self.backend);
-                    return Self::run(async move {
-                        let result = backend.exported_binaries(&container).await;
-                        Message::Apps(AppMsg::BinariesLoaded(result))
-                    });
-                }
-                AppMsg::BinariesLoaded(result) => {
+                AppMsg::BinariesLoaded(container, result) => {
+                    if !self.apps_reply_is_current(&container) {
+                        return Self::none();
+                    }
                     self.loading.binaries = false;
                     match result {
-                        Ok(bins) => self.exported_binaries = bins,
-                        Err(e) => self.error = Some(Self::error_text(&e)),
+                        Ok(bins) => {
+                            self.exported_binaries = bins;
+                            self.apps_error = None;
+                        }
+                        Err(e) => self.apps_error = Some(Self::error_text(&e)),
                     }
                 }
+                AppMsg::SearchChanged(q) => {
+                    self.apps_search = q;
+                }
+                AppMsg::BinaryDialogRequested => {
+                    // Row #175: path field starts empty; LOUD on submit.
+                    self.apps_binary_path.clear();
+                    self.apps_binary_error = None;
+                    self.apps_binary_dialog = true;
+                }
+                AppMsg::BinaryDialogClosed => {
+                    self.apps_binary_dialog = false;
+                    self.apps_binary_error = None;
+                }
+                AppMsg::BinaryPathChanged(p) => {
+                    self.apps_binary_path = p;
+                    self.apps_binary_error = None;
+                }
+                AppMsg::BinaryExportConfirmed => {
+                    // Row #179: LOUD on empty (Flutter silently returned).
+                    let (container, path) = match (
+                        self.selected_container.clone(),
+                        self.apps_binary_path.trim().to_string(),
+                    ) {
+                        (Some(c), p) if !p.is_empty() => (c, p),
+                        _ => {
+                            self.apps_binary_error = Some("Binary path is required.".to_string());
+                            return Self::none();
+                        }
+                    };
+                    if is_blocked(self.backend.env()) {
+                        self.error = self.backend.env().message.clone();
+                        return Self::none();
+                    }
+                    self.apps_binary_dialog = false;
+                    let backend = Arc::clone(&self.backend);
+                    let c = container.clone();
+                    return Self::run(async move {
+                        let result = backend
+                            .export_binary(&container, &path)
+                            .await
+                            .map(|_| format!("Binary exported: {path}"));
+                        Message::Apps(AppMsg::ActionFinished(c, result))
+                    });
+                }
+                AppMsg::ReloadRequested(container) => {
+                    // Full spinner only when there is nothing to keep. A
+                    // re-sync after an export must NOT blank the page: the
+                    // header Refresh and the post-export reload both land
+                    // here, and `view_apps_page` early-returns on `loading`,
+                    // so flipping a toggle would otherwise drop the whole
+                    // grid (search box included) to "Loading apps…" and back.
+                    let first_load = self.apps.is_empty() && self.apps_error.is_none();
+                    self.loading.apps = first_load;
+                    self.loading.binaries = first_load;
+                    self.apps_error = None;
+                    let b1 = Arc::clone(&self.backend);
+                    let b2 = Arc::clone(&self.backend);
+                    let c1 = container.clone();
+                    let c2 = container.clone();
+                    return Task::batch(vec![
+                        Self::run(async move {
+                            let result = b1.container_apps(&c1).await;
+                            Message::Apps(AppMsg::Loaded(c1, result))
+                        }),
+                        Self::run(async move {
+                            let result = b2.exported_binaries(&c2).await;
+                            Message::Apps(AppMsg::BinariesLoaded(c2, result))
+                        }),
+                    ]);
+                }
+                AppMsg::ExportRequested(container, desktop) => {
+                    if is_blocked(self.backend.env()) {
+                        self.error = self.backend.env().message.clone();
+                        return Self::none();
+                    }
+                    // Same re-press guard as every other short mutation:
+                    // flipping the toggle twice would otherwise run two
+                    // `distrobox export` invocations for one app.
+                    if !self.busy.insert(format!("export:{container}:{desktop}")) {
+                        return Self::none();
+                    }
+                    let backend = Arc::clone(&self.backend);
+                    let c = container.clone();
+                    return Self::run(async move {
+                        let result = backend
+                            .export_app(&container, &desktop)
+                            .await
+                            .map(|_| "Application exported".to_string());
+                        Message::Apps(AppMsg::ActionFinished(c, result))
+                    });
+                }
+                AppMsg::UnexportRequested(container, desktop) => {
+                    if is_blocked(self.backend.env()) {
+                        self.error = self.backend.env().message.clone();
+                        return Self::none();
+                    }
+                    if !self.busy.insert(format!("unexport:{container}:{desktop}")) {
+                        return Self::none();
+                    }
+                    let backend = Arc::clone(&self.backend);
+                    let c = container.clone();
+                    return Self::run(async move {
+                        let result = backend
+                            .unexport_app(&container, &desktop)
+                            .await
+                            .map(|_| "Application unexported".to_string());
+                        Message::Apps(AppMsg::ActionFinished(c, result))
+                    });
+                }
+                AppMsg::ActionFinished(container, result) => {
+                    // Mirrors `ContainerMsg::ActionFinished` (clear guards,
+                    // toast, no silent failures) but reloads the APP list —
+                    // the export toggle's EXPORTED label and count come from
+                    // re-reading the container, so containers alone are not
+                    // enough (#178). Reload regardless of outcome: on error
+                    // the UI re-syncs to the container's real state instead
+                    // of keeping the flip the user just made.
+                    self.busy.clear();
+                    let toast = match result {
+                        Ok(msg) => self.toast(msg),
+                        Err(e) => self.toast(format!("Failed: {}", Self::error_text(&e))),
+                    };
+                    let reload = self.update(Message::Apps(AppMsg::ReloadRequested(container)));
+                    return Task::batch(vec![toast, reload]);
+                }
             },
+            Message::Settings(msg) => return self.update_settings(msg),
             Message::Images(msg) => match msg {
                 ImageMsg::LoadRequested => {
                     self.loading.images = true;
@@ -1198,17 +1334,29 @@ impl cosmic::Application for App {
         Self::none()
     }
 
-    /// T5 subscriptions (§3.4): (a) per-task output streams, keyed by `TaskId`
-    /// so iced tears each down when the task leaves `self.tasks`; (b) the TTL
-    /// sweep tick. The tick carries nothing — iced subscriptions cannot borrow
-    /// `self.backend` (the builder is a plain `fn`), so the sweep runs in the
-    /// `ExpiredTick` arm via `BACKEND`, and the resulting ids flow back as
-    /// `TaskMsg::Expired`. Config watching lands in T12.
+    /// T5/T12 subscriptions (§3.4): (a) per-task output streams, keyed by
+    /// `TaskId` so iced tears each down when the task leaves `self.tasks`;
+    /// (b) the TTL sweep tick; (c) the config watch (§5.1-2). The tick
+    /// carries nothing — iced subscriptions cannot borrow `self.backend`
+    /// (the builder is a plain `fn`), so the sweep runs in the `ExpiredTick`
+    /// arm via `BACKEND`, and the resulting ids flow back as
+    /// `TaskMsg::Expired`.
     fn subscription(&self) -> Subscription<Self::Message> {
         Subscription::batch(vec![
             Subscription::batch(self.tasks.keys().copied().map(task_output_subscription)),
             cosmic::iced::time::every(std::time::Duration::from_secs(TASK_SWEEP_INTERVAL_SECS))
                 .map(|_| Message::Tasks(TaskMsg::ExpiredTick)),
+            // §5.1-2 reactive reload: the watcher emits the full entry after
+            // any key change (including ours). `ConfigChanged` no-ops on an
+            // equal value, so our own writes do not echo. `watch_config` is
+            // the documented entry point (architecture §5, D23): with
+            // `dbus-config` off it resolves to cosmic-config's notify-based
+            // `config_subscription`, never the absent settings daemon.
+            self.watch_config::<crate::settings::PrefsEntry>(crate::settings::config_id())
+                .map(|update| {
+                    let cfg = gosh_distrobox_core::AppConfig::from(&update.config);
+                    Message::Settings(crate::message::SettingsMsg::ConfigChanged(cfg))
+                }),
         ])
     }
 
@@ -1280,7 +1428,8 @@ impl cosmic::Application for App {
             Page::Backups => self.view_backups(),
             Page::Activity => self.view_activity_page(),
             Page::Updates => self.view_updates(),
-            Page::Apps => self.view_apps(),
+            Page::Apps => self.view_apps_page(),
+            Page::Settings => self.view_settings_page(),
             Page::Stats => self.view_stats(),
         };
         let body: cosmic::Element<'_, Self::Message> = match self.error.clone() {
@@ -1321,8 +1470,11 @@ impl cosmic::Application for App {
             return vec![widget::button::standard("Back").on_press(msg).into()];
         }
         // O6: Updates owns Refresh+Upgrade All in `header_end` (row #123) —
-        // the generic Refresh here would render it twice.
-        if self.active_page() == Page::Updates {
+        // the generic Refresh here would render it twice. Same for Apps
+        // (#172): its generic Refresh reloads CONTAINERS, which changes
+        // nothing on a page showing one container's apps, so the header_end
+        // one (which reloads apps) is the only one worth showing.
+        if matches!(self.active_page(), Page::Updates | Page::Apps) {
             return vec![];
         }
         vec![
@@ -1370,6 +1522,18 @@ impl cosmic::Application for App {
                     ))
                     .into(),
             ],
+            // Row #172: header refresh, enabled only with a container to
+            // reload (the page itself renders "Select a container" without
+            // one, so a press would have nothing to act on).
+            Page::Apps => vec![
+                widget::button::standard("Refresh")
+                    .on_press_maybe(
+                        self.selected_container
+                            .clone()
+                            .map(|c| Message::Apps(AppMsg::ReloadRequested(c))),
+                    )
+                    .into(),
+            ],
             _ => vec![],
         }
     }
@@ -1384,9 +1548,33 @@ impl cosmic::Application for App {
     }
 
     fn dialog(&self) -> Option<cosmic::Element<'_, Self::Message>> {
-        // Single modal slot (§3.3): backups dialogs first (they belong to
-        // the visible page), then wizard volume, image details, then the
-        // page-level dialog.
+        // Single modal slot (§3.3): binary export, backups dialogs, wizard
+        // volume, image details, then the page-level dialog.
+        if self.apps_binary_dialog {
+            return Some(
+                widget::dialog()
+                    .title("Export Binary")
+                    .control(crate::apps_view::binary_dialog_body(
+                        &self.apps_binary_path,
+                        self.apps_binary_error.as_deref(),
+                    ))
+                    .primary_action({
+                        let export: cosmic::Element<'_, Message> =
+                            widget::button::suggested("Export")
+                                .on_press(Message::Apps(AppMsg::BinaryExportConfirmed))
+                                .into();
+                        export
+                    })
+                    .secondary_action({
+                        let cancel: cosmic::Element<'_, Message> =
+                            widget::button::standard("Cancel")
+                                .on_press(Message::Apps(AppMsg::BinaryDialogClosed))
+                                .into();
+                        cancel
+                    })
+                    .into(),
+            );
+        }
         if self.backups.dialog.is_some() {
             return self.backups_dialog();
         }
@@ -1578,6 +1766,19 @@ impl App {
         widget::scrollable(col).into()
     }
 
+    /// Install the CURRENT config's custom terminals into the backend's list
+    /// (T12). Called after every load / watch update / legacy import, before
+    /// anything can index the list. Cheap and idempotent: the constructor
+    /// rebuilds from built-ins + customs.
+    fn sync_terminals(&mut self) {
+        self.backend.set_custom_terminals(
+            self.config
+                .as_ref()
+                .map(|c| c.custom_terminals.clone())
+                .unwrap_or_default(),
+        );
+    }
+
     /// Backups message router (T10, rows #133–#151).
     fn update_backups(&mut self, msg: crate::message::BackupsMsg) -> Task<Message> {
         use crate::backups::{BackupsDialog, BackupsState};
@@ -1657,7 +1858,14 @@ impl App {
                         return toast;
                     }
                 };
-                self.backups.create_name = BackupsState::default_snapshot_name(&container);
+                self.backups.create_name = BackupsState::default_snapshot_name(
+                    &self
+                        .config
+                        .as_ref()
+                        .map(|c| c.snapshot_prefix.clone())
+                        .unwrap_or_default(),
+                    &container,
+                );
                 self.backups.create_error = None;
                 self.backups.dialog = Some(BackupsDialog::Create);
                 Self::none()
@@ -1719,7 +1927,7 @@ impl App {
                     .find(|s| s.id == id)
                     .map(|s| s.name.clone())
                     .unwrap_or(id.clone());
-                self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+                self.confirm_or_run(ConfirmSpec {
                     title: "Delete Snapshot".to_string(),
                     body: format!(
                         "Are you sure you want to delete \"{name}\"?\n\nThis action cannot be undone."
@@ -1727,8 +1935,7 @@ impl App {
                     confirm_label: "Delete".to_string(),
                     destructive: true,
                     action: ConfirmAction::DeleteSnapshot(id),
-                }));
-                Self::none()
+                })
             }
             BackupsMsg::RestoreDialogRequested(snapshot) => {
                 // Row #142: prefilled new name.
@@ -1773,7 +1980,14 @@ impl App {
                 // Row #143: prefilled path; the portal picker replaces
                 // free-text (#149) at confirm time — Browse opens it now.
                 if let Some(container) = self.backups.container.clone() {
-                    self.backups.export_path = BackupsState::default_export_path(&container);
+                    self.backups.export_path = BackupsState::default_export_path(
+                        &self
+                            .config
+                            .as_ref()
+                            .map(|c| c.default_export_dir.clone())
+                            .unwrap_or_default(),
+                        &container,
+                    );
                     self.backups.export_error = None;
                     self.backups.dialog = Some(BackupsDialog::Export);
                 } else {
@@ -2009,8 +2223,19 @@ impl App {
         match msg {
             TerminalMsg::OpenRequested(name) => {
                 // Open the terminal page for this container; (re)load the
-                // enter-command display. Terminal picker defaults to first.
+                // enter-command display. The picker seeds from the persisted
+                // preference (#171) — without this the saved
+                // `selected_terminal` was written, shown in Settings, and
+                // then ignored, so every launch used the first-listed
+                // terminal. Resolution prefers customs over built-ins
+                // (`resolve_terminal`); an unresolvable or unset value
+                // leaves `terminal_id` empty and `selected()` falls back to
+                // the first available.
                 self.terminal.container = Some(name.clone());
+                self.terminal.terminal_id = self
+                    .config
+                    .as_ref()
+                    .and_then(|cfg| self.resolve_configured_terminal(&cfg.selected_terminal));
                 self.terminal.enter_argv = None;
                 self.terminal.command_error = None;
                 self.terminal.loading_command = true;
@@ -2106,11 +2331,218 @@ impl App {
     /// listable with no filesystem or runner. Custom + flatpak entries join
     /// in T12's config pass (the repository owns them); launch fails loudly
     /// for absent programs in the meantime.
-    fn terminal_list(&self) -> Vec<gosh_distrobox_core::backends::Terminal> {
-        gosh_distrobox_core::backends::supported_terminals::builtin_terminals()
+    /// The terminal list — owned by the backend (T12), never re-derived
+    /// here: every picker renders `backend.terminals()` and every
+    /// index-based `TerminalSelected` resolves against the same call, so an
+    /// index cannot mean one terminal when sent and another when received.
+    /// Map a persisted `selected_terminal` to a `full_command_id` in the
+    /// indexed list (#171). Resolved against built-ins + customs rather
+    /// than the merged list so a custom still wins a legacy bare-program
+    /// value (`resolve_terminal`'s precedence). `None` for an unknown
+    /// value: the picker then shows first-available instead of a
+    /// terminal nobody chose.
+    /// Whether an app/binaries reply belongs to the container the page is
+    /// showing. `selected_container` is the same value the page header and
+    /// the export toggles read, so this is exactly the "would this payload
+    /// be displayed as the current container's?" test.
+    fn apps_reply_is_current(&self, container: &str) -> bool {
+        self.selected_container.as_deref() == Some(container)
     }
 
-    /// Package message router (T8, rows #106–#122).
+    fn resolve_configured_terminal(&self, stored: &str) -> Option<String> {
+        let builtins = gosh_distrobox_core::backends::builtin_terminals();
+        let customs = self
+            .config
+            .as_ref()
+            .map(|c| c.custom_terminals.clone())
+            .unwrap_or_default();
+        gosh_distrobox_core::resolve_terminal(stored, &builtins, &customs)
+            .map(|t| t.full_command_id())
+    }
+
+    fn terminal_list(&self) -> Vec<gosh_distrobox_core::backends::Terminal> {
+        self.backend.terminals()
+    }
+
+    /// Settings router (T12, rows #163–#171 + config §5). Config load lives
+    /// in `settings::load_entry` (called from `init`); the live-update path
+    /// is the `config_subscription` above.
+    fn update_settings(&mut self, msg: crate::message::SettingsMsg) -> Task<Message> {
+        use crate::message::SettingsMsg;
+        match msg {
+            SettingsMsg::VersionReloadRequested => {
+                self.loading_version = true;
+                let backend = Arc::clone(&self.backend);
+                return Self::run(async move {
+                    let result = backend.distrobox_version().await;
+                    Message::Settings(SettingsMsg::VersionLoaded(result))
+                });
+            }
+            SettingsMsg::VersionLoaded(result) => {
+                self.loading_version = false;
+                match result {
+                    Ok(v) => self.distrobox_version = v,
+                    Err(e) => {
+                        // #163: "Unknown" alone is indistinguishable from a
+                        // distrobox that answered with nothing — the toast
+                        // says which, so the Refresh button is not a dead
+                        // end the user keeps pressing.
+                        self.distrobox_version = "Unknown".to_string();
+                        let toast = self.toast(format!(
+                            "Could not read distrobox version: {}",
+                            Self::error_text(&e)
+                        ));
+                        return toast;
+                    }
+                }
+            }
+            SettingsMsg::RefreshAllRequested => {
+                // Row #165: refresh containers + version, toast afterwards.
+                self.loading.containers = true;
+                self.loading_version = true;
+                let b1 = Arc::clone(&self.backend);
+                let b2 = Arc::clone(&self.backend);
+                let toast = self.toast("Data refreshed".to_string());
+                let refresh = Task::batch(vec![
+                    Self::refresh_containers(&b1),
+                    Self::run(async move {
+                        let result = b2.distrobox_version().await;
+                        Message::Settings(SettingsMsg::VersionLoaded(result))
+                    }),
+                ]);
+                return Task::batch(vec![toast, refresh]);
+            }
+            SettingsMsg::StopAllRequested => {
+                return Self::done(Message::Containers(ContainerMsg::StopAllRequested));
+            }
+            SettingsMsg::UpgradeAllRequested => {
+                // Row #167 (dead redirect in Flutter): same real path as
+                // dashboard (confirm → per-container tasks).
+                return Self::done(Message::Containers(ContainerMsg::UpgradeAllRequested));
+            }
+            SettingsMsg::ClearCompleted => {
+                // Row #168 + toast (Flutter toasted; the header path shares
+                // the Tasks arm — route through it so behaviour is one path).
+                let toast = self.toast("Completed tasks cleared".to_string());
+                let clear = Self::done(Message::Tasks(TaskMsg::ClearCompleted));
+                return Task::batch(vec![toast, clear]);
+            }
+            SettingsMsg::DeleteAllRequested => {
+                // Row #170: shared destructive confirm with warning box copy.
+                return self.confirm_or_run(ConfirmSpec {
+                    title: "Delete All Containers".to_string(),
+                    body: "Are you sure you want to delete ALL containers?\n\nThis action cannot be undone and all container data will be lost.".to_string(),
+                    confirm_label: "Delete All".to_string(),
+                    destructive: true,
+                    action: ConfirmAction::DeleteAllContainers,
+                });
+            }
+            SettingsMsg::TerminalSelected(i) => {
+                // Row #171: persist terminal choice (best-effort).
+                let terminals = self.terminal_list();
+                if let Some(t) = terminals.get(i) {
+                    let id = t.full_command_id();
+                    let follow = self.write_config(|c| c.selected_terminal = id);
+                    self.terminal.terminal_id = Some(
+                        self.config
+                            .as_ref()
+                            .map(|c| c.selected_terminal.clone())
+                            .unwrap_or_default(),
+                    );
+                    return follow;
+                }
+            }
+            SettingsMsg::ConfirmToggled(v) => {
+                return self.write_config(|c| c.confirm_destructive_actions = v);
+            }
+            SettingsMsg::SnapshotPrefixChanged(p) => {
+                return self.write_config(|c| c.snapshot_prefix = p);
+            }
+            SettingsMsg::ExportDirChanged(d) => {
+                return self.write_config(|c| c.default_export_dir = d);
+            }
+            SettingsMsg::OpenUrl(url) => {
+                // Row #169: URL open toasts only on failure (Flutter parity
+                // — success needs no confirmation). "Failure" here is a
+                // failed LAUNCH; the handler's own exit is not observed
+                // (`Backend::open_url`), so a link that opens nothing on a
+                // host with no browser stays silent — as in Flutter.
+                if let Err(e) = self.backend.open_url(&url) {
+                    let toast =
+                        self.toast(format!("Could not open {url}: {}", Self::error_text(&e)));
+                    return toast;
+                }
+            }
+            SettingsMsg::ConfigChanged(cfg) => {
+                // §5.1-2: external edits land live. Our own writes produce
+                // an equal value, and the watcher only fires on real key
+                // changes — so an equal payload is a genuine no-op and we
+                // must NOT re-write it back (that would echo forever).
+                if self.config.as_ref() == Some(&cfg) {
+                    return Self::none();
+                }
+                self.legacy_import_pending = false;
+                self.config = Some(cfg);
+                self.sync_terminals();
+            }
+            SettingsMsg::LegacyImported(legacy) => {
+                // D11/PKG-9: applied only while the gate is armed (the keys
+                // were absent at load), and only for what the hosts still
+                // has. `apply_legacy` never overwrites a key our config
+                // already set. Empty result = fresh install → nothing to do.
+                if !self.legacy_import_pending {
+                    return Self::none();
+                }
+                self.legacy_import_pending = false;
+                if legacy.selected_terminal.is_none() && legacy.custom_terminals.is_empty() {
+                    return Self::none();
+                }
+                // The gate is armed only when a config handle exists —
+                // `init` disarms it when the config dir is unavailable AND
+                // skips the probe, so this is always the loaded case. An
+                // in-memory-only import would show values that vanish on
+                // restart; the honest degrade is to not import at all.
+                let builtins = self.terminal_list();
+                let Some(cfg) = self.config.as_mut() else {
+                    return Self::none();
+                };
+                gosh_distrobox_core::apply_legacy(cfg, &legacy, &builtins);
+                self.sync_terminals();
+                let toast = self.toast("Imported settings from DistroShelf".to_string());
+                let persist = self.write_config(|_| {});
+                return Task::batch(vec![toast, persist]);
+            }
+        }
+        Self::none()
+    }
+
+    /// Best-effort config write (T12 §5): mutate in memory, persist when
+    /// a handle exists, toast when it doesn't. Never crashes. Returns an
+    /// optional follow-up task (persistence-failure toast).
+    fn write_config(
+        &mut self,
+        f: impl FnOnce(&mut gosh_distrobox_core::AppConfig),
+    ) -> Task<Message> {
+        let mut fail = false;
+        if let Some(cfg) = self.config.as_mut() {
+            f(cfg);
+            // One `CosmicConfigEntry`: snake_case fields are the keys, one
+            // file per key (§5.1-5). Preferred path — `config.rs`'s own
+            // per-key helper does not carry `custom_terminals` (imported
+            // customs would be dropped on the next save).
+            if crate::settings::save_entry(&crate::settings::PrefsEntry::from(&*cfg)).is_err() {
+                fail = true;
+            }
+        } else {
+            fail = true;
+        }
+        if fail {
+            self.toast("Settings will not persist this session.".to_string())
+        } else {
+            Self::none()
+        }
+    }
+
     fn update_packages(&mut self, msg: crate::message::PackagesMsg) -> Task<Message> {
         use crate::message::PackagesMsg;
         match msg {
@@ -2219,7 +2651,7 @@ impl App {
             }
             PackagesMsg::RemoveRequested(name) => {
                 if let Some(container) = self.packages.container.clone() {
-                    self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+                    return self.confirm_or_run(ConfirmSpec {
                         title: "Remove Package".to_string(),
                         body: format!(
                             "Remove \"{name}\" from \"{container}\"?\n\nThis may also remove dependent packages."
@@ -2230,19 +2662,19 @@ impl App {
                             container,
                             package: name,
                         },
-                    }));
+                    });
                 }
                 Self::none()
             }
             PackagesMsg::UpgradeAllRequested => {
                 if let Some(container) = self.packages.container.clone() {
-                    self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+                    return self.confirm_or_run(ConfirmSpec {
                         title: "Upgrade All Packages".to_string(),
                         body: format!("Upgrade all packages in \"{container}\"?"),
                         confirm_label: "Upgrade All".to_string(),
                         destructive: false,
                         action: ConfirmAction::UpgradeContainer(container),
-                    }));
+                    });
                 }
                 Self::none()
             }
@@ -2259,14 +2691,13 @@ impl App {
 
     /// Install confirm helper (row #120): shared spec, non-destructive.
     fn confirm_install(&mut self, container: String, package: String) -> Task<Message> {
-        self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
+        self.confirm_or_run(ConfirmSpec {
             title: "Install Package".to_string(),
             body: format!("Install \"{package}\" in \"{container}\"?"),
             confirm_label: "Install".to_string(),
             destructive: false,
             action: ConfirmAction::InstallPackage { container, package },
-        }));
-        Self::none()
+        })
     }
 
     /// Whether this container is currently running (search/actions gate).
@@ -2493,6 +2924,163 @@ impl App {
                         })
                         .into(),
                 )
+            }
+        }
+    }
+
+    /// Dispatch a confirmed follow-up (the `DialogMsg::Confirmed` body,
+    /// shared with the `confirm_destructive_actions == false` fast path).
+    fn dispatch_confirm_action(&mut self, action: ConfirmAction) -> Task<Message> {
+        match action {
+            ConfirmAction::RemoveContainer(name) => {
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                if !self.busy.insert(format!("remove:{name}")) {
+                    return Self::none();
+                }
+                let backend = Arc::clone(&self.backend);
+                Self::run(async move {
+                    let result = backend
+                        .remove_container(&name)
+                        .await
+                        .map(|_| format!("{name} deleted"));
+                    Message::Containers(ContainerMsg::ActionFinished(result))
+                })
+            }
+            ConfirmAction::StopAll => {
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                if !self.busy.insert("stop-all".to_string()) {
+                    return Self::none();
+                }
+                let backend = Arc::clone(&self.backend);
+                Self::run(async move {
+                    let result = backend
+                        .stop_all_containers()
+                        .await
+                        .map(|_| "All containers stopped".to_string());
+                    Message::Containers(ContainerMsg::ActionFinished(result))
+                })
+            }
+            ConfirmAction::DeleteAllContainers => {
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                if !self.busy.insert("delete-all".to_string()) {
+                    return Self::none();
+                }
+                // Row #170 / #187: every container goes, and the ones that
+                // did NOT are reported. Discarding each result and then
+                // calling `list()` reported "All containers deleted" while a
+                // wedged or permission-denied container silently survived.
+                let names: Vec<String> = self.containers.iter().map(|c| c.name.clone()).collect();
+                let backend = Arc::clone(&self.backend);
+                Self::run(async move {
+                    let mut failures = Vec::new();
+                    for name in &names {
+                        if let Err(e) = backend.remove_container(name).await {
+                            failures.push(format!("{name} ({e})"));
+                        }
+                    }
+                    let done = names.len() - failures.len();
+                    let result = if failures.is_empty() {
+                        Ok(format!("All {} containers deleted", names.len()))
+                    } else {
+                        Ok(format!(
+                            "Deleted {done} of {} containers — failed: {}",
+                            names.len(),
+                            failures.join(", ")
+                        ))
+                    };
+                    Message::Containers(ContainerMsg::ActionFinished(result))
+                })
+            }
+            ConfirmAction::UpgradeAll => {
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                let running: Vec<String> = self
+                    .containers
+                    .iter()
+                    .filter(|c| icons::is_running(&c.status))
+                    .map(|c| c.name.clone())
+                    .collect();
+                let backend = Arc::clone(&self.backend);
+                let spawns: Vec<Task<Message>> = running
+                    .into_iter()
+                    .map(|name| {
+                        let backend = Arc::clone(&backend);
+                        let label = format!("Upgrade {name}");
+                        Self::run(async move {
+                            let result = backend.upgrade_container(&name).await;
+                            Message::Tasks(TaskMsg::Started { label, result })
+                        })
+                    })
+                    .collect();
+                if spawns.is_empty() {
+                    return Self::none();
+                }
+                Task::batch(spawns)
+            }
+            ConfirmAction::InstallPackage { container, package } => {
+                // Row #122: spawn failure reports via
+                // `TaskMsg::Started Err` → error banner (the
+                // Started arm toasts too — never silent,
+                // unlike Flutter null).
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                let backend = Arc::clone(&self.backend);
+                let label = format!("Install {package} in {container}");
+                Self::run(async move {
+                    let result = backend.install_package(&container, &package).await;
+                    Message::Tasks(TaskMsg::Started { label, result })
+                })
+            }
+            ConfirmAction::RemovePackage { container, package } => {
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                let backend = Arc::clone(&self.backend);
+                let label = format!("Remove {package} from {container}");
+                Self::run(async move {
+                    let result = backend.remove_package(&container, &package).await;
+                    Message::Tasks(TaskMsg::Started { label, result })
+                })
+            }
+            ConfirmAction::DeleteSnapshot(id) => {
+                // Row #141: delete is short (no child to
+                // stream); toast green/red via ActionFinished,
+                // then reload the list in the same future.
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                let backend = Arc::clone(&self.backend);
+                Self::run(async move {
+                    let delete = backend.delete_snapshot(&id).await;
+                    Message::Backups(crate::message::BackupsMsg::DeleteFinished(delete))
+                })
+            }
+            ConfirmAction::UpgradeContainer(container) => {
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                let backend = Arc::clone(&self.backend);
+                let label = format!("Upgrade {container}");
+                Self::run(async move {
+                    let result = backend.upgrade_container(&container).await;
+                    Message::Tasks(TaskMsg::Started { label, result })
+                })
             }
         }
     }

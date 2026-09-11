@@ -19,6 +19,9 @@ path = "src/main.rs"
 # dbus-config is dropped (D23). Never: applet, desktop.
 libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "a401af8b1c54a8abd393b8c5b7c8809402f83850", default-features = false, features = ["winit", "tokio", "a11y", "wayland", "x11", "multi-window", "about", "xdg-portal"] }
 gosh-distrobox-core = { path = "../core" }
+# `serde` derive: the `CosmicConfigEntry` codegen in settings.rs emits bare
+# `serde::` paths (same as libcosmic's own config module).
+serde.workspace = true
 tokio.workspace = true
 futures.workspace = true
 tracing.workspace = true

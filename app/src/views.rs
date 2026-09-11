@@ -29,6 +29,7 @@ pub enum Page {
     Backups,
     Activity,
     Apps,
+    Settings,
     Stats,
 }
 
@@ -43,11 +44,12 @@ impl Page {
             Page::Backups => "Backups",
             Page::Activity => "Activity",
             Page::Apps => "Apps",
+            Page::Settings => "Settings",
             Page::Stats => "Stats",
         }
     }
 
-    pub const ALL: [Page; 9] = [
+    pub const ALL: [Page; 10] = [
         Page::Dashboard,
         Page::Containers,
         Page::Images,
@@ -56,6 +58,7 @@ impl Page {
         Page::Backups,
         Page::Activity,
         Page::Apps,
+        Page::Settings,
         Page::Stats,
     ];
 }

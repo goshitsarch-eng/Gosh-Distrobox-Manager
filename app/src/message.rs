@@ -1,13 +1,17 @@
-//! `Message` — the T3 read-only subset plus the T5 task-stream subset plus
-//! the T6 dashboard/containers/details requests.
+//! `Message` — one variant per page/domain, each carrying its own sub-enum.
 //!
-//! Task-spawning request variants for later domains (`CreateRequested`,
-//! packages, snapshots, backups, terminals, config) still arrive with their
-//! owner page tasks (T7–T12); what lands here is the task *lifecycle*
-//! (`TaskMsg`), which T5's subscription produces, plus the T6 container
-//! actions (stop/remove/stop-all/upgrade/clone-terminal-open) and dialog
-//! control. Same rule as before: no dead variants behind the exhaustive
-//! match — every variant added here has a producer in this task.
+//! Every page task has now landed (T3–T12), so no domain is still waiting
+//! for its owner: the read-only browser (T3), task lifecycle (`TaskMsg`,
+//! T5), dashboard/containers/details (T6), wizard/images (T7), packages
+//! (T8), updates/terminal (T9), backups (T10), activity (T11) and
+//! settings/apps/config (T12) are all present and handled. Same rule as
+//! before: no dead variants behind the exhaustive match — every variant
+//! added here has a producer.
+//!
+//! Two namespaces are reserved and carry no producer yet, each marked
+//! `#[allow(dead_code)]` with its reason at the variant: `NavSelect` (built
+//! by libcosmic) and `Updates(msg)` (the page reads shared state).
+//! `Env(EnvMsg::Probed)` is reserved for the T13+ re-probe path.
 
 use gosh_distrobox_core::models::{AppInfo, ContainerInfo, ContainerStats, ExportedBinary};
 use gosh_distrobox_core::{CoreFailure, EnvGuard, EnvMode, TaskId};
@@ -28,6 +32,7 @@ pub enum Message {
     Packages(PackagesMsg),
     Backups(BackupsMsg),
     Activity(ActivityMsg),
+    Settings(SettingsMsg),
     /// Reserved namespace (T9+: the Updates page reads shared state and
     /// needs no page-local messages today).
     #[allow(dead_code)]
@@ -168,18 +173,64 @@ pub enum ConfirmAction {
     RemovePackage { container: String, package: String },
     UpgradeContainer(String),
     DeleteSnapshot(String),
+    DeleteAllContainers,
 }
 
 #[derive(Clone, Debug)]
 pub enum AppMsg {
-    /// Explicit reload (button lands with the Apps page in T12).
-    #[allow(dead_code)]
-    LoadRequested(String),
-    Loaded(Result<Vec<AppInfo>, CoreFailure>),
-    /// Explicit reload (button lands with the Apps page in T12).
-    #[allow(dead_code)]
-    BinariesLoadRequested(String),
-    BinariesLoaded(Result<Vec<ExportedBinary>, CoreFailure>),
+    /// Container-tagged (same reason as `BackupsMsg::SnapshotsLoaded`): an
+    /// export re-sync runs alongside whatever the user navigates to next,
+    /// so an untagged reply could land after the page already shows another
+    /// container — the grid would then list container A's apps under
+    /// container B's header and every toggle would export A's desktop file
+    /// into B.
+    Loaded(String, Result<Vec<AppInfo>, CoreFailure>),
+    BinariesLoaded(String, Result<Vec<ExportedBinary>, CoreFailure>),
+    /// Search keystrokes (row #174).
+    SearchChanged(String),
+    /// Manual binary export dialog open (row #175).
+    BinaryDialogRequested,
+    BinaryDialogClosed,
+    BinaryPathChanged(String),
+    BinaryExportConfirmed,
+    /// Reload apps + binaries (Retry/header refresh).
+    ReloadRequested(String),
+    /// Export toggle ON (row #178).
+    ExportRequested(String, String),
+    /// Export toggle OFF.
+    UnexportRequested(String, String),
+    /// Export / unexport / binary-export result (container name, outcome).
+    /// Distinct from `ContainerMsg::ActionFinished` because the refresh it
+    /// owes the user is the APPS list, not just the container list — the
+    /// toggle's own EXPORTED label lives in `app.is_exported` (#178), so
+    /// reloading containers alone would leave the switch it just flipped
+    /// showing its old state.
+    ActionFinished(String, Result<String, CoreFailure>),
+}
+
+/// Settings page (T12, rows #163–#171 + config §5).
+#[derive(Clone, Debug)]
+pub enum SettingsMsg {
+    VersionReloadRequested,
+    VersionLoaded(Result<String, CoreFailure>),
+    RefreshAllRequested,
+    StopAllRequested,
+    UpgradeAllRequested,
+    ClearCompleted,
+    DeleteAllRequested,
+    /// Preference writes (row #171 — best-effort, failures toast).
+    TerminalSelected(usize),
+    ConfirmToggled(bool),
+    SnapshotPrefixChanged(String),
+    ExportDirChanged(String),
+    /// About links (row #169 — URL open results toast on failure).
+    OpenUrl(String),
+    /// Reactive config reload from `watch_config` (§5.1-2: external edits
+    /// land live; in-session writes already match, so no-op then).
+    ConfigChanged(gosh_distrobox_core::AppConfig),
+    /// One-time DistroShelf legacy import finished (D11/PKG-9): applied only
+    /// for keys our own config does not already set.
+    LegacyImported(gosh_distrobox_core::LegacyImport),
 }
 
 /// Backups page (T10, rows #133–#151): picker, tabs, snapshot CRUD,

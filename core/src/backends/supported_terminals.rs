@@ -1,14 +1,13 @@
 use std::{
     collections::HashSet,
-    path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex},
 };
 
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::fakers::{Command, CommandRunner, FdMode};
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Terminal {
     pub name: String,
     pub program: String,
@@ -125,7 +124,6 @@ static FLATPAK_TERMINAL_CANDIDATES: LazyLock<Vec<Terminal>> = LazyLock::new(|| {
 #[derive(Clone)]
 pub struct TerminalRepository {
     pub list: Arc<Mutex<Vec<Terminal>>>,
-    pub custom_list_path: PathBuf,
     pub command_runner: CommandRunner,
 }
 
@@ -137,32 +135,46 @@ impl Default for TerminalRepository {
 
 impl TerminalRepository {
     pub fn new(command_runner: CommandRunner) -> Self {
-        let custom_list_path = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("distroshelf-terminals.json");
-
-        let mut list = SUPPORTED_TERMINALS.clone();
-        if let Ok(loaded_list) = Self::load_terminals_from_json(&custom_list_path) {
-            list.extend(loaded_list);
-        } else {
-            warn!(
-                "Failed to load custom terminals from JSON file {:?}",
-                &custom_list_path
-            );
-        }
-
+        // The pre-rename `distroshelf-terminals.json` custom list is NOT
+        // read here any more (T12/D11): it is imported once into
+        // `AppConfig::custom_terminals` through the env-mapped runner
+        // (host-side under Flatpak), and customs arrive via
+        // `with_customs`. Reading it again here would resolve through the
+        // SANDBOX path and silently drop everything under Flatpak, and it
+        // would write back with `std::fs::write` — inside the sandbox, also
+        // silently. One reader, one writer, both through the mapping.
+        let mut list = builtin_terminals();
         list.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let repo = Self {
+        Self {
             list: Arc::new(Mutex::new(list)),
-            custom_list_path,
             command_runner: command_runner.clone(),
-        };
+        }
+    }
 
-        // Asynchronously fetch flatpak terminals
-        // Note: In a real async environment we would want to await this or spawn it.
-        // For now, we'll just leave the logic here and let the caller handle updates if needed.
-
+    /// Build a list of built-ins plus `customs` (T12: the persisted /
+    /// imported `AppConfig::custom_terminals`). Customs win on identity —
+    /// a custom whose `full_command_id` matches a built-in replaces it —
+    /// and duplicates among the customs collapse on the same key, first
+    /// winning. The result is the ONE list the pickers index into (see
+    /// `Backend::terminals`), so an index can never mean two different
+    /// things at send time and at receive time.
+    pub fn with_customs(command_runner: CommandRunner, customs: Vec<Terminal>) -> Self {
+        let repo = Self::new(command_runner);
+        if customs.is_empty() {
+            return repo;
+        }
+        let mut list = customs;
+        let custom_ids: HashSet<String> = list.iter().map(|t| t.full_command_id()).collect();
+        let mut seen = HashSet::new();
+        list.retain(|t| seen.insert(t.full_command_id()));
+        list.extend(
+            repo.all_terminals()
+                .into_iter()
+                .filter(|t| !custom_ids.contains(&t.full_command_id())),
+        );
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        *repo.list.lock().unwrap() = list;
         repo
     }
 
@@ -218,33 +230,6 @@ impl TerminalRepository {
             .is_some_and(|x| x.read_only)
     }
 
-    pub fn save_terminal(&self, terminal: Terminal) -> anyhow::Result<()> {
-        if self.is_read_only(terminal.name.as_str()) {
-            return Err(anyhow::anyhow!("Cannot modify read-only terminal"));
-        }
-        {
-            let mut list = self.list.lock().unwrap();
-            list.retain(|x| x.name != terminal.name);
-            list.push(terminal);
-
-            list.sort_by(|a, b| a.name.cmp(&b.name));
-        }
-
-        self.save_terminals_to_json();
-        Ok(())
-    }
-
-    pub fn delete_terminal(&self, name: &str) -> anyhow::Result<()> {
-        if self.is_read_only(name) {
-            return Err(anyhow::anyhow!("Cannot modify read-only terminal"));
-        }
-        {
-            self.list.lock().unwrap().retain(|x| x.name != name);
-        }
-        self.save_terminals_to_json();
-        Ok(())
-    }
-
     pub fn terminal_by_name(&self, name: &str) -> Option<Terminal> {
         self.list
             .lock()
@@ -265,37 +250,6 @@ impl TerminalRepository {
 
     pub fn all_terminals(&self) -> Vec<Terminal> {
         self.list.lock().unwrap().clone()
-    }
-
-    fn save_terminals_to_json(&self) {
-        let list: Vec<Terminal> = self
-            .list
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|x| !x.read_only)
-            .cloned()
-            .collect::<Vec<_>>();
-
-        match serde_json::to_string(&list) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(&self.custom_list_path, json) {
-                    error!(
-                        "Failed to write custom terminals to {:?}: {}",
-                        &self.custom_list_path, e
-                    );
-                }
-            }
-            Err(e) => {
-                error!("Failed to serialize custom terminals: {}", e);
-            }
-        }
-    }
-
-    fn load_terminals_from_json(path: &Path) -> anyhow::Result<Vec<Terminal>> {
-        let data = std::fs::read_to_string(path)?;
-        let list: Vec<Terminal> = serde_json::from_str(&data)?;
-        Ok(list)
     }
 
     pub async fn default_terminal(&self) -> Option<Terminal> {
@@ -334,5 +288,89 @@ impl TerminalRepository {
             );
             None
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn custom(name: &str, program: &str, extra: &[&str]) -> Terminal {
+        Terminal {
+            name: name.into(),
+            program: program.into(),
+            extra_args: extra.iter().map(|s| s.to_string()).collect(),
+            separator_arg: "--".into(),
+            read_only: false,
+        }
+    }
+
+    /// T12: the customs a user imported must be *selectable*, not merely
+    /// resolvable — `with_customs` is what puts them in the indexed list.
+    #[test]
+    fn with_customs_adds_and_sorts() {
+        let repo = TerminalRepository::with_customs(
+            CommandRunner::default(),
+            vec![custom("AAA Mine", "my-term", &[])],
+        );
+        let list = repo.all_terminals();
+        assert!(list.iter().any(|t| t.name == "AAA Mine"));
+        assert!(list.iter().any(|t| t.name == "GNOME Terminal"));
+        let names: Vec<&String> = list.iter().map(|t| &t.name).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "list stays name-sorted");
+    }
+
+    /// A custom that shadows a built-in replaces it rather than appearing
+    /// twice — otherwise one program would occupy two picker slots and the
+    /// index the user picked would be ambiguous.
+    #[test]
+    fn custom_shadows_builtin_by_full_command_id() {
+        let repo = TerminalRepository::with_customs(
+            CommandRunner::default(),
+            vec![custom("Mine", "gnome-terminal", &[])],
+        );
+        let list = repo.all_terminals();
+        let matches: Vec<&Terminal> = list
+            .iter()
+            .filter(|t| t.full_command_id() == "gnome-terminal")
+            .collect();
+        assert_eq!(matches.len(), 1, "no duplicate ids: {matches:?}");
+        assert_eq!(matches[0].name, "Mine");
+    }
+
+    #[test]
+    fn duplicate_customs_collapse_first_wins() {
+        let repo = TerminalRepository::with_customs(
+            CommandRunner::default(),
+            vec![
+                custom("First", "dup-term", &[]),
+                custom("Second", "dup-term", &[]),
+            ],
+        );
+        let list = repo.all_terminals();
+        let found = list
+            .iter()
+            .find(|t| t.program == "dup-term")
+            .expect("present");
+        assert_eq!(found.name, "First");
+        assert_eq!(
+            list.iter().filter(|t| t.program == "dup-term").count(),
+            1,
+            "the duplicate is dropped"
+        );
+    }
+
+    #[test]
+    fn empty_customs_is_just_builtins() {
+        let empty = TerminalRepository::with_customs(CommandRunner::default(), vec![]);
+        assert_eq!(empty.all_terminals(), builtin_terminals_sorted());
+    }
+
+    fn builtin_terminals_sorted() -> Vec<Terminal> {
+        let mut list = builtin_terminals();
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        list
     }
 }

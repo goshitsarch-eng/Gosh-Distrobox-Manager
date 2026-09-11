@@ -1128,6 +1128,30 @@ gains a `Config`-backed store (§5.3 `custom_terminals`), which is what its
 `save_terminal`/`delete_terminal` signatures already promise; `merge_flatpak_terminals`
 (`:164`) and `is_read_only` (`:185`) finally get callers.
 
+**As built (T12), the store sits one level up.** The custom terminals live in
+`AppConfig::custom_terminals` (cosmic-config), and `TerminalRepository::with_customs`
+folds them in — one reader (the D11 host-side import probe) and one writer (the config
+watch) for the list, both through the env-mapped runner. `save_terminal` /
+`delete_terminal` / the JSON path were **deleted rather than re-backed**: D11 removes
+`distroshelf-terminals.json`, and no parity row in ux.md lets a user add or remove a
+terminal, so re-backing them would have meant keeping three mutators with no producer.
+The §5.3 plan above promised that this task would give `merge_flatpak_terminals`
+(`:164`) and `is_read_only` (`:185`) their first callers; **it did not.** `all_terminals`
+has one (`Backend::terminals`), but `is_read_only`, `terminal_by_name`,
+`terminal_by_program`, `default_terminal`, `merge_flatpak_terminals` and
+`fetch_flatpak_terminals` are all still callerless — no parity row renders a read-only
+badge or wires a Flatpak discovery pass, so nothing in T12 gave them a producer. They
+are left in place rather than deleted here (they predate this task and are candidates
+for the T14 deletion pass alongside S7/S8); the record above is corrected so the
+"finally get callers" line is not read as done.
+
+`resolve_terminal` is the one piece this task made live: `TerminalMsg::OpenRequested`
+seeds the picker from the persisted `selected_terminal` through it (#171 — the saved
+preference was written and displayed but never applied). Its precedence is
+customs-before-built-ins on a bare-program value; it returns `None` rather than
+first-available, and `TerminalState::selected` owns that fallback, because silently
+launching a terminal the user did not pick is worse than showing none.
+
 **`backends/container_runtime.rs` (54) + `docker.rs` (95) + `podman.rs` (138).**
 Currently dead — nothing calls `get_container_runtime` (`container_runtime.rs:37`),
 while `distrobox.rs` re-implements the podman→docker fallback inline **seven times**

@@ -33,10 +33,17 @@ pub struct TerminalState {
 }
 
 impl TerminalState {
-    /// Resolve the selected terminal (or the first available).
+    /// Resolve the selection against the indexed list, falling back to the
+    /// first available. The fallback is deliberate and matches what the
+    /// picker renders (`position()` is `None` → index 0): a stored id that
+    /// no longer resolves (custom deleted, config edited by hand) must not
+    /// make Launch report "no terminal available" while 17 are listed.
     pub fn selected<'a>(&self, terminals: &'a [Terminal]) -> Option<&'a Terminal> {
         match &self.terminal_id {
-            Some(id) => terminals.iter().find(|t| &t.full_command_id() == id),
+            Some(id) => terminals
+                .iter()
+                .find(|t| &t.full_command_id() == id)
+                .or_else(|| terminals.first()),
             None => terminals.first(),
         }
     }

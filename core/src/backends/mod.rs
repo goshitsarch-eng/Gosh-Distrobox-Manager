@@ -8,4 +8,4 @@ pub mod podman;
 pub mod supported_terminals;
 
 pub use distrobox::*;
-pub use supported_terminals::{Terminal, TerminalRepository};
+pub use supported_terminals::{Terminal, TerminalRepository, builtin_terminals};

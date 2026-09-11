@@ -5,11 +5,13 @@
 
 mod activity;
 mod app;
+mod apps_view;
 mod backups;
 mod icons;
 mod images_view;
 mod message;
 mod packages;
+mod settings;
 mod terminal;
 mod updates;
 mod views;
