@@ -269,3 +269,35 @@ simplicity/maintainability → COSMIC conventions.
   answers) beats D12's theorised distinction now that code evidence contradicts it. A
   config layer that silently stops updating on GNOME is the exact failure class G.1-5
   exists to eliminate. Re-add only on a two-build measurement showing a need.
+
+## D24 — T0 sign-off rulings (lead, 2026-09-11, commit `a1c2556`)
+
+T0 closed with all four gates green on the commit (`fmt --check`, `build --locked`,
+`clippy --all-targets -D warnings`, `test --locked`: 70 passed). Flatpak gate recorded
+N/A (no `flatpak/` surface until T2; D13 gate begins at T2/T4). Parity rows N/A (no UI
+touched). `rust/data/`, `flatpak.yml`, spec byte-identical; `Cargo.lock` unmodified.
+Three agent disputes ruled on, all evidence-verified by lead:
+
+- **UX-1 rail erratum — UX agent sustained, REVIEW corrected.** `home_screen.dart:65,72-74`
+  sets `extended: maxWidth >= 1000` at the same threshold as `labelType: none`; per the
+  Flutter contract `labelType` governs only the *unextended* rail, so labels are visible
+  at every width. REVIEW §C UX-1's "hides labels" premise is wrong; ux.md §1's premise
+  stands. No plan change (COSMIC `nav_model` labels satisfy parity trivially). REVIEW.md
+  itself is a frozen record and is not rewritten — this entry is the erratum.
+- **Pointer count — both agents right, different frames.** REVIEW A8's "three" =
+  libcosmic rev + the two unpinned git deps (`dbus-settings-bindings`,
+  `freedesktop-icons`); the pkg agent's "five" adds the two submodules (`iced`,
+  `cosmic-icons`). T2's sidecar covers all five git sources (PLAN §1 already says
+  five; packaging.md §1.3 now lists all five).
+- **`xdg-config/cosmic:rw`, not `:ro` — pkg agent sustained, D12 amended.** The `:ro`
+  in D12/PLAN-§3 was a bad sibling copy: the sibling only *watches* COSMIC keys, while
+  we *persist* our own settings (the GSettings replacement) — `:ro` would fail every
+  write silently in-sandbox. packaging.md §1.4 carries the `:rw` rationale; T2's
+  manifest uses `:rw`.
+- **PNG figure — REVIEW's "~5 MB" refers to no text in any doc** (verified by grep);
+  the audited figure is 65 files / 3.57 MiB, recorded in ux.md §6. Not reproduced.
+- **Process deviation (accepted):** T0 landed as one commit, not fmt/lint/CI separable
+  commits — fmt and lint fixes touch the same files and cannot be separated post-hoc.
+  Reviewability was achieved instead by hunk-by-hunk lead review (all 9 lint fixes
+  verified semantics-preserving; the two sensitive spots, `AppState::Default` →
+  `new()` delegation and the `ResponseFn`/`ResponseMap` aliases, are pure).

@@ -43,12 +43,12 @@ signed off on the diff; and it is committed.
 | Phase | State |
 |---|---|
 | Phase 1 — Plan | **Complete.** All three docs signed off with changes, 45 questions answered (38) or recorded (7), 21 decisions recorded. |
-| Phase 2 — Build | **Not started.** T0–T4 unblocked; T5+ sequenced below. |
+| Phase 2 — Build | **Underway.** T0 done; T1–T4 unblocked; T5+ sequenced below. |
 | Phase 3 — Harden | Not started. |
 
 | # | Task | Owner | State |
 |---|---|---|---|
-| T0 | Rust CI stage + doc-side G.1/G.2 set + `AGENTS.md` header + `release.prompt.md` fix (fmt commit + lint-fix commit + CI commit; 9 clippy errors fixed or scoped-allowlisted per D22; `dbus-config` dropped per D23; G.1-6 `flatpak.yml` deferred to T14, recorded partial) | pkg | In progress |
+| T0 | Rust CI stage + doc-side G.1/G.2 set + `AGENTS.md` header + `release.prompt.md` fix (9 clippy errors fixed or scoped-allowlisted per D22; `dbus-config` dropped per D23; G.1-6 `flatpak.yml` deferred to T14, recorded partial; sign-off rulings D24) | pkg | **Done** (`a1c2556`; gates green, 70 passed; + D24 commit) |
 | T1 | S1–S4: workspace scaffold, `git mv rust core`, DTO + task-runtime moves, `clippy.toml` guard | arch | Queued |
 | T2 | Port `generate-cargo-sources.py` + sidecars; `flatpak/` skeleton + manifest (D12 feature set) | pkg | Queued |
 | T3 | S5 skeleton app + S6 `Backend`/`CoreError`/`TaskId` + read-only browser (containers/images/apps/stats) | arch | Queued |
@@ -137,7 +137,7 @@ Blocking pre-conditions (REVIEW §G.1) — closed by D-decisions above and appli
 the docs inside T0: one feature list (D12+D23), a11y grant (D12, applied to
 packaging.md §1.4 in T0 — T2 authors the manifest from it), file picker
 (D16, `rfd`-configure language deleted from both docs in T0), binary name (D15),
-terminals into cosmic-config (D11, grant removed + `xdg-config/cosmic:ro` in T0),
+terminals into cosmic-config (D11, grant removed + `xdg-config/cosmic:rw`, D24),
 `.github` cleanup (T0: `AGENTS.md` header + `release.prompt.md` fix; T14:
 `flatpak.yml` — recorded partial, not closed), `start` sequencing (T9 + D7).
 PLAN §2's "Corrections applied" sentence becomes true at T0 close (verified by
