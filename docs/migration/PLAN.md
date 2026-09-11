@@ -49,7 +49,7 @@ signed off on the diff; and it is committed.
 | # | Task | Owner | State |
 |---|---|---|---|
 | T0 | Rust CI stage + doc-side G.1/G.2 set + `AGENTS.md` header + `release.prompt.md` fix (9 clippy errors fixed or scoped-allowlisted per D22; `dbus-config` dropped per D23; G.1-6 `flatpak.yml` deferred to T14, recorded partial; sign-off rulings D24) | pkg | **Done** (`a1c2556`; gates green, 70 passed; + D24 commit) |
-| T1 | S1–S4: workspace scaffold, `git mv rust core`, DTO + task-runtime moves, `clippy.toml` guard | arch | Queued |
+| T1 | S1–S4: workspace scaffold, `git mv rust core`, DTO + task-runtime moves, `clippy.toml` guard | arch | **Done** (`f2ffa5c`; 70+1 tests; D25) |
 | T2 | Port `generate-cargo-sources.py` + sidecars; `flatpak/` skeleton + manifest (D12 feature set) | pkg | Queued |
 | T3 | S5 skeleton app + S6 `Backend`/`CoreError`/`TaskId` + read-only browser (containers/images/apps/stats) | arch | Queued |
 | T4 | `scripts/verify.sh` v1 + `scripts/smoke-test.sh` with readiness signal (D13, D17) | pkg | Queued |
