@@ -1,0 +1,68 @@
+{
+  "id": "io.github.gosh_distrobox_manager",
+  "runtime": "org.freedesktop.Platform",
+  "runtime-version": "25.08",
+  "sdk": "org.freedesktop.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "base": "com.system76.Cosmic.BaseApp",
+  "base-version": "stable",
+  "command": "gosh_distrobox_manager",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--device=dri",
+    "--talk-name=org.freedesktop.Flatpak",
+    "--talk-name=org.a11y.Bus",
+    "--filesystem=xdg-config/cosmic:rw"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "env": {
+      "CARGO_HOME": "/run/build/gosh_distrobox_manager/cargo",
+      "CARGO_NET_OFFLINE": "true",
+      "RUSTFLAGS": "-C link-arg=-fuse-ld=mold"
+    }
+  },
+  "modules": [
+    {
+      "name": "gosh_distrobox_manager",
+      "buildsystem": "simple",
+      "build-commands": [
+        "cargo --offline build --release --locked --verbose",
+        "install -Dm0755 target/release/gosh_distrobox_manager -t /app/bin/",
+        "install -Dm0644 core/data/io.github.gosh_distrobox_manager.desktop /app/share/applications/io.github.gosh_distrobox_manager.desktop",
+        "install -Dm0644 core/data/io.github.gosh_distrobox_manager.metainfo.xml /app/share/metainfo/io.github.gosh_distrobox_manager.metainfo.xml",
+        "install -Dm0644 core/data/icons/hicolor/scalable/apps/io.github.gosh_distrobox_manager.svg /app/share/icons/hicolor/scalable/apps/io.github.gosh_distrobox_manager.svg",
+        "install -Dm0644 core/data/icons/hicolor/symbolic/apps/io.github.gosh_distrobox_manager-symbolic.svg /app/share/icons/hicolor/symbolic/apps/io.github.gosh_distrobox_manager-symbolic.svg",
+        "install -d /app/share/gosh_distrobox_manager/distro-icons",
+        "install -Dm0644 core/data/icons/*.svg -t /app/share/gosh_distrobox_manager/distro-icons/"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "path": "../Cargo.toml",
+          "dest": "."
+        },
+        {
+          "type": "file",
+          "path": "../Cargo.lock",
+          "dest": "."
+        },
+        {
+          "type": "dir",
+          "path": "../core",
+          "dest": "core"
+        },
+        {
+          "type": "dir",
+          "path": "../app",
+          "dest": "app"
+        },
+        "cargo-sources.json"
+      ]
+    }
+  ]
+}

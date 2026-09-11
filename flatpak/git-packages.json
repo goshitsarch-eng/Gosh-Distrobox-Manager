@@ -1,0 +1,541 @@
+{
+    "git+https://github.com/iced-rs/cryoglyph.git?rev=e429a025df36ab8145708acb309080ae3deec17a#e429a025df36ab8145708acb309080ae3deec17a": {
+        "packages": {
+            "cryoglyph 0.1.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE-APACHE",
+                    "LICENSE-MIT",
+                    "LICENSE-ZLIB",
+                    "README.md",
+                    "benches",
+                    "examples",
+                    "samples",
+                    "src"
+                ],
+                "path": "."
+            }
+        }
+    },
+    "git+https://github.com/jackpot51/rust-atomicwrites#043ab4859d53ffd3d55334685303d8df39c9f768": {
+        "packages": {
+            "atomicwrites 0.4.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "Makefile",
+                    "README.md",
+                    "appveyor.yml",
+                    "src",
+                    "tests"
+                ],
+                "path": "."
+            }
+        }
+    },
+    "git+https://github.com/pop-os/cosmic-protocols?rev=32283d7#32283d76a8d0342da74c4cc022a533c52dcf378f": {
+        "packages": {
+            "cosmic-client-toolkit 0.2.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "examples",
+                    "src"
+                ],
+                "path": "client-toolkit"
+            },
+            "cosmic-protocols 0.2.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "Makefile",
+                    "README.md",
+                    "check.sh",
+                    "cosmic-protocols.pc.in",
+                    "doc_index.html",
+                    "examples",
+                    "src",
+                    "unstable"
+                ],
+                "path": "."
+            }
+        }
+    },
+    "git+https://github.com/pop-os/dbus-settings-bindings#eed01dd3609e90e3c8cd043656734c500956c793": {
+        "packages": {
+            "cosmic-settings-daemon 0.1.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "examples",
+                    "src"
+                ],
+                "path": "cosmic-settings-daemon"
+            }
+        }
+    },
+    "git+https://github.com/pop-os/freedesktop-icons#ab4c57b8e416c6af9297cb04d101889896fd9a92": {
+        "packages": {
+            "cosmic-freedesktop-icons 0.4.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "benches",
+                    "src"
+                ],
+                "path": "."
+            }
+        }
+    },
+    "git+https://github.com/pop-os/libcosmic?rev=a401af8b1c54a8abd393b8c5b7c8809402f83850#a401af8b1c54a8abd393b8c5b7c8809402f83850": {
+        "packages": {
+            "build_helpers 0.14.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "src"
+                ],
+                "path": "iced/build_helpers"
+            },
+            "cosmic-config 1.0.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "src"
+                ],
+                "path": "cosmic-config"
+            },
+            "cosmic-config-derive 1.0.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "src"
+                ],
+                "path": "cosmic-config-derive"
+            },
+            "cosmic-theme 1.0.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "README.md",
+                    "src"
+                ],
+                "path": "cosmic-theme"
+            },
+            "iced 0.14.0": {
+                "entries": [
+                    "CHANGELOG.md",
+                    "CONTRIBUTING.md",
+                    "Cargo.lock",
+                    "Cargo.toml",
+                    "Cross.toml",
+                    "DEPENDENCIES.md",
+                    "LICENSE",
+                    "README.md",
+                    "ROADMAP.md",
+                    "beacon",
+                    "benches",
+                    "build.rs",
+                    "clippy.toml",
+                    "devtools",
+                    "docs",
+                    "examples",
+                    "highlighter",
+                    "rustfmt.toml",
+                    "selector",
+                    "src",
+                    "test",
+                    "tester"
+                ],
+                "path": "iced"
+            },
+            "iced_accessibility 0.1.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "src"
+                ],
+                "path": "iced/accessibility"
+            },
+            "iced_core 0.14.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "README.md",
+                    "build.rs",
+                    "src"
+                ],
+                "path": "iced/core"
+            },
+            "iced_debug 0.14.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "src"
+                ],
+                "path": "iced/debug"
+            },
+            "iced_futures 0.14.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "src"
+                ],
+                "path": "iced/futures"
+            },
+            "iced_graphics 0.14.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "fonts",
+                    "src"
+                ],
+                "path": "iced/graphics"
+            },
+            "iced_program 0.14.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "src"
+                ],
+                "path": "iced/program"
+            },
+            "iced_renderer 0.14.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "src"
+                ],
+                "path": "iced/renderer"
+            },
+            "iced_runtime 0.14.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "README.md",
+                    "build.rs",
+                    "src"
+                ],
+                "path": "iced/runtime"
+            },
+            "iced_tiny_skia 0.14.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "fonts",
+                    "src"
+                ],
+                "path": "iced/tiny_skia"
+            },
+            "iced_wgpu 0.14.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "README.md",
+                    "build.rs",
+                    "src"
+                ],
+                "path": "iced/wgpu"
+            },
+            "iced_widget 0.14.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "assets",
+                    "build.rs",
+                    "src"
+                ],
+                "path": "iced/widget"
+            },
+            "iced_winit 0.14.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "README.md",
+                    "build.rs",
+                    "src"
+                ],
+                "path": "iced/winit"
+            },
+            "libcosmic 1.0.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "build.rs",
+                    "config.toml",
+                    "cosmic-icons",
+                    "examples",
+                    "i18n",
+                    "i18n.toml",
+                    "justfile",
+                    "res",
+                    "rustfmt.toml",
+                    "src"
+                ],
+                "path": "."
+            }
+        }
+    },
+    "git+https://github.com/pop-os/smithay-clipboard?tag=sctk-0.20#859b02c88f45c554049a67c6ddeec1692ce0e20b": {
+        "packages": {
+            "smithay-clipboard 0.8.0": {
+                "entries": [
+                    "CHANGELOG.md",
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "doc_index.html",
+                    "examples",
+                    "rust-toolchain",
+                    "rustfmt.toml",
+                    "src"
+                ],
+                "path": "."
+            }
+        }
+    },
+    "git+https://github.com/pop-os/softbuffer?tag=cosmic-4.0#c2b2c19ddb38ff17495643699f97cb1f2064a1be": {
+        "packages": {
+            "softbuffer 0.4.1": {
+                "entries": [
+                    "CHANGELOG.md",
+                    "Cargo.toml",
+                    "LICENSE-APACHE",
+                    "LICENSE-MIT",
+                    "README.md",
+                    "benches",
+                    "build.rs",
+                    "examples",
+                    "run-wasm",
+                    "src",
+                    "tests"
+                ],
+                "path": "."
+            }
+        }
+    },
+    "git+https://github.com/pop-os/window_clipboard.git?tag=sctk-0.20#f68595ee0e62fbd6589f4709b5aaa5c3c7ea5f6c": {
+        "packages": {
+            "clipboard_macos 0.1.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "src"
+                ],
+                "path": "macos"
+            },
+            "clipboard_wayland 0.2.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "src"
+                ],
+                "path": "wayland"
+            },
+            "clipboard_x11 0.4.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "src"
+                ],
+                "path": "x11"
+            },
+            "dnd 0.1.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "src"
+                ],
+                "path": "dnd"
+            },
+            "mime 0.1.0": {
+                "entries": [
+                    "Cargo.toml",
+                    "src"
+                ],
+                "path": "mime"
+            },
+            "window_clipboard 0.4.1": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "examples",
+                    "rustfmt.toml",
+                    "src"
+                ],
+                "path": "."
+            }
+        }
+    },
+    "git+https://github.com/pop-os/winit.git?tag=cosmic-0.14#71ce08c043814514a8fd92d9d0599f115ae854e8": {
+        "packages": {
+            "dpi 0.1.2": {
+                "entries": [
+                    "CHANGELOG.md",
+                    "Cargo.toml",
+                    "LICENSE",
+                    "LICENSE-LIBM-MIT",
+                    "README.md",
+                    "src"
+                ],
+                "path": "dpi"
+            },
+            "winit 0.31.0-beta.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "FEATURES.md",
+                    "LICENSE",
+                    "README.md",
+                    "build.rs",
+                    "docs",
+                    "examples",
+                    "src",
+                    "tests"
+                ],
+                "path": "winit"
+            },
+            "winit-android 0.31.0-beta.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "src"
+                ],
+                "path": "winit-android"
+            },
+            "winit-appkit 0.31.0-beta.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "src"
+                ],
+                "path": "winit-appkit"
+            },
+            "winit-common 0.31.0-beta.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "src"
+                ],
+                "path": "winit-common"
+            },
+            "winit-core 0.31.0-beta.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "src"
+                ],
+                "path": "winit-core"
+            },
+            "winit-orbital 0.31.0-beta.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "src"
+                ],
+                "path": "winit-orbital"
+            },
+            "winit-uikit 0.31.0-beta.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "src"
+                ],
+                "path": "winit-uikit"
+            },
+            "winit-wayland 0.31.0-beta.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "src"
+                ],
+                "path": "winit-wayland"
+            },
+            "winit-web 0.31.0-beta.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "src"
+                ],
+                "path": "winit-web"
+            },
+            "winit-win32 0.31.0-beta.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "src"
+                ],
+                "path": "winit-win32"
+            },
+            "winit-x11 0.31.0-beta.2": {
+                "entries": [
+                    "Cargo.toml",
+                    "LICENSE",
+                    "README.md",
+                    "src"
+                ],
+                "path": "winit-x11"
+            }
+        }
+    },
+    "git+https://github.com/wash2/accesskit?tag=cosmic-0.14#f0599eed5f18111228266fe3f28991cc48b5964f": {
+        "packages": {
+            "accesskit 0.22.0": {
+                "entries": [
+                    "CHANGELOG.md",
+                    "Cargo.toml",
+                    "README.md",
+                    "src"
+                ],
+                "path": "common"
+            },
+            "accesskit_atspi_common 0.15.0": {
+                "entries": [
+                    "CHANGELOG.md",
+                    "Cargo.toml",
+                    "README.md",
+                    "src"
+                ],
+                "path": "platforms/atspi-common"
+            },
+            "accesskit_consumer 0.32.0": {
+                "entries": [
+                    "CHANGELOG.md",
+                    "Cargo.toml",
+                    "README.md",
+                    "src"
+                ],
+                "path": "consumer"
+            },
+            "accesskit_macos 0.23.0": {
+                "entries": [
+                    "CHANGELOG.md",
+                    "Cargo.toml",
+                    "README.md",
+                    "src"
+                ],
+                "path": "platforms/macos"
+            },
+            "accesskit_unix 0.18.0": {
+                "entries": [
+                    "CHANGELOG.md",
+                    "Cargo.toml",
+                    "README.md",
+                    "src"
+                ],
+                "path": "platforms/unix"
+            },
+            "accesskit_windows 0.30.0": {
+                "entries": [
+                    "CHANGELOG.md",
+                    "Cargo.toml",
+                    "README.md",
+                    "examples",
+                    "src"
+                ],
+                "path": "platforms/windows"
+            },
+            "accesskit_winit 0.30.0": {
+                "entries": [
+                    "CHANGELOG.md",
+                    "Cargo.toml",
+                    "README.md",
+                    "examples",
+                    "src"
+                ],
+                "path": "platforms/winit"
+            }
+        }
+    }
+}

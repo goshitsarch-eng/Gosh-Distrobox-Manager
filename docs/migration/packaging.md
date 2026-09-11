@@ -107,22 +107,31 @@ CI drove `meson dist`, both of which are being retired.
 ```json
 "build-options": {
   "append-path": "/usr/lib/sdk/rust-stable/bin",
-  "env": { "CARGO_HOME": "/run/build/gosh_distrobox_manager/cargo" }
+  "env": {
+    "CARGO_HOME": "/run/build/gosh_distrobox_manager/cargo",
+    "CARGO_NET_OFFLINE": "true",
+    "RUSTFLAGS": "-C link-arg=-fuse-ld=mold"
+  }
 },
 "modules": [
   {
     "name": "gosh_distrobox_manager",
     "buildsystem": "simple",
     "build-commands": [
-      "cargo --offline build --release --verbose",
+      "cargo --offline build --release --locked --verbose",
       "install -Dm0755 target/release/gosh_distrobox_manager -t /app/bin/",
-      "install -Dm0644 data/io.github.gosh_distrobox_manager.desktop /app/share/applications/io.github.gosh_distrobox_manager.desktop",
-      "install -Dm0644 data/io.github.gosh_distrobox_manager.metainfo.xml /app/share/metainfo/io.github.gosh_distrobox_manager.metainfo.xml",
-      "install -Dm0644 data/icons/hicolor/scalable/apps/io.github.gosh_distrobox_manager.svg /app/share/icons/hicolor/scalable/apps/io.github.gosh_distrobox_manager.svg",
-      "install -Dm0644 data/icons/hicolor/symbolic/apps/io.github.gosh_distrobox_manager-symbolic.svg /app/share/icons/hicolor/symbolic/apps/io.github.gosh_distrobox_manager-symbolic.svg"
+      "install -Dm0644 core/data/io.github.gosh_distrobox_manager.desktop /app/share/applications/io.github.gosh_distrobox_manager.desktop",
+      "install -Dm0644 core/data/io.github.gosh_distrobox_manager.metainfo.xml /app/share/metainfo/io.github.gosh_distrobox_manager.metainfo.xml",
+      "install -Dm0644 core/data/icons/hicolor/scalable/apps/io.github.gosh_distrobox_manager.svg /app/share/icons/hicolor/scalable/apps/io.github.gosh_distrobox_manager.svg",
+      "install -Dm0644 core/data/icons/hicolor/symbolic/apps/io.github.gosh_distrobox_manager-symbolic.svg /app/share/icons/hicolor/symbolic/apps/io.github.gosh_distrobox_manager-symbolic.svg",
+      "install -d /app/share/gosh_distrobox_manager/distro-icons",
+      "install -Dm0644 core/data/icons/*.svg -t /app/share/gosh_distrobox_manager/distro-icons/"
     ],
     "sources": [
-      { "type": "git", "url": "https://github.com/goshitsarch-eng/Gosh-Distrobox-Manager", "commit": "<TAG_COMMIT_SHA>" },
+      { "type": "file", "path": "../Cargo.toml", "dest": "." },
+      { "type": "file", "path": "../Cargo.lock", "dest": "." },
+      { "type": "dir", "path": "../core", "dest": "core" },
+      { "type": "dir", "path": "../app", "dest": "app" },
       "cargo-sources.json"
     ]
   }
@@ -130,12 +139,38 @@ CI drove `meson dist`, both of which are being retired.
 ```
 
 Notes:
+- **Paths are post-T1, not `rust/`.** T1 (`git mv rust core`) made the repository a
+  *virtual* workspace at the root, so `Cargo.toml`/`Cargo.lock` are at the repo root,
+  `target/` is `<root>/target/`, and the data files are `core/data/…`. The pre-T1 draft
+  of this block said `data/…`, which was correct only while the build directory root
+  was `rust/`. Source `path`s are resolved relative to the **manifest's** directory
+  (`flatpak/`), hence the `../`.
 - `CARGO_HOME` **must** be `/run/build/<module-name>/cargo` — the path is keyed to the
   module name. Getting this wrong produces a "registry not found" offline failure.
-- `--offline` is mandatory: the build sandbox has no network.
+- `--offline` is mandatory, and `CARGO_NET_OFFLINE=true` is set in addition so the
+  sandbox cannot silently fall back to the network if `--offline` is ever dropped from
+  the command line. See §1.3 ("`--share=network` must be OFF for the build").
+- `--locked` is deliberate: it fails if `Cargo.lock` disagrees with `Cargo.toml`, which
+  is the drift class §4 exists to eliminate.
+- `RUSTFLAGS=-C link-arg=-fuse-ld=mold` is §5.1's mitigation. `mold` and `ld.mold`
+  ship in the rust-stable extension's `bin`, which `append-path` puts on `PATH`, so
+  the flag resolves inside the sandbox with no extra module (verified: §0.1).
+- **In-repo manifests use local `file`/`dir` sources; a Flathub submission replaces
+  them with a single `git` source pinned to the release commit.** `<TAG_COMMIT_SHA>` in
+  the pre-T1 draft of this block was an unfilled placeholder and could never have built:
+  a local manifest cannot reference a commit that is not pushed. The local form is what
+  `verify.sh` §2.1 stage 6 builds and what T2's gate was run against; the switch is a
+  release-checklist item (§4.2), not a design change.
 - Source installs are flat `.desktop`/`.metainfo.xml` files, **not** `.in` templates.
-  The `.in` files currently in `rust/data/` require `@bindir@`-style substitution that
-  nothing in a pure-Rust build performs. See §1.5.
+  The `.in` files currently in `core/data/` require `@bindir@`-style substitution that
+  nothing in a pure-Rust build performs. See §1.5. **These plain files do not exist yet**
+  — §1.5 is the task that creates them, and until it lands the three `core/data/…`
+  install lines fail; see §2.5's sequencing note.
+- The distro-logo install target `/app/share/gosh_distrobox_manager/distro-icons/` is
+  **provisional**: nothing in `core/src` reads an icon path today (the Flutter UI used
+  Material icons, not these SVGs), so the runtime lookup path is T3/T4's to fix. Whatever
+  it becomes must match this line exactly — a mismatch here is the §1.4.2 silent-failure
+  class, reintroduced by a filesystem path rather than a permission. See §2.5.
 
 ### 1.3 Source vendoring strategy for the git dependency (the hard part)
 
@@ -217,20 +252,86 @@ caveat they do not share with the submodules: they are the upstream default-bran
 plan was verified against", not a guarantee — the authoritative record is the sidecar
 committed in T2, which is regenerated with the lockfile and checked in CI.
 
+##### Correction (T2, measured): the lockfile has **eleven** git sources, not five
+
+The five entries above are correct as *pointers* — the things a human has to think about
+— but they are not the set of git sources `Cargo.lock` records, and the sidecar is keyed
+on the latter. Resolving libcosmic at the pinned rev with `PLAN.md` §1's feature list
+(`default-features = false`, `dbus-config` dropped per D23) and taking the lockfile's
+distinct `source = "git+…"` strings yields **11** sources:
+
+| # | Git source (as it appears in `Cargo.lock`) | Pinned by |
+|---|---|---|
+| 1 | `pop-os/libcosmic?rev=a401af8b…` | our `rev` |
+| 2 | `pop-os/dbus-settings-bindings` | **nobody** (branch HEAD) |
+| 3 | `pop-os/freedesktop-icons` | **nobody** (branch HEAD) |
+| 4 | `pop-os/cosmic-protocols?rev=32283d7` | libcosmic |
+| 5 | `jackpot51/rust-atomicwrites` | `cosmic-config` |
+| 6 | `pop-os/winit.git?tag=cosmic-0.14` | `iced` |
+| 7 | `pop-os/softbuffer?tag=cosmic-4.0` | `iced` |
+| 8 | `pop-os/window_clipboard.git?tag=sctk-0.20` | `iced` |
+| 9 | `pop-os/smithay-clipboard?tag=sctk-0.20` | `iced` |
+| 10 | `iced-rs/cryoglyph.git?rev=e429a025…` | `iced` |
+| 11 | `wash2/accesskit?tag=cosmic-0.14` | `iced` |
+
+Sources 4–11 are *inside* the `iced` submodule's own dependency graph and are reached
+only because the submodule is populated; they are not visible from libcosmic's manifest.
+Two consequences:
+
+- **The `iced` submodule is not merely a build-time convenience — it is load-bearing for
+  the lockfile's git set.** Unpinning it changes sources 6–11.
+- **The sidecar must cover all eleven, and it does** (T2: `git-packages.json` has 11
+  remotes / 51 packages; `git-manifests/` has 51 normalised manifests). D24's "five" and
+  REVIEW A8's "three" are both counts of *documented pointers*; neither is a count of
+  lockfile sources. The generator is agnostic — it derives the set from the lockfile —
+  so nothing needs re-deciding, but a reviewer counting five entries in the sidecar would
+  wrongly conclude it was stale.
+
+The measured sources 1–3 resolve to exactly the SHAs recorded above, independently
+confirming this section's pins (`eed01dd3…`, `ab4c57b8…`) on 2026-09-11.
+
 libcosmic at this rev: `version = 1.0.0`, `edition = "2024"`, `rust-version = "1.93"`,
 `[lib] name = "cosmic"`. All verified from the fetched `Cargo.toml`. MSRV 1.93 < our
 1.98.1, so no toolchain problem.
 
 #### Procedure to (re)generate `cargo-sources.json`
 
-```bash
-# one-time, on a networked machine
-pip install --user flatpak-cargo-generator
-# or: curl -O https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
+**This section replaced the pre-T2 draft, which described upstream's
+`flatpak-cargo-generator.py`. We do not use it** (D5): it cannot express the `iced`
+submodule's path dependencies or the per-package subdirectory layout, and it emits no
+sidecar. The ported generator in `flatpak/` is the tool, and it is the same one the
+sibling project ships — see `flatpak/generate-cargo-sources.py`.
 
-cargo generate-lockfile                  # in rust/  — must be committed
-python3 flatpak-cargo-generator.py rust/Cargo.lock -o flatpak/cargo-sources.json
+```bash
+# One-time, on a networked machine, and again whenever the *git* set in Cargo.lock
+# changes (a new/removed/pinned git dependency). Network is needed here and only here.
+python3 flatpak/generate-cargo-sources.py --refresh-git
+
+# After any dependency change at all. Offline; no network. This is the CI step.
+cargo update                      # or edit Cargo.toml; then, from the repo root:
+python3 flatpak/generate-cargo-sources.py
+python3 flatpak/generate-cargo-sources.py --check   # must exit 0
 ```
+
+Three facts about the tool that matter when reading its output:
+
+- **The lockfile is the only input that pins anything.** `git-packages.json` carries no
+  URL and no commit — the lockfile's source string is the dict key, and every `git`
+  source, `commit`, and `[source."…"]` config key the generator emits is derived from it
+  by `parse_git_source`. This is why a pin cannot drift between two files (R8), and why
+  `--check` is a real staleness test rather than a diff of two copies of the same data.
+- **`--refresh-git` runs `cargo vendor --locked --versioned-dirs` against `--project`**,
+  which defaults to the **workspace root** (the sibling defaulted to `rust/`; T1 moved
+  the workspace manifest to the root and this generator follows it). Pointing `--project`
+  at `core/` instead would vendor only that member's subgraph and silently omit
+  everything `app/` pulls in.
+- **`--refresh-git` populates submodules** (`git submodule update --init --recursive`)
+  before harvesting. That is separate from, and does not replace, flatpak-builder's own
+  submodule checkout at build time (§1.3). Both must hold; neither is redundant.
+
+Expected shape at the pinned rev with `PLAN.md` §1's feature list: 11 git remotes,
+51 packages, 51 normalised manifests. A `--refresh-git` that reports a different package
+count means the iced submodule pointer moved.
 
 `cargo-vendor-filterer` (shipped by the extension) is **not** the tool for this manifest.
 It produces a filtered `vendor/` directory for in-sandbox consumption, an alternative
@@ -792,6 +893,148 @@ regenerate. One clear statement of intent: warm a cache keyed on `flatpak/cargo-
 and the manifest for stages 6–7. Do not cache across a `cargo-sources.json` change without
 also invalidating. §5 quantifies the cost.
 
+#### 2.5.1 What CI runs — the job plan (T2)
+
+**This subsection is the specification of the CI jobs, not their implementation.**
+`.github/workflows/rust.yml` is **not** edited by T2 — T4 owns that file and owns wiring
+these steps into `scripts/verify.sh` (D13). What T2 fixes here is *what the jobs do and in
+what order*, so T4 has an unambiguous target and so the `--check` gate below has a named
+home.
+
+Three jobs, cheapest first. Stages 1–5 are the per-push gate; 6–7 are tag/dispatch only.
+
+| # | Job | Runs on | Steps |
+|---|---|---|---|
+| 1 | `rust` | every push + PR | `cargo fmt --all -- --check`; `cargo build --workspace --release --locked`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo test --workspace --locked` |
+| 2 | `packaging-metadata` | every push + PR | the block below |
+| 3 | `flatpak` | tags + `workflow_dispatch` only | `./scripts/verify.sh` stages 6–7 (flatpak-builder offline build, then the smoke test); publish artifacts on tags |
+
+Job 3 needs two build-directory decisions that §2.1's draft does not settle, both of
+which leave untracked files in the tree if taken literally (T2, measured):
+
+- `--repo=repo` in §2.1 writes an OSTree repository to `<root>/repo/`, and **`repo/` is
+  not in `.gitignore`** (verified: `git check-ignore repo/` → no match). `build/` *is*
+  ignored, but only incidentally — by the Flutter-era `build/` entry, not because anyone
+  intended it. Prefer retargeting both to `--repo=.flatpak-builder/repo` and
+  `--state-dir=.flatpak-builder/state`: that directory is self-ignored, because
+  flatpak-builder writes its own `.flatpak-builder/.gitignore` containing `*`. This is
+  also what the sibling's `build-flatpak.sh` does. T4 owns `.gitignore` and should decide;
+  T2 deliberately did not add an entry, since a guessed path would only mask the choice.
+- flatpak-builder creates `.flatpak-builder/` (ccache + checksums) in its **current
+  working directory** unless `--state-dir` says otherwise. T2's gate runs did exactly that
+  at the repository root. It is self-ignored, so it is harmless, but pinning
+  `--state-dir` makes the side effect explicit and keeps the cache in one place.
+
+Job 2 — `packaging-metadata` — is new, and is where T2's generator lands. It is the job
+that makes §4's drift class and §1.3's vendoring drift fail in CI instead of in review:
+
+```yaml
+# packaging-metadata job, in order. All offline, all fast (<1 min).
+- run: python3 flatpak/generate-cargo-sources.py --check      # T2 — see below
+- run: desktop-file-validate core/data/io.github.gosh_distrobox_manager.desktop
+- run: appstreamcli validate --no-net core/data/io.github.gosh_distrobox_manager.metainfo.xml
+- run: ./scripts/check-versions.sh                            # D14: Cargo / spec / metainfo
+```
+
+**The `--check` step, and why it belongs in this job.** This is the step T2 adds:
+
+```bash
+python3 flatpak/generate-cargo-sources.py --check
+```
+
+It regenerates `cargo-sources.json` in memory from `Cargo.lock` plus the committed
+sidecar (`git-packages.json` + `git-manifests/`) and exits non-zero if the committed
+`cargo-sources.json` differs. It needs **no network and no flatpak**, which is why it sits
+in the fast job rather than behind the flatpak build, and it is what turns §1.3's silent
+failure modes into a red job:
+
+- A dependency change that was not followed by a regeneration → `cargo-sources.json is out
+  of date`.
+- A git dependency added, removed, or re-pinned without `--refresh-git` → `no
+  git-packages.json entry for <source>`, or `git-packages.json is stale for <source>`
+  with the exact missing/extra package list.
+- A sidecar whose normalised manifests were not refreshed → `missing normalised manifest
+  git-manifests/<name>-<version>/Cargo.toml`.
+
+It does **not** catch a `Cargo.lock` that is out of sync with `Cargo.toml` — that is
+`--locked` in job 1 — nor a lockfile that resolves a *different* upstream state (the two
+unpinned git deps, §1.3): `--check` compares the sidecar against whatever the lockfile
+says, so it is a staleness gate, not a "the upstream branch did not move" gate. Only job 3,
+by building offline, turns the latter into a failure.
+
+The step is placed **first** in the job because it is the fastest and the one most likely
+to fail on a dependency-touching PR. Note that it must run from the repository root: the
+generator's `--lockfile` and `--project` defaults are derived from the script's own
+location (`flatpak/..`), so it works from any cwd, but the paths printed in its errors are
+root-relative.
+
+**Sequencing note (T2, unresolved).** `--check` is green today, but the artifact it guards
+is not yet the right one: `Cargo.lock` at T2's commit still holds the pre-migration
+`flutter_rust_bridge` graph, because `app/` (and therefore libcosmic, and therefore all
+11 git sources) does not exist until T3. `cargo-sources.json` therefore describes a
+dependency set that T14 deletes. **The moment `app/` lands, the lockfile gains the 11 git
+sources and both `cargo-sources.json` and the `flatpak` job become meaningful; the
+sidecar (`git-packages.json` + `git-manifests/`) is already complete and validated for
+that state.** See §2.5.2.
+
+#### 2.5.2 The vacuity gap, and the fixture that closes it (T2, open)
+
+**O1 is right about the mechanism, and it must be fixed before T4.** At T2's commit the
+lockfile has **zero** git sources, so:
+
+- `generate-cargo-sources.py --check` never enters its git branch. `git-packages.json`
+  and `git-manifests/` are read by *nothing* on that path — the sidecar loop iterates
+  `collect_git_sources(packages)`, which is empty. A green `--check` therefore certifies
+  the registry path and says nothing whatsoever about the git path.
+- The `flatpak` job (§2.5.1 job 3) fails at source-download time on `../app`, before any
+  Rust compiles, so it too exercises no git source.
+
+**So the committed artifacts are not self-validating at T2.** What is true of them is
+narrower than "the git path is tested": `git-packages.json` is byte-identical to a real
+`--refresh-git` output over a real resolved libcosmic graph, the 51 `git-manifests/`
+entries all exist and none still inherit from a workspace root, and the generator is
+function-identical (16/16) to the sibling's committed generator. Those are *evidence*,
+not a *gate*. A regression in the git path between T2 and T3 would land green.
+
+**The sibling hit this exact problem and solved it; we did not port the solution.** Its
+`tests/test_packaging.py` carries a `CASES` list of `[("live", …), ("fixture", …)]` and
+runs every git assertion over both, with `tests/fixtures/git-deps/` holding a trimmed
+real lockfile (covering rev-pinned, tag-pinned, and commit-only sources), its sidecar, and
+its normalised manifests. Its own comment states the reason: *"The live lockfile has no
+git dependencies until T6 lands, so every git assertion below would pass vacuously against
+it alone — and a test that cannot fail reads as coverage while the git path regresses."*
+Its `test_fixture_actually_exercises_the_git_paths` guards the guard, so the fixture cannot
+quietly decay into vacuity itself.
+
+**Assignment needed (T2 cannot do it).** T2's scope is `flatpak/**` and this document;
+the sibling's harness lives in `tests/`, outside it. Recommended split:
+
+1. **T4 owns the runner.** It owns `scripts/verify.sh` and D13's stage list, and D13
+   already names `generate-cargo-sources.py --check` as a stage — so T4 is where a
+   `python3 -m pytest tests/test_packaging.py` (or a dependency-free equivalent, since
+   pyyaml/pytest are not host deps and CI would have to install them) becomes a real
+   stage. Until then D13's stage list is **optimistic about this step**: it lists a
+   `--check` that cannot fail on the git path it is meant to protect.
+2. **The fixture belongs beside the generator** and can land in `flatpak/` (T2's scope)
+   if the lead prefers to keep the test data with the tool: `flatpak/fixtures/git-deps/`
+   with the same three artefacts. Either location works; what must not happen is the
+   fixture being dropped in the port.
+
+Selective port — the sibling's manifest/licence/trademark tests
+(`test_manifest_installs_first_and_third_party_license_material`,
+`test_product_trademark_notice_is_present`, `test_manifest_uses_a_pinned_rust_toolchain_archive`,
+`test_flatpak_builds_only_the_cosmic_binary`, `test_cosmic_icon_theme_is_bundled`,
+`test_build_script_runtime_matches_the_manifest`) describe *that* app's YAML manifest,
+pinned toolchain tarball, and licence bundling. Ours is JSON, uses the rust-stable SDK
+extension rather than a toolchain archive, and has no `build-flatpak.sh`. Do **not** port
+them by rote. The generator tests (fixture cases, `parse_git_source`, sidecar-shape,
+`--check` staleness) and the two finish-args-guard names are the portable set.
+
+**Note the enforced-count trap.** The sibling's `test_fixture_lockfile_generates_cleanly`
+hard-codes `kinds.count("git") == 3` and an inline count derived from a 7-package fixture.
+Any port must recompute those from our own fixture rather than inherit them, or the test
+will assert the sibling's graph against ours and fail for the wrong reason.
+
 ---
 
 ## 3. Non-COSMIC verification plan (GNOME — the current desktop)
@@ -872,6 +1115,16 @@ Every release, in order:
       today's date in `Day Mon DD YYYY` format.
 - [ ] Regenerate `flatpak/cargo-sources.json` from the updated `Cargo.lock`.
       **Re-pin `libcosmic` if the rev moved**, and re-record the `iced` submodule SHA (§1.3).
+- [ ] If the git set in `Cargo.lock` changed (a git dep added, removed, or re-pinned),
+      run `python3 flatpak/generate-cargo-sources.py --refresh-git` **first** — it needs
+      network and is the only step that rebuilds `git-packages.json`/`git-manifests/` —
+      then the plain `generate` above, then `--check`. A `--check` failure naming
+      `--refresh-git` in its message means exactly this step was skipped.
+- [ ] **On Flathub submission only: switch the module's local `file`/`dir` sources to a
+      single `git` source pinned to the release commit** (§1.2 notes). The repository
+      manifest keeps local sources, because a local manifest cannot reference a commit
+      that is not pushed; `verify.sh` stage 6 builds the local form. Reverting to local
+      sources for local builds is expected and fine.
 - [ ] Run `./scripts/verify.sh` — must pass end to end on a clean tree.
 - [ ] Confirm `--locked` passes (proves Cargo.toml ↔ Cargo.lock agreement).
 - [ ] Validate metainfo + desktop file (§1.5).

@@ -302,7 +302,85 @@ Three agent disputes ruled on, all evidence-verified by lead:
   verified semantics-preserving; the two sensitive spots, `AppState::Default` →
   `new()` delegation and the `ResponseFn`/`ResponseMap` aliases, are pure).
 
-## D25 — ARCH-Q10 guard corrected: ban both spawn paths; violation story retracted
+## D26 — T2 sign-off rulings (lead, 2026-09-11)
+
+T2 closes with the Rust gates green (unchanged tree: `fmt --check` exit 0; no Rust
+source touched) and the packaging gates verified by lead-measured evidence, not by
+agent report. One agent dispute ruled on; the reviewer's remaining items are
+dispositioned as T3/T4 obligations or doc follow-ups, not T2 blocks.
+
+- **Reviewer O1 (blocking) — sustained in premise, overruled in remedy.** The premise
+  is correct and independently confirmed: `Cargo.lock` at T2's commit holds zero git
+  sources, so the committed `cargo-sources.json` (363 registry-only entries,
+  `--check` exit 0) exercises no git path, and no `[[bin]]` exists yet — a green
+  `--check` at T2 cannot certify §1.3's git machinery. But the fix the reviewer
+  proposed (re-scope T2 to fixture tests, or fold T2 into T3) is moot: the owner
+  already did the work both options were trying to force. Measured lead evidence:
+  (a) the committed sidecar is byte-identical to the output of `--refresh-git`
+  against a scratch lockfile resolving libcosmic at the pinned rev with PLAN §1's
+  feature list — 11 remotes / 51 packages, `git-manifests/` 51-for-51 with no
+  missing/orphan dirs, qualifier kinds `{rev, tag, (none)}`; (b) the generator is
+  16 functions, same set as the sibling's HEAD, 38-line diff confined to path
+  defaults plus the pointer-vs-source doc header; (c) a surrogate offline
+  `flatpak-builder` build (identical manifest modulo source paths, identical
+  finish-args/build-options/`cargo-sources.json` git content) finished
+  `Compiling gosh_distrobox_manager v1.0.2` → `Finished release in 1m 35s`,
+  EXIT=0, with both submodule checkouts logged
+  (`iced @ ffe1f1d`, `cosmic-icons @ 343c007f`). The sidecar is therefore validated
+  for the exact lockfile state T3 will produce; what remains is *regeneration*,
+  not *re-proof*. packaging.md §2.5.1's sequencing note records this honestly:
+  "`--check` is green today, but the artifact it guards is not yet the right one."
+- **Reviewer O2 (git-pin staleness) — moot, no ruling needed.** The committed
+  manifest uses local `file`/`dir` sources, not the `{"type": "git", "commit":
+  "<TAG_COMMIT_SHA>"}` placeholder from the pre-T1 draft. The Flathub switch is a
+  release-checklist item (packaging.md §1.2 notes + §4.2), not a per-task staleness
+  source. `verify.sh` builds the working tree at every task by construction.
+- **Reviewer O3 ("five git sources") — erratum issued, owner already corrected.**
+  D24's "T2's sidecar covers all five git sources" conflated documented *pointers*
+  (libcosmic rev + 2 submodules + 2 unpinned deps) with lockfile git *sources*.
+  Measured: **11** distinct `source = "git+…"` strings (libcosmic rev; the two
+  unpinned deps; 8 transitive pins inside the iced subgraph: cosmic-protocols rev,
+  atomicwrites, winit/cosmic-0.14 tag, softbuffer/cosmic-4.0 tag,
+  window_clipboard/sctk-0.20 tag, smithay-clipboard/sctk-0.20 tag, cryoglyph rev,
+  accesskit/cosmic-0.14 tag). packaging.md §1.3 now carries the measured 11-row
+  table; the generator itself was always count-agnostic and needs no change. The
+  "five" survives only as the count of human-facing pointers in PLAN §1.
+- **T3 obligation (recorded, not optional):** the moment `app/` lands, its owner
+  runs plain `python3 flatpak/generate-cargo-sources.py` (offline, against the
+  committed sidecar — no `--refresh-git` needed if the lockfile git set matches
+  the 11 predicted) and commits the regenerated `cargo-sources.json`. If the
+  lockfile git set differs (iced pointer moved, unpinned deps resolved elsewhere),
+  the owner runs `--refresh-git` (network) and commits sidecar + manifests +
+  sources together. Either way `--check` must exit 0 before T3 closes. PLAN T3 row
+  amended accordingly.
+- **T4 obligations (recorded):** (a) wire job 2 (`packaging-metadata`) per §2.5.1 —
+  `--check` first, then desktop/metainfo validation, then `check-versions.sh`;
+  (b) `.gitignore`: add `repo/` (the §2.1 `--repo=repo` output; `.flatpak-builder/`
+  is self-ignored by the tool's own `.gitignore`, `build/` already covered);
+  (c) decide the generator-test runner — the sibling ports `pytest tests/ -q`
+  (`tests/fixtures/git-deps/` + `test_packaging.py` from its HEAD) but D13 lists
+  no pytest stage; T4 either adds the stage or folds the assertions into
+  `verify.sh` as plain python, and records the choice in D13's stage list;
+  (d) `flatpak` job (tags + dispatch): `--user --install` so the smoke test's
+  `flatpak run` has an installed app (stage 6 as sketched with `--repo=repo`
+  alone never installs); (e) canonical manifest stays the JSON — T4's D17
+  negative case derives the variant via `json.load` → drop
+  `--talk-name=org.freedesktop.Flatpak` → re-dump.
+- **Doc follow-ups (not gates):** packaging.md §4.1/§4.2 still say `rust/Cargo.toml`
+  and `rust/data/` (stale post-T1; T14 owns the version-unification rewrite);
+  §6 Q1 ("BaseApp worth it? — decide before writing the manifest") is answered by
+  the committed manifest (`base: com.system76.Cosmic.BaseApp`) but the question
+  text still reads open — T14 closes it with one line noting the sibling's
+  no-base-app alternative was measured and declined (icon theme via BaseApp,
+  §1.1). The flat `.desktop`/`.metainfo.xml` files do not exist until §1.5 lands
+  (owned by the page tasks via T14 at latest); until then the manifest's three
+  `core/data/…` install lines fail — sequencing documented in §1.2 notes + §2.5.
+- **Process note:** the owner's build-watch loop (`until ! pgrep -f
+  flatpak-builder`) self-matched its own cmdline and would have waited out the
+  600 s timeout; the surrogate build had already finished EXIT=0. No harm done —
+  the log, not the loop, is the gate evidence — but future wait loops must match
+  a PID file or a distinctive build-dir pattern, never a bare process-name
+  substring.
 
 - **Question:** The reviewer proved T1's `clippy.toml` (`std::process::Command::new`
   only) is a placebo against this tree: `std::process::Command` appears in `core/src`
