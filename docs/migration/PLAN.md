@@ -56,7 +56,7 @@ signed off on the diff; and it is committed.
 | T5 | Task runtime + `spawn_task` + per-task subscriptions (B2 line buffering lands here) | arch | **Done** (`042646c`; 94+0+6+4+1 green; advocate 4 blocking objections fixed + re-probed, signed off) |
 | T6 | Dashboard + Containers + Details pages | ux | **Done** (`ad984d5`; 94+3+6+6+4+1 green; advocate 2 blocking + 9 secondary fixed, signed off) |
 | T7 | Create wizard + Images pages (wire `preselectedImage`) | ux | **Done** (`abc1629`; 94+7+4+6+6+4+1 green; advocate O1–O6 + cancel-strand fixed, signed off) |
-| T8 | Package manager page (B1 emerge/table fix) | arch + ux | Queued |
+| T8 | Package manager page (B1 emerge/table fix) | arch + ux | **Done** (`0a89a78`; 98+8+4+6+4+6+4+1 green; advocate 1 blocking + 9 secondary fixed, signed off) |
 | T9 | Updates + Terminal-launch pages (B5 `start` lands before banners freeze) | arch + ux | Queued |
 | T10 | Backups page (snapshots/export/import/clone; xdg-portal picker per D16) | arch + ux | Queued |
 | T11 | Activity log + TaskState enum (kills string-sniffing) | arch + ux | Queued |
