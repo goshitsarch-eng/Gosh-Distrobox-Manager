@@ -63,6 +63,19 @@ pub struct App {
     containers: Vec<ContainerInfo>,
     selected_container: Option<String>,
     images: Vec<String>,
+    /// Images page's OWN load error (O3): the global `error` banner already
+    /// reports failures everywhere — passing it into the images view made
+    /// every unrelated failure render as "Could not load images". Set on
+    /// `Images Loaded(Err)`, cleared on request/success.
+    images_error: Option<String>,
+    /// Images page state (T7, rows #99/#103): live search + custom URL.
+    images_search: String,
+    images_custom: String,
+    /// Image details dialog image URL (row #102).
+    image_details: Option<String>,
+    /// Create wizard state (T7, rows #78–#96). `Some` = wizard open (pushed
+    /// over Containers like details — single level, Back/Close pops).
+    wizard: Option<crate::wizard::WizardState>,
     apps: Vec<AppInfo>,
     exported_binaries: Vec<ExportedBinary>,
     stats: Option<ContainerStats>,
@@ -168,28 +181,17 @@ impl App {
         }
     }
 
+    /// Images page (rows #97–#105): the distro CATALOGUE
+    /// (`distrobox create --compatibility`), not local images (row #104 —
+    /// the headline says so). Search + grid + custom URL + details dialog.
     fn view_images(&self) -> cosmic::Element<'_, Message> {
-        if self.loading.images {
-            return widget::container(widget::text::body("Loading images…"))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .into();
-        }
-        if self.images.is_empty() {
-            return widget::container(widget::text::body("No images found."))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .into();
-        }
-        let mut col = widget::Column::new().spacing(4);
-        for image in &self.images {
-            col = col.push(widget::text::body(image.clone()));
-        }
-        widget::scrollable(col).into()
+        crate::images_view::view_images(
+            &self.images,
+            self.loading.images,
+            self.images_error.clone(),
+            &self.images_search,
+            &self.images_custom,
+        )
     }
 
     fn view_apps(&self) -> cosmic::Element<'_, Message> {
@@ -312,6 +314,11 @@ impl cosmic::Application for App {
             containers: Vec::new(),
             selected_container: None,
             images: Vec::new(),
+            images_error: None,
+            images_search: String::new(),
+            images_custom: String::new(),
+            image_details: None,
+            wizard: None,
             apps: Vec::new(),
             exported_binaries: Vec::new(),
             stats: None,
@@ -535,20 +542,18 @@ impl cosmic::Application for App {
                     views::activate_containers(&mut self.nav_model);
                 }
                 ContainerMsg::NewContainerRequested => {
-                    // Row #28 (dead in Flutter) + row #44 (FAB → header):
-                    // the wizard lands in T7. If already on Containers the
-                    // header button IS the affordance — say so; otherwise
-                    // switch there first.
-                    if self.active_page() == Page::Containers && self.details_for.is_none() {
-                        let toast = self.toast("The create wizard lands in T7.".to_string());
-                        return toast;
+                    // Rows #28/#44: open a blank wizard (pushed over
+                    // Containers like details). Preselected images arrive
+                    // via the Images page (#95: card Select + custom URL),
+                    // the only producer carrying an image — the
+                    // header/dashboard buttons have none (both render only
+                    // when details is closed, so a details preselect could
+                    // never fire).
+                    self.details_for = None;
+                    if self.active_page() != Page::Containers {
+                        views::activate_containers(&mut self.nav_model);
                     }
-                    views::activate_containers(&mut self.nav_model);
-                    let toast = self.toast(
-                        "The create wizard lands in T7 — use the New Container button in the header."
-                            .to_string(),
-                    );
-                    return toast;
+                    self.wizard = Some(crate::wizard::WizardState::default());
                 }
                 ContainerMsg::UpgradeAllRequested => {
                     // Row #29 (redirect snackbar in Flutter): confirm, then
@@ -787,16 +792,56 @@ impl cosmic::Application for App {
             Message::Images(msg) => match msg {
                 ImageMsg::LoadRequested => {
                     self.loading.images = true;
+                    self.images_error = None;
                     return Self::load_images(&self.backend);
                 }
                 ImageMsg::Loaded(result) => {
                     self.loading.images = false;
                     match result {
-                        Ok(images) => self.images = images,
-                        Err(e) => self.error = Some(Self::error_text(&e)),
+                        Ok(images) => {
+                            self.images = images;
+                            self.images_error = None;
+                        }
+                        Err(e) => {
+                            self.images_error = Some(Self::error_text(&e));
+                        }
                     }
                 }
+                ImageMsg::SearchChanged(q) => {
+                    self.images_search = q;
+                }
+                ImageMsg::CustomChanged(u) => {
+                    self.images_custom = u;
+                }
+                ImageMsg::CustomSubmitted => {
+                    // Row #103 (dead in Flutter): custom URL → wizard with
+                    // preselected image. Empty field = inline toast, not a
+                    // silent snackbar-to-nowhere.
+                    let url = self.images_custom.trim().to_string();
+                    if url.is_empty() {
+                        let toast = self.toast("Enter a custom image URL first.".to_string());
+                        return toast;
+                    }
+                    self.wizard = Some(crate::wizard::WizardState::with_preselected(url));
+                    self.details_for = None;
+                    self.nav_model.activate_position(1);
+                }
+                ImageMsg::DetailsRequested(image) => {
+                    self.image_details = Some(image);
+                }
+                ImageMsg::DetailsClosed => {
+                    self.image_details = None;
+                }
+                ImageMsg::CreateWithImage(image) => {
+                    // Row #102 (dead in Flutter): details dialog "Create
+                    // Container" pushes the wizard with preselectedImage.
+                    self.image_details = None;
+                    self.wizard = Some(crate::wizard::WizardState::with_preselected(image));
+                    self.details_for = None;
+                    self.nav_model.activate_position(1);
+                }
             },
+            Message::Wizard(msg) => return self.update_wizard(msg),
             Message::Stats(msg) => match msg {
                 StatsMsg::LoadRequested(container) => {
                     self.loading.stats = true;
@@ -817,7 +862,35 @@ impl cosmic::Application for App {
             },
             Message::Tasks(msg) => match msg {
                 TaskMsg::Started { label, result } => match result {
+                    Err(e) => {
+                        // O2 second leg: a spawn failure must not strand the
+                        // wizard on Progress (no task exists to drive it).
+                        // Step back to Config with the error inline.
+                        if let Some(w) = self.wizard.as_mut()
+                            && w.step == crate::wizard::WizardStep::Progress
+                            && label.starts_with("Create ")
+                        {
+                            w.step = crate::wizard::WizardStep::Config;
+                            w.inline_error = Some(format!(
+                                "Could not start creation: {}",
+                                Self::error_text(&e)
+                            ));
+                            w.task_id = None;
+                        } else {
+                            self.error = Some(Self::error_text(&e));
+                        }
+                    }
                     Ok(id) => {
+                        // Wire the wizard progress step (row #93): a create
+                        // task whose label matches the wizard's pending label
+                        // attaches its mirror id for console + cancel.
+                        if let Some(w) = self.wizard.as_mut()
+                            && w.step == crate::wizard::WizardStep::Progress
+                            && w.task_id.is_none()
+                            && label.starts_with("Create ")
+                        {
+                            w.task_id = Some(id);
+                        }
                         self.tasks.insert(
                             id,
                             TaskView {
@@ -829,7 +902,6 @@ impl cosmic::Application for App {
                             },
                         );
                     }
-                    Err(e) => self.error = Some(Self::error_text(&e)),
                 },
                 TaskMsg::Output { id, lines } => {
                     if let Some(view) = self.tasks.get_mut(&id) {
@@ -844,6 +916,13 @@ impl cosmic::Application for App {
                         view.completed = true;
                         view.success = success;
                     }
+                    // O2 latch: the wizard progress step survives sweep.
+                    if let Some(w) = self.wizard.as_mut()
+                        && w.task_id == Some(id)
+                    {
+                        w.task_completed = true;
+                        w.task_success = success;
+                    }
                     if !success {
                         let label = self
                             .tasks
@@ -857,10 +936,11 @@ impl cosmic::Application for App {
                 TaskMsg::CancelRequested(id) => {
                     // Synchronous registry call — `cancel` takes no lock
                     // across blocking calls, so this is safe in `update`.
+                    // Shared latch helper: every cancellation path marks the
+                    // mirror AND latches wizard completion, so no trigger
+                    // (row Cancel, wizard Cancel, sweep) strands the UI.
                     if self.backend.cancel_task(id) {
-                        if let Some(view) = self.tasks.get_mut(&id) {
-                            view.completed = true;
-                        }
+                        self.latch_cancelled(id);
                         return Self::done(Message::Tasks(TaskMsg::Cancelled(id)));
                     }
                 }
@@ -874,6 +954,16 @@ impl cosmic::Application for App {
                 TaskMsg::Expired(ids) => {
                     for id in ids {
                         self.tasks.remove(&id);
+                        // O2: the sweep must not orphan the wizard progress
+                        // step — a swept create task would flip success back
+                        // to "Creating…" with only a dead Cancel. The mirror
+                        // entry is gone but completion already arrived via
+                        // `Completed` (latched below), so just drop the id.
+                        if let Some(w) = self.wizard.as_mut()
+                            && w.task_id == Some(id)
+                        {
+                            w.task_id = None;
+                        }
                     }
                 }
                 TaskMsg::ExpiredTick => {
@@ -956,12 +1046,36 @@ impl cosmic::Application for App {
             return views::with_toasts(&self.toasts, page);
         }
         let page = match self.active_page() {
-            // Details pushes over Containers (row #53 back pops).
+            // Details + wizard push over Containers (rows #53/T7 back pops).
             Page::Dashboard => self.view_dashboard(),
-            Page::Containers => match &self.details_for {
-                Some(container) => views::view_details(container, self.upgrading(container)),
-                None => self.view_containers_page(),
-            },
+            Page::Containers => {
+                if let Some(wizard) = &self.wizard {
+                    // O2: prefer the live mirror; fall back to the latched
+                    // completion when the mirror was TTL-swept (or never
+                    // attached). Without the latch the success screen flips
+                    // back to "Creating…" with only a dead Cancel.
+                    let (output, completed, success) = wizard
+                        .task_id
+                        .and_then(|id| self.tasks.get(&id))
+                        .map(|v| (Some(v.output.as_slice()), v.completed, v.success))
+                        .unwrap_or((None, wizard.task_completed, wizard.task_success));
+                    crate::wizard_view::view_wizard(
+                        wizard,
+                        &self.images,
+                        self.loading.images,
+                        output,
+                        completed,
+                        success,
+                    )
+                } else {
+                    match &self.details_for {
+                        Some(container) => {
+                            views::view_details(container, self.upgrading(container))
+                        }
+                        None => self.view_containers_page(),
+                    }
+                }
+            }
             Page::Images => self.view_images(),
             Page::Apps => self.view_apps(),
             Page::Stats => self.view_stats(),
@@ -1012,21 +1126,331 @@ impl cosmic::Application for App {
     /// in start is the T3 leftover this replaces.
     fn header_end(&self) -> Vec<cosmic::Element<'_, Self::Message>> {
         match self.active_page() {
-            Page::Containers if self.details_for.is_none() => vec![
-                widget::button::suggested("New Container")
-                    .on_press(Message::Containers(ContainerMsg::NewContainerRequested))
-                    .into(),
-            ],
+            Page::Containers if self.details_for.is_none() && self.wizard.is_none() => {
+                vec![
+                    widget::button::suggested("New Container")
+                        .on_press(Message::Containers(ContainerMsg::NewContainerRequested))
+                        .into(),
+                ]
+            }
             _ => vec![],
         }
     }
 
     fn dialog(&self) -> Option<cosmic::Element<'_, Self::Message>> {
+        // Single modal slot (§3.3): wizard sub-dialogs (volume, image
+        // details) take precedence over the page-level dialog.
+        if let Some(wizard) = &self.wizard
+            && let Some(volume) = &wizard.volume_dialog
+        {
+            return Some(
+                widget::dialog()
+                    .title("Add Volume")
+                    .control(crate::wizard_view::volume_dialog_body(volume))
+                    .primary_action({
+                        let add: cosmic::Element<'_, Message> = widget::button::suggested("Add")
+                            .on_press(Message::Wizard(
+                                crate::message::WizardMsg::VolumeDialogConfirmed,
+                            ))
+                            .into();
+                        add
+                    })
+                    .secondary_action({
+                        let cancel: cosmic::Element<'_, Message> =
+                            widget::button::standard("Cancel")
+                                .on_press(Message::Wizard(
+                                    crate::message::WizardMsg::VolumeDialogCancelled,
+                                ))
+                                .into();
+                        cancel
+                    })
+                    .into(),
+            );
+        }
+        if let Some(image) = &self.image_details {
+            let (close, create) = crate::images_view::image_details_actions(image.clone());
+            return Some(
+                widget::dialog()
+                    .title(crate::wizard::WizardState::image_display_name(image))
+                    .control(crate::images_view::image_details_dialog(image))
+                    .primary_action(create)
+                    .secondary_action(close)
+                    .into(),
+            );
+        }
         views::dialog_view(&self.dialog)
     }
 }
 
 impl App {
+    /// Wizard message router (T7, rows #78–#96). Every arm mutates
+    /// `self.wizard` (or spawns via `Backend::create_container`); `None`
+    /// wizard ignores everything (no dead dispatch).
+    fn update_wizard(&mut self, msg: crate::message::WizardMsg) -> Task<Message> {
+        use crate::message::WizardMsg;
+        use crate::wizard::{VolumeDialog, WizardState, WizardStep};
+        match msg {
+            WizardMsg::Closed => {
+                self.wizard = None;
+            }
+            WizardMsg::ImageSelected(image) => {
+                if let Some(w) = self.wizard.as_mut() {
+                    w.selected_image = Some(image);
+                    w.custom_image.clear();
+                    w.inline_error = None;
+                }
+            }
+            WizardMsg::CustomChanged(u) => {
+                if let Some(w) = self.wizard.as_mut() {
+                    w.custom_image = u;
+                    if !w.custom_image.is_empty() {
+                        w.selected_image = None;
+                    }
+                    w.inline_error = None;
+                }
+            }
+            WizardMsg::SearchChanged(q) => {
+                if let Some(w) = self.wizard.as_mut() {
+                    w.search = q;
+                }
+            }
+            WizardMsg::NextFromImage => {
+                // Row #82 + #84: require an image (INLINE error, not a
+                // snackbar); auto-default the name when empty.
+                let next = if let Some(w) = self.wizard.as_ref() {
+                    let image = w.effective_image();
+                    if image.is_empty() {
+                        None
+                    } else {
+                        Some((image.clone(), w.name.is_empty()))
+                    }
+                } else {
+                    None
+                };
+                match next {
+                    None => {
+                        if let Some(w) = self.wizard.as_mut() {
+                            w.inline_error = Some("Please select an image".to_string());
+                        }
+                    }
+                    Some((image, fill_name)) => {
+                        if let Some(w) = self.wizard.as_mut() {
+                            if fill_name {
+                                w.name = WizardState::default_name(&image);
+                            }
+                            w.step = WizardStep::Config;
+                            w.inline_error = None;
+                        }
+                    }
+                }
+            }
+            WizardMsg::NameChanged(n) => {
+                if let Some(w) = self.wizard.as_mut() {
+                    w.name = n;
+                    w.inline_error = None;
+                }
+            }
+            WizardMsg::InitToggled(v) => {
+                if let Some(w) = self.wizard.as_mut() {
+                    w.init_system = v;
+                }
+            }
+            WizardMsg::NvidiaToggled(v) => {
+                if let Some(w) = self.wizard.as_mut() {
+                    w.nvidia = v;
+                }
+            }
+            WizardMsg::AdvancedToggled => {
+                if let Some(w) = self.wizard.as_mut() {
+                    w.advanced_open = !w.advanced_open;
+                }
+            }
+            WizardMsg::HomeChanged(h) => {
+                if let Some(w) = self.wizard.as_mut() {
+                    w.home_dir = h;
+                }
+            }
+            WizardMsg::VolumeAddRequested => {
+                if let Some(w) = self.wizard.as_mut() {
+                    w.volume_dialog = Some(VolumeDialog::default());
+                }
+            }
+            WizardMsg::VolumeDialogHostChanged(h) => {
+                if let Some(w) = self.wizard.as_mut()
+                    && let Some(d) = w.volume_dialog.as_mut()
+                {
+                    d.host = h;
+                    d.error = None;
+                }
+            }
+            WizardMsg::VolumeDialogContainerChanged(c) => {
+                if let Some(w) = self.wizard.as_mut()
+                    && let Some(d) = w.volume_dialog.as_mut()
+                {
+                    d.container = c;
+                    d.error = None;
+                }
+            }
+            WizardMsg::VolumeDialogReadOnlyToggled(v) => {
+                if let Some(w) = self.wizard.as_mut()
+                    && let Some(d) = w.volume_dialog.as_mut()
+                {
+                    d.read_only = v;
+                }
+            }
+            WizardMsg::VolumeDialogConfirmed => {
+                // Row #90: LOUD validation (the Flutter dialog silently
+                // returned on bad input — fix, not parity).
+                let verdict = if let Some(w) = self.wizard.as_ref() {
+                    if let Some(d) = w.volume_dialog.as_ref() {
+                        if d.host.trim().is_empty() {
+                            Err("Host path is required.".to_string())
+                        } else if d.container.trim().is_empty() {
+                            Err("Container path is required.".to_string())
+                        } else {
+                            Ok((
+                                d.host.trim().to_string(),
+                                d.container.trim().to_string(),
+                                d.read_only,
+                            ))
+                        }
+                    } else {
+                        return Self::none();
+                    }
+                } else {
+                    return Self::none();
+                };
+                match verdict {
+                    Err(err) => {
+                        if let Some(w) = self.wizard.as_mut()
+                            && let Some(d) = w.volume_dialog.as_mut()
+                        {
+                            d.error = Some(err);
+                        }
+                    }
+                    Ok((host, container, read_only)) => {
+                        if let Some(w) = self.wizard.as_mut() {
+                            w.volumes.push(crate::wizard::WizardVolume {
+                                host,
+                                container,
+                                read_only,
+                            });
+                            w.volume_dialog = None;
+                        }
+                    }
+                }
+            }
+            WizardMsg::VolumeDialogCancelled => {
+                if let Some(w) = self.wizard.as_mut() {
+                    w.volume_dialog = None;
+                }
+            }
+            WizardMsg::VolumeRemoved(i) => {
+                if let Some(w) = self.wizard.as_mut()
+                    && i < w.volumes.len()
+                {
+                    w.volumes.remove(i);
+                }
+            }
+            WizardMsg::BackToImage => {
+                if let Some(w) = self.wizard.as_mut() {
+                    w.step = WizardStep::Image;
+                    w.inline_error = None;
+                }
+            }
+            WizardMsg::CreateRequested => {
+                // Rows #91/#96: empty check + `CreateArgName` surfaced
+                // INLINE (Flutter never called it before create).
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                let verdict = if let Some(w) = self.wizard.as_ref() {
+                    if w.name.trim().is_empty() {
+                        Err("Please enter a container name".to_string())
+                    } else {
+                        match gosh_distrobox_core::models::CreateArgName::new(w.name.trim()) {
+                            Err(e) => Err(format!("Invalid container name: {e}")),
+                            Ok(arg_name) => {
+                                use gosh_distrobox_core::models::{CreateArgs, Volume, VolumeMode};
+                                let volumes: Vec<Volume> = w
+                                    .volumes
+                                    .iter()
+                                    .map(|v| Volume {
+                                        host_path: v.host.clone(),
+                                        container_path: v.container.clone(),
+                                        mode: if v.read_only {
+                                            Some(VolumeMode::ReadOnly)
+                                        } else {
+                                            None
+                                        },
+                                    })
+                                    .collect();
+                                Ok(CreateArgs {
+                                    init: w.init_system,
+                                    nvidia: w.nvidia,
+                                    home_path: if w.home_dir.trim().is_empty() {
+                                        None
+                                    } else {
+                                        Some(w.home_dir.trim().to_string())
+                                    },
+                                    image: w.effective_image(),
+                                    name: arg_name,
+                                    volumes,
+                                })
+                            }
+                        }
+                    }
+                } else {
+                    return Self::none();
+                };
+                match verdict {
+                    Err(err) => {
+                        if let Some(w) = self.wizard.as_mut() {
+                            w.inline_error = Some(err);
+                        }
+                    }
+                    Ok(args) => {
+                        let backend = Arc::clone(&self.backend);
+                        let label = format!("Create {}", args.name);
+                        if let Some(w) = self.wizard.as_mut() {
+                            w.step = WizardStep::Progress;
+                            w.inline_error = None;
+                        }
+                        return Self::run(async move {
+                            let result = backend.create_container(args).await;
+                            Message::Tasks(TaskMsg::Started { label, result })
+                        });
+                    }
+                }
+            }
+            WizardMsg::ProgressCancelRequested => {
+                // Row #94 Cancel: same body as `TaskMsg::CancelRequested`
+                // (marks the mirror + latches wizard completion) instead
+                // of calling the registry directly — a direct call leaves
+                // the progress step on "Creating…" with a dead Cancel
+                // (no `Completed` ever arrives: core drops the sender
+                // without a terminal event on cancel). Not `self.update`
+                // (trait method, out of scope in this impl block).
+                let id = self.wizard.as_ref().and_then(|w| w.task_id);
+                if let Some(id) = id
+                    && self.backend.cancel_task(id)
+                {
+                    self.latch_cancelled(id);
+                    return Self::done(Message::Tasks(TaskMsg::Cancelled(id)));
+                }
+            }
+            WizardMsg::ProgressDone => {
+                // Row #94 Done/Close: leave the wizard; the list refreshes
+                // behind via the normal subscription flow.
+                self.wizard = None;
+                self.loading.containers = true;
+                return Self::refresh_containers(&self.backend);
+            }
+        }
+        Self::none()
+    }
+
     /// Whether this container has an upgrade task in flight (details tile
     /// inline spinner, row #60). Matches `TaskMsg::Started` labels
     /// (`Upgrade {name}`) for incomplete mirror entries — the data T5
@@ -1035,6 +1459,21 @@ impl App {
     fn upgrading(&self, container: &ContainerInfo) -> bool {
         let want = format!("Upgrade {}", container.name);
         self.tasks.values().any(|v| !v.completed && v.label == want)
+    }
+
+    /// Shared cancellation latch (O2 class): mark the mirror completed
+    /// and latch wizard completion for the matching task, so the progress
+    /// step lands on a terminal state (Done/Close) instead of a dead Cancel.
+    fn latch_cancelled(&mut self, id: gosh_distrobox_core::TaskId) {
+        if let Some(view) = self.tasks.get_mut(&id) {
+            view.completed = true;
+        }
+        if let Some(w) = self.wizard.as_mut()
+            && w.task_id == Some(id)
+        {
+            w.task_completed = true;
+            w.task_success = false;
+        }
     }
 
     /// Dashboard page: counts + task rows from the T5 mirror.

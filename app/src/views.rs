@@ -284,8 +284,7 @@ pub fn view_dashboard(
         }
     }
 
-    // Quick actions (rows #28–#31). New Container → containers page (wizard
-    // lands in T7); Upgrade All → confirm → per-container tasks (row #29
+    // Quick actions (rows #28–#31). New Container → wizard; Upgrade All → confirm → per-container tasks (row #29
     // implemented for real, not a redirect snackbar); Stop All + confirm
     // (row #30, destructive class); Refresh (row #31).
     col = col.push({

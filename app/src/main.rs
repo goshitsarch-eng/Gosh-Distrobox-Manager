@@ -5,8 +5,11 @@
 
 mod app;
 mod icons;
+mod images_view;
 mod message;
 mod views;
+mod wizard;
+mod wizard_view;
 
 use cosmic::app::Settings;
 use cosmic::iced::Size;

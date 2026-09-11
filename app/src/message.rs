@@ -23,8 +23,9 @@ pub enum Message {
     Containers(ContainerMsg),
     Details(DetailsMsg),
     Dialog(DialogMsg),
-    Apps(AppMsg),
+    Wizard(WizardMsg),
     Images(ImageMsg),
+    Apps(AppMsg),
     Stats(StatsMsg),
     Tasks(TaskMsg),
     /// Re-probe result path (§2.3 draft). No producer until T9/T12.
@@ -87,9 +88,8 @@ pub enum ContainerMsg {
     UpgradeRequested(String),
     /// "View all" (row #23, dead in Flutter): switch to the Containers tab.
     ViewAllRequested,
-    /// Dashboard "New Container" (row #28, dead in Flutter): switches to
-    /// the Containers page AND toasts that the wizard lands in T7 (the
-    /// header New button is the create affordance from T6 on).
+    /// Dashboard "New Container" (row #28, dead in Flutter): opens a
+    /// blank wizard (preselected images come from the Images page, #95).
     NewContainerRequested,
     /// Dashboard "Upgrade All" (row #29, snackbar redirect in Flutter):
     /// confirm, then spawn an upgrade task per running container.
@@ -168,12 +168,55 @@ pub enum AppMsg {
     BinariesLoaded(Result<Vec<ExportedBinary>, CoreFailure>),
 }
 
+/// Images page: load domain (T3) + page UI (T7, rows #97–#105).
 #[derive(Clone, Debug)]
 pub enum ImageMsg {
-    /// Explicit reload (refresh button lands with the Images page in T7).
-    #[allow(dead_code)]
     LoadRequested,
     Loaded(Result<Vec<String>, CoreFailure>),
+    SearchChanged(String),
+    CustomChanged(String),
+    /// Custom-URL arrow → wizard with preselected image (#103, dead in Flutter).
+    CustomSubmitted,
+    /// Image card "+" / tap → details dialog (#102, dead in Flutter).
+    DetailsRequested(String),
+    DetailsClosed,
+    /// Details dialog "Create Container" → wizard with preselected image.
+    CreateWithImage(String),
+}
+
+/// Create wizard (rows #78–#96): every control on steps 0–2.
+#[derive(Clone, Debug)]
+pub enum WizardMsg {
+    /// Close the wizard (Cancel / Done). Open paths: header New Container
+    /// (blank), Images card Select + custom URL (preselected, #95) —
+    /// preselected images arrive ONLY from the Images page.
+    Closed,
+    ImageSelected(String),
+    CustomChanged(String),
+    SearchChanged(String),
+    NextFromImage,
+    NameChanged(String),
+    InitToggled(bool),
+    NvidiaToggled(bool),
+    AdvancedToggled,
+    HomeChanged(String),
+    VolumeAddRequested,
+    VolumeDialogHostChanged(String),
+    VolumeDialogContainerChanged(String),
+    VolumeDialogReadOnlyToggled(bool),
+    VolumeDialogConfirmed,
+    VolumeDialogCancelled,
+    VolumeRemoved(usize),
+    BackToImage,
+    /// Create pressed: validate (`CreateArgName` inline, #91/#96) then spawn
+    /// `create_container` → progress step on `TaskMsg::Started`.
+    CreateRequested,
+    /// Progress step Cancel: cancel the create task (T5 registry).
+    ProgressCancelRequested,
+    /// Progress step Done/Close: leave the wizard (list refreshes behind).
+    /// BackToImage pops step 1 → 0 (Back on config); no BackToConfig
+    /// exists (progress never goes back — Cancel/Done only).
+    ProgressDone,
 }
 
 #[derive(Clone, Debug)]
