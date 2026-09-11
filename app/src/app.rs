@@ -78,6 +78,8 @@ pub struct App {
     wizard: Option<crate::wizard::WizardState>,
     /// Package manager state (T8, rows #106–#122).
     packages: crate::packages::PackagesState,
+    /// Terminal page state (T9, rows #66–#77 + D8).
+    terminal: crate::terminal::TerminalState,
     apps: Vec<AppInfo>,
     exported_binaries: Vec<ExportedBinary>,
     stats: Option<ContainerStats>,
@@ -318,6 +320,7 @@ impl cosmic::Application for App {
             images: Vec::new(),
             images_error: None,
             packages: crate::packages::PackagesState::default(),
+            terminal: crate::terminal::TerminalState::default(),
             images_search: String::new(),
             images_custom: String::new(),
             image_details: None,
@@ -351,10 +354,12 @@ impl cosmic::Application for App {
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Self::Message> {
         self.nav_model.activate(id);
-        // Leaving Containers pops the details stack (single-level; details
-        // never nests deeper, row #53).
+        // Leaving Containers pops the pushed stacks (details + terminal —
+        // single-level each; O2: a stale terminal.container leaks the page
+        // past the tab AND dead-ends the New button).
         if self.active_page() != Page::Containers {
             self.details_for = None;
+            self.terminal = crate::terminal::TerminalState::default();
         }
         // Lazy-load each domain on first visit; containers load at init.
         match self.active_page() {
@@ -384,6 +389,15 @@ impl cosmic::Application for App {
                         .map(|c| c.name.clone())
                 {
                     return self.select_package_container(name);
+                }
+                Self::none()
+            }
+            Page::Updates => {
+                // Updates reads the shared container list (loaded at init /
+                // Dashboard) — refresh when empty like the other list pages.
+                if self.containers.is_empty() && !self.loading.containers {
+                    self.loading.containers = true;
+                    return Self::refresh_containers(&self.backend);
                 }
                 Self::none()
             }
@@ -520,6 +534,27 @@ impl cosmic::Application for App {
                         Message::Containers(ContainerMsg::ActionFinished(result))
                     });
                 }
+                ContainerMsg::StartRequested(name) => {
+                    // B5 (rows #68/#111/#130): true `podman start` (+ docker
+                    // fallback), then
+                    // the ActionFinished arm refreshes `list()` so the
+                    // `Created|Exited → Up` transition is OBSERVED.
+                    if is_blocked(self.backend.env()) {
+                        self.error = self.backend.env().message.clone();
+                        return Self::none();
+                    }
+                    if !self.busy.insert(format!("start:{name}")) {
+                        return Self::none();
+                    }
+                    let backend = Arc::clone(&self.backend);
+                    return Self::run(async move {
+                        let result = backend
+                            .start_container(&name)
+                            .await
+                            .map(|_| format!("{name} started"));
+                        Message::Containers(ContainerMsg::ActionFinished(result))
+                    });
+                }
                 ContainerMsg::RemoveRequested(name) => {
                     // Destructive → shared confirm (§3.3), not a direct run.
                     self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
@@ -579,16 +614,20 @@ impl cosmic::Application for App {
                     // the only producer carrying an image — the
                     // header/dashboard buttons have none (both render only
                     // when details is closed, so a details preselect could
-                    // never fire).
+                    // never fire). Clear the terminal stack too (O2: the
+                    // terminal page renders first when open, which would
+                    // swallow the fresh wizard).
                     self.details_for = None;
+                    self.terminal = crate::terminal::TerminalState::default();
                     if self.active_page() != Page::Containers {
                         views::activate_page(&mut self.nav_model, Page::Containers);
                     }
                     self.wizard = Some(crate::wizard::WizardState::default());
                 }
                 ContainerMsg::UpgradeAllRequested => {
-                    // Row #29 (redirect snackbar in Flutter): confirm, then
-                    // spawn one upgrade task per running container.
+                    // Row #29 (redirect snackbar in Flutter) + #131 (toast
+                    // when nothing is running): confirm, then spawn one
+                    // upgrade task per running container.
                     let running: Vec<String> = self
                         .containers
                         .iter()
@@ -596,7 +635,11 @@ impl cosmic::Application for App {
                         .map(|c| c.name.clone())
                         .collect();
                     if running.is_empty() {
-                        return Self::none();
+                        // Row #131: Flutter toasted 'No running containers
+                        // to upgrade' — silent none would strand the header
+                        // button with no feedback.
+                        let toast = self.toast("No running containers to upgrade.".to_string());
+                        return toast;
                     }
                     self.dialog = Some(ActiveDialog::Confirm(ConfirmSpec {
                         title: "Upgrade All Containers".to_string(),
@@ -622,6 +665,7 @@ impl cosmic::Application for App {
                 }
                 DetailsMsg::Closed => {
                     self.details_for = None;
+                    self.terminal = crate::terminal::TerminalState::default();
                 }
                 DetailsMsg::StopRequested(name) => {
                     return self.update(Message::Containers(ContainerMsg::StopRequested(name)));
@@ -692,18 +736,16 @@ impl cosmic::Application for App {
                     // Full Apps page lands in T12 — select + switch to the
                     // Apps tab so the existing Apps view shows this
                     // container's apps. Position 3 = Apps in Page::ALL.
-                    if let Some(c) = self.containers.iter().find(|c| c.name == name).cloned() {
+                    if let Some(c) = self.containers.iter().find(|c| c.name == *name).cloned() {
                         views::activate_page(&mut self.nav_model, Page::Apps);
                         return self.update(Message::Containers(ContainerMsg::Selected(Some(c))));
                     }
                 }
                 DetailsMsg::TerminalRequested(name) => {
-                    // Terminal page lands in T9 — record as a toast, not a
-                    // dead button (row #63 disabled state becomes a message).
-                    let toast = self.toast(format!(
-                        "Terminal for {name} lands in T9 — container must be running."
-                    ));
-                    return toast;
+                    // Rows #54/#63: open the terminal page (pushed over
+                    // Containers; Back pops). Reuses the terminal router so
+                    // enter-command loading is shared.
+                    return self.update_terminal(crate::message::TerminalMsg::OpenRequested(name));
                 }
             },
             Message::Dialog(msg) => match msg {
@@ -830,6 +872,8 @@ impl cosmic::Application for App {
                 }
             },
             Message::Packages(msg) => return self.update_packages(msg),
+            Message::Updates(_) => return Self::none(), // namespace reserved (T9+)
+            Message::Terminal(msg) => return self.update_terminal(msg),
             Message::Apps(msg) => match msg {
                 AppMsg::LoadRequested(container) => {
                     self.loading.apps = true;
@@ -1131,6 +1175,9 @@ impl cosmic::Application for App {
             // Details + wizard push over Containers (rows #53/T7 back pops).
             Page::Dashboard => self.view_dashboard(),
             Page::Containers => {
+                if self.terminal.container.is_some() {
+                    return self.view_terminal_page();
+                }
                 if let Some(wizard) = &self.wizard {
                     // O2: prefer the live mirror; fall back to the latched
                     // completion when the mirror was TTL-swept (or never
@@ -1160,6 +1207,7 @@ impl cosmic::Application for App {
             }
             Page::Images => self.view_images(),
             Page::Packages => self.view_packages(),
+            Page::Updates => self.view_updates(),
             Page::Apps => self.view_apps(),
             Page::Stats => self.view_stats(),
         };
@@ -1187,13 +1235,23 @@ impl cosmic::Application for App {
     }
 
     fn header_start(&self) -> Vec<cosmic::Element<'_, Self::Message>> {
-        // Row #53: back button on the details page; Refresh otherwise.
-        if self.details_for.is_some() && self.active_page() == Page::Containers {
-            return vec![
-                widget::button::standard("Back")
-                    .on_press(Message::Details(DetailsMsg::Closed))
-                    .into(),
-            ];
+        // Row #53 (+ terminal Back): back button on pushed pages; Refresh otherwise.
+        if self.active_page() == Page::Containers
+            && (self.details_for.is_some() || self.terminal.container.is_some())
+        {
+            // Terminal page Back clears the terminal state (its own message);
+            // details Back clears details (which also resets terminal).
+            let msg = if self.terminal.container.is_some() {
+                Message::Terminal(crate::message::TerminalMsg::Closed)
+            } else {
+                Message::Details(DetailsMsg::Closed)
+            };
+            return vec![widget::button::standard("Back").on_press(msg).into()];
+        }
+        // O6: Updates owns Refresh+Upgrade All in `header_end` (row #123) —
+        // the generic Refresh here would render it twice.
+        if self.active_page() == Page::Updates {
+            return vec![];
         }
         vec![
             widget::button::standard("Refresh")
@@ -1207,6 +1265,8 @@ impl cosmic::Application for App {
     /// wizard consumes the request); Refresh beside it on every page.
     /// `header_end` (not `header_start`) per the shell contract — Refresh
     /// in start is the T3 leftover this replaces.
+    /// Header actions (row #123): Updates gets Refresh + Upgrade All
+    /// (`header_end` two buttons); Containers keeps New Container.
     fn header_end(&self) -> Vec<cosmic::Element<'_, Self::Message>> {
         match self.active_page() {
             Page::Containers if self.details_for.is_none() && self.wizard.is_none() => {
@@ -1216,6 +1276,14 @@ impl cosmic::Application for App {
                         .into(),
                 ]
             }
+            Page::Updates => vec![
+                widget::button::standard("Refresh")
+                    .on_press(Message::Containers(ContainerMsg::RefreshRequested))
+                    .into(),
+                widget::button::suggested("Upgrade All")
+                    .on_press(Message::Containers(ContainerMsg::UpgradeAllRequested))
+                    .into(),
+            ],
             _ => vec![],
         }
     }
@@ -1290,6 +1358,31 @@ impl App {
                 Message::Packages(crate::message::PackagesMsg::InstalledLoaded(n2, result))
             }),
         ])
+    }
+
+    /// Updates page (T9, rows #123–#132): summary + running/stopped
+    /// sections + upgrade task rows from the shared mirror.
+    fn view_updates(&self) -> cosmic::Element<'_, Message> {
+        let task_rows = crate::updates::upgrade_task_rows(&self.tasks);
+        crate::updates::view_updates(&self.containers, &|c| self.upgrading(c), task_rows)
+    }
+
+    /// Terminal page (T9, rows #66–#77): pushes over Containers like
+    /// details (Back pops). Renders the open container's page, or falls
+    /// back to Containers when none is open.
+    fn view_terminal_page(&self) -> cosmic::Element<'_, Message> {
+        if let Some(name) = &self.terminal.container
+            && let Some(container) = self.containers.iter().find(|c| &c.name == name).cloned()
+        {
+            let terminals = self.terminal_list();
+            return crate::terminal::view_terminal(
+                &container,
+                &self.terminal,
+                &terminals,
+                self.upgrading(&container),
+            );
+        }
+        self.view_containers_page()
     }
 
     /// Package page view (T8, rows #106–#122).
@@ -1391,6 +1484,113 @@ impl App {
             ));
         }
         widget::scrollable(col).into()
+    }
+
+    /// Terminal message router (T9, rows #66–#77 + D8).
+    fn update_terminal(&mut self, msg: crate::message::TerminalMsg) -> Task<Message> {
+        use crate::message::TerminalMsg;
+        match msg {
+            TerminalMsg::OpenRequested(name) => {
+                // Open the terminal page for this container; (re)load the
+                // enter-command display. Terminal picker defaults to first.
+                self.terminal.container = Some(name.clone());
+                self.terminal.enter_argv = None;
+                self.terminal.command_error = None;
+                self.terminal.loading_command = true;
+                let backend = Arc::clone(&self.backend);
+                return Self::run(async move {
+                    // `enter_command` is synchronous (argv build, no spawn).
+                    let argv = backend.enter_command(&name);
+                    Message::Terminal(TerminalMsg::CommandLoaded(name, Ok(argv)))
+                });
+            }
+            TerminalMsg::Closed => {
+                self.terminal = crate::terminal::TerminalState::default();
+            }
+            TerminalMsg::CommandReloadRequested(name) => {
+                self.terminal.loading_command = true;
+                self.terminal.command_error = None;
+                let backend = Arc::clone(&self.backend);
+                return Self::run(async move {
+                    let argv = backend.enter_command(&name);
+                    Message::Terminal(TerminalMsg::CommandLoaded(name, Ok(argv)))
+                });
+            }
+            TerminalMsg::CommandLoaded(name, result) => {
+                // Stale-response guard (T8 pattern): only the open container.
+                if self.terminal.container.as_deref() != Some(&name) {
+                    return Self::none();
+                }
+                self.terminal.loading_command = false;
+                match result {
+                    Ok(argv) => self.terminal.enter_argv = Some(argv),
+                    Err(e) => {
+                        self.terminal.command_error = Some(Self::error_text(&e));
+                    }
+                }
+            }
+            TerminalMsg::CopyRequested(cmd) => {
+                // Rows #70–#72: real clipboard effect (T6 B1 lesson — never
+                // drop the effect), toast follows.
+                let write = cosmic::iced::clipboard::write(cmd.clone());
+                let toast = Self::done(Message::Ui(UiMsg::CopiedToClipboard(cmd)));
+                return Task::batch(vec![write, toast]);
+            }
+            TerminalMsg::TerminalSelected(i) => {
+                let id = self.terminal_list().get(i).map(|t| t.full_command_id());
+                self.terminal.terminal_id = id;
+            }
+            TerminalMsg::LaunchRequested(container) => {
+                // D8: spawn the selected terminal attached to the container
+                // through the env-mapped runner. Synchronous (spawn returns
+                // immediately); toast reports (no output subscription).
+                if is_blocked(self.backend.env()) {
+                    self.error = self.backend.env().message.clone();
+                    return Self::none();
+                }
+                let terminals = self.terminal_list();
+                let terminal = match self.terminal.selected(&terminals) {
+                    Some(t) => t.clone(),
+                    None => {
+                        let toast = self.toast("No terminal available to launch.".to_string());
+                        return toast;
+                    }
+                };
+                match self.backend.launch_terminal(&container, &terminal) {
+                    Ok(()) => {
+                        let toast =
+                            self.toast(format!("Launched {} for {container}", terminal.name));
+                        return toast;
+                    }
+                    Err(e) => {
+                        let toast = self.toast(format!(
+                            "Could not launch terminal: {}",
+                            Self::error_text(&e)
+                        ));
+                        return toast;
+                    }
+                }
+            }
+            TerminalMsg::LaunchFinished(result) => match result {
+                Ok(msg) => {
+                    let toast = self.toast(msg);
+                    return toast;
+                }
+                Err(e) => {
+                    let toast = self.toast(format!("Launch failed: {}", Self::error_text(&e)));
+                    return toast;
+                }
+            },
+        }
+        Self::none()
+    }
+
+    /// Terminal list for the picker (D8): the built-in table, always
+    /// listable with no filesystem or runner. Custom + flatpak entries join
+    /// in T12's config pass (the repository owns them); launch fails loudly
+    /// for absent programs in the meantime.
+    fn terminal_list(&self) -> Vec<gosh_distrobox_core::backends::Terminal> {
+        gosh_distrobox_core::backends::supported_terminals::builtin_terminals()
     }
 
     /// Package message router (T8, rows #106–#122).

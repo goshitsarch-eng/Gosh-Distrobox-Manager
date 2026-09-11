@@ -26,6 +26,11 @@ pub enum Message {
     Wizard(WizardMsg),
     Images(ImageMsg),
     Packages(PackagesMsg),
+    /// Reserved namespace (T9+: the Updates page reads shared state and
+    /// needs no page-local messages today).
+    #[allow(dead_code)]
+    Updates(UpdatesMsg),
+    Terminal(TerminalMsg),
     Apps(AppMsg),
     Stats(StatsMsg),
     Tasks(TaskMsg),
@@ -87,6 +92,9 @@ pub enum ContainerMsg {
     RemoveRequested(String),
     StopAllRequested,
     UpgradeRequested(String),
+    /// B5 start (typed): true start leaving the container `Up`; callers
+    /// refresh `list()` so the transition is observed, not assumed.
+    StartRequested(String),
     /// "View all" (row #23, dead in Flutter): switch to the Containers tab.
     ViewAllRequested,
     /// Dashboard "New Container" (row #28, dead in Flutter): opens a
@@ -170,6 +178,42 @@ pub enum AppMsg {
     #[allow(dead_code)]
     BinariesLoadRequested(String),
     BinariesLoaded(Result<Vec<ExportedBinary>, CoreFailure>),
+}
+
+/// Updates page (T9, rows #123–#132): upgrade-all confirm state lives in
+/// the shared `ConfirmAction::UpgradeAll` dialog; no page-local messages
+/// beyond refresh (header buttons reuse `ContainerMsg`).
+#[derive(Clone, Debug)]
+pub enum UpdatesMsg {
+    /// Placeholder for page-local state (none today — the page reads the
+    /// shared container list + task mirror). Kept so the page owns a
+    /// message namespace when T13+ needs one.
+    #[allow(dead_code)]
+    Noop,
+}
+
+/// Terminal-launch page (T9, rows #66–#77 + D8 revival).
+#[derive(Clone, Debug)]
+pub enum TerminalMsg {
+    /// Open the terminal page for this container.
+    OpenRequested(String),
+    /// Back button → pop to the previous page.
+    Closed,
+    /// Reload the enter-command display (Retry).
+    CommandReloadRequested(String),
+    /// Enter-command loaded (argv for display + launch).
+    CommandLoaded(String, Result<Vec<String>, CoreFailure>),
+    /// Copy the enter command (rows #70–#72).
+    CopyRequested(String),
+    /// Terminal picker selection (index into Backend terminal list).
+    TerminalSelected(usize),
+    /// Launch the selected terminal attached to the container (D8).
+    LaunchRequested(String),
+    /// Terminal launched (toast reports; no output subscription).
+    /// (Kept for draft shape — launch is synchronous today, so the toast
+    /// fires inline; a future async launcher would route through this.)
+    #[allow(dead_code)]
+    LaunchFinished(Result<String, CoreFailure>),
 }
 
 /// Package manager (T8, rows #106–#122): picker, tabs, search, install /

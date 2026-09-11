@@ -21,6 +21,27 @@ pub struct Terminal {
 }
 
 impl Terminal {
+    /// Build `program [extra_args…] separator_arg <enter argv>` and spawn it
+    /// through the RUNNER (D8/arch §6.2): the Flatpak/host-exec mapping
+    /// applies to the *terminal* too — today's Dart path launched it from
+    /// inside the sandbox. Fire-and-forget: the child is detached (the UI
+    /// owns no output subscription for it).
+    pub fn launch(&self, runner: &CommandRunner, enter: &Command) -> anyhow::Result<()> {
+        let mut cmd = Command::new(&self.program);
+        for arg in &self.extra_args {
+            cmd.arg(arg);
+        }
+        cmd.arg(&self.separator_arg);
+        cmd.arg(&enter.program);
+        for arg in &enter.args {
+            cmd.arg(arg);
+        }
+        runner
+            .spawn(cmd)
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!("could not launch {}: {e}", self.name))
+    }
+
     /// Returns a unique identifier for this terminal combining program and extra_args.
     /// This is used for deduplication since multiple terminals may use the same program
     /// (e.g., multiple flatpak terminals all use "flatpak" as the program).
@@ -63,6 +84,12 @@ static SUPPORTED_TERMINALS: LazyLock<Vec<Terminal>> = LazyLock::new(|| {
     })
     .collect()
 });
+
+/// The built-in terminal table (D8): always listable without a repository
+/// (no filesystem, no runner). The repository adds custom + flatpak entries.
+pub fn builtin_terminals() -> Vec<Terminal> {
+    SUPPORTED_TERMINALS.clone()
+}
 
 static FLATPAK_TERMINAL_CANDIDATES: LazyLock<Vec<Terminal>> = LazyLock::new(|| {
     let base_terminals = [

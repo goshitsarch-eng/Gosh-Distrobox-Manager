@@ -599,6 +599,12 @@ impl Distrobox {
         }
     }
 
+    /// The env-mapped runner (D8): terminal launch reuses it so the
+    /// Flatpak/host-exec mapping applies to the terminal too.
+    pub fn runner(&self) -> &CommandRunner {
+        &self.cmd_runner
+    }
+
     fn dbcmd(&self) -> Command {
         (self.cmd_factory)()
     }
@@ -1141,6 +1147,27 @@ impl Distrobox {
         let mut cmd = self.dbcmd();
         cmd.arg("stop").arg("--yes").arg(name);
         self.cmd_output_string(cmd).await
+    }
+    // start (B5, arch §6.4): there is NO `distrobox start` subcommand
+    // (verified against distrobox 1.8.2.5's dispatch table) — the spec
+    // prescribes `podman start <name>` with a Docker fallback, mirroring
+    // `get_container_id`. A UI button labelled "Start" means a true start
+    // leaving the container `Up` with no attached process. Callers refresh
+    // `list()` afterwards: the `Created|Exited → Up` transition is observed,
+    // not assumed.
+    pub async fn start(&self, name: &str) -> Result<String, Error> {
+        // Podman first, Docker fallback (by NAME — podman/docker accept
+        // names, avoiding the ID-namespace mismatch between runtimes).
+        let mut cmd = Command::new("podman");
+        cmd.args(["start", name]);
+        match self.cmd_output_string(cmd).await {
+            Ok(out) => Ok(out),
+            Err(_) => {
+                let mut cmd = Command::new("docker");
+                cmd.args(["start", name]);
+                self.cmd_output_string(cmd).await
+            }
+        }
     }
     pub async fn stop_all(&self) -> Result<String, Error> {
         let mut cmd = self.dbcmd();
@@ -1931,6 +1958,20 @@ Categories=Utility;Security;";
         assert_eq!(
             output_tracker.items()[0].command().unwrap().to_string(),
             "distrobox rm --force ubuntu"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn start_sends_podman_start_argv() -> Result<(), Error> {
+        // B5: `podman start <name>` (there is no `distrobox start`
+        // subcommand); Docker fallback covered by the sibling path.
+        let db = Distrobox::new(CommandRunner::new_null(), default_cmd_factory());
+        let output_tracker = db.cmd_runner.output_tracker();
+        block_on(db.start("ubuntu"))?;
+        assert_eq!(
+            output_tracker.items()[0].command().unwrap().to_string(),
+            "podman start ubuntu"
         );
         Ok(())
     }

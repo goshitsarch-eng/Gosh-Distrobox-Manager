@@ -186,6 +186,45 @@ impl Backend {
             .map_err(CoreFailure::from)
     }
 
+    /// Today's `get_enter_command` (row #69): the `distrobox enter` argv
+    /// for display (selectable, monospace) + terminal launch.
+    pub fn enter_command(&self, name: &str) -> Vec<String> {
+        let cmd = self.inner.distrobox.enter_cmd(name);
+        let mut argv = vec![cmd.program.to_string_lossy().to_string()];
+        argv.extend(cmd.args.iter().map(|a| a.to_string_lossy().to_string()));
+        argv
+    }
+
+    /// Terminal launch (D8): spawn `terminal` attached to `container`
+    /// through the env-mapped runner. Fire-and-forget (no output
+    /// subscription — the terminal owns its window).
+    pub fn launch_terminal(
+        &self,
+        container: &str,
+        terminal: &crate::backends::Terminal,
+    ) -> Result<(), CoreFailure> {
+        self.guard_ok()?;
+        let enter = self.inner.distrobox.enter_cmd(container);
+        // Runner = the env-mapped one Distrobox holds (flatpak-spawn/host-exec
+        // mapping applies to the terminal too).
+        terminal
+            .launch(self.inner.distrobox.runner(), &enter)
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
+    /// B5 `start` (typed): a true start leaving the container `Up`.
+    /// Callers refresh `list()` afterwards — the transition is observed.
+    pub async fn start_container(&self, name: &str) -> Result<String, CoreFailure> {
+        self.guard_ok()?;
+        self.inner
+            .distrobox
+            .start(name)
+            .await
+            .map_err(CoreError::from)
+            .map_err(CoreFailure::from)
+    }
+
     /// Today's `stop_container`, typed.
     pub async fn stop_container(&self, name: &str) -> Result<String, CoreFailure> {
         self.guard_ok()?;

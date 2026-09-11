@@ -8,6 +8,8 @@ mod icons;
 mod images_view;
 mod message;
 mod packages;
+mod terminal;
+mod updates;
 mod views;
 mod wizard;
 mod wizard_view;
