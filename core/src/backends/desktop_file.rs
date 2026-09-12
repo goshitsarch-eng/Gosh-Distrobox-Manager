@@ -579,6 +579,58 @@ Icon=test-icon
         );
     }
 
+    /// The **whole** double-quote escape set, not just the quote itself.
+    ///
+    /// I23(e) named this as a coverage hole and it is one: shrinking the arm's
+    /// `matches!(n, '"' | '`' | '$' | '\\')` to `matches!(n, '"')` — which
+    /// silently stops decoding `` \` ``, `\$` and `\\` inside quotes — left all
+    /// 35 `desktop_file` tests green, because the only member of the set any test
+    /// exercised was `\"` (`\n` in the test above never reaches this arm: the
+    /// *value* pass has already decoded it to a real LF by then, and a real LF
+    /// inside quotes is not a backslash at all).
+    ///
+    /// The spec names exactly these four. Each is asserted individually so a
+    /// narrowed set fails on the specific member it dropped.
+    #[test]
+    fn split_exec_double_quote_escapes_the_full_four_character_set() {
+        // `\$` — the case that actually appears in desktop files, where an
+        // `Exec` line wants a literal `$` that a shell must not expand.
+        assert_eq!(
+            split_exec(r#"/bin/echo "\$HOME/bin/x""#),
+            vec!["/bin/echo", "$HOME/bin/x"],
+            "a quoted \\$ must decode to a literal $"
+        );
+        // `` \` `` — command substitution.
+        assert_eq!(
+            split_exec(r#"/bin/echo "a\`b""#),
+            vec!["/bin/echo", "a`b"],
+            "a quoted backtick escape must decode"
+        );
+        // `\\` — a literal backslash.
+        assert_eq!(
+            split_exec(r#"/bin/echo "a\\b""#),
+            vec!["/bin/echo", r"a\b"],
+            "a quoted doubled backslash must decode to one backslash"
+        );
+        // `\"` — already covered above; asserted here so all four sit together
+        // and the set is legible in one place.
+        assert_eq!(
+            split_exec(r#"/bin/echo "a\"b""#),
+            vec!["/bin/echo", "a\"b"],
+            "a quoted escaped quote must decode"
+        );
+
+        // And the set is a *set*, not "any character": `\q` inside quotes is
+        // not in it, so the backslash survives to argv. That is the permissive
+        // divergence seen from the other side in
+        // `split_exec_undefined_escape_loads_and_composes_with_the_tokenizer`.
+        assert_eq!(
+            split_exec(r#"/bin/echo "a\qb""#),
+            vec!["/bin/echo", r"a\qb"],
+            "an escape outside the set must not be decoded"
+        );
+    }
+
     /// A backslash before a newline is a line continuation, and the case that
     /// reaches it is not exotic: pass A decodes `\n` into a real LF, so the
     /// file text `a\\\nb` (an escaped backslash, then an escaped newline)

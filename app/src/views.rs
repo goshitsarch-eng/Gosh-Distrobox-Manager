@@ -335,6 +335,33 @@ pub struct DashboardCounts {
     pub show_skipped: bool,
 }
 
+impl DashboardCounts {
+    /// Derive the card's numbers from the list (B3).
+    ///
+    /// A named constructor rather than an inline struct literal at the call
+    /// site, for the reason `dashboard_status_body` and `skipped_summary` are
+    /// pure functions: `app/` has no lib target, so a value built inline inside
+    /// `view_dashboard` can only be reached by driving the widget tree. I23
+    /// found the consequence — the skipped count was un-pinned end to end, so
+    /// hardcoding `skipped: 0` here left every test green. This is the seam
+    /// that makes it testable.
+    /// Delegates the running/stopped split to `message::running_count` /
+    /// `stopped_count` rather than re-deriving it: those are the helpers the
+    /// call site used before this constructor existed, and a second definition
+    /// of "running" is exactly how two surfaces start disagreeing.
+    /// (`&ContainerList` reaches their `&[ContainerInfo]` parameter through
+    /// `Deref`, the same coercion the ~28 other reads in the app rely on.)
+    pub fn from_list(list: &gosh_distrobox_core::ContainerList, show_skipped: bool) -> Self {
+        Self {
+            running: crate::message::running_count(list),
+            stopped: crate::message::stopped_count(list),
+            total: list.len(),
+            skipped: list.skipped.len(),
+            show_skipped,
+        }
+    }
+}
+
 /// during refresh (row #11).
 pub fn view_dashboard(
     containers: &[ContainerInfo],

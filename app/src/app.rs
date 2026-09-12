@@ -14,7 +14,7 @@ use crate::fl;
 use crate::icons;
 use crate::message::{
     AppMsg, ConfirmAction, ConfirmSpec, ContainerMsg, DetailsMsg, DialogMsg, EnvMsg, ImageMsg,
-    Message, StatsMsg, TaskMsg, UiMsg, is_blocked, running_count, stopped_count,
+    Message, StatsMsg, TaskMsg, UiMsg, is_blocked, running_count,
 };
 use crate::views::{self, Page, active_page};
 use cosmic::app::{ApplicationExt, Core, Task};
@@ -3527,19 +3527,15 @@ impl App {
         let n_tasks = task_rows.len();
         views::view_dashboard(
             &self.containers,
-            views::DashboardCounts {
-                running: running_count(&self.containers),
-                stopped: stopped_count(&self.containers),
-                total: self.containers.len(),
-                // B3: the count of rows `list()` could not parse, with the
-                // setting that decides whether the Dashboard mentions it.
-                skipped: self.containers.skipped.len(),
-                show_skipped: self
-                    .config
+            views::DashboardCounts::from_list(
+                &self.containers,
+                // B3: the setting that decides whether the Dashboard mentions
+                // the rows `list()` could not parse. `from_list` applies it.
+                self.config
                     .as_ref()
                     .map(|c| c.show_skipped_lines)
                     .unwrap_or(false),
-            },
+            ),
             n_tasks,
             task_rows,
             self.error.clone(),

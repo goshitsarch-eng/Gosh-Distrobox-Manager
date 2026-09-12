@@ -302,6 +302,17 @@ pub struct ParseIssue {
     pub error: String,
 }
 
+impl ParseIssue {
+    /// For test fixtures (I23) that need a `skipped` entry without hand-writing
+    /// a malformed table row.
+    pub fn new(line: impl Into<String>, error: impl Into<String>) -> Self {
+        Self {
+            line: line.into(),
+            error: error.into(),
+        }
+    }
+}
+
 /// `list()`'s result: the containers that parsed, plus the rows that did not
 /// (B3, §6.4).
 ///
@@ -348,6 +359,20 @@ impl ContainerList {
     /// "no containers yet".
     pub fn is_clean_empty(&self) -> bool {
         self.containers.is_empty() && self.skipped.is_empty()
+    }
+
+    /// Attach already-recorded skips to a list built from parsed rows.
+    ///
+    /// Exists for tests (I23): the app-level fixtures reach `Backend` through
+    /// `DistroboxCommandRunnerResponse::List`, which renders well-formed rows,
+    /// so `skipped` is structurally empty there and a mutation that clears it —
+    /// in `Backend::containers`, or hardcoded upstream in `app/` — leaves the
+    /// suite green. A fixture that starts from real stdout should use
+    /// `RawList`; this is for the cases that need a `skipped` list without
+    /// hand-writing a table.
+    pub fn with_skipped(mut self, skipped: Vec<ParseIssue>) -> Self {
+        self.skipped = skipped;
+        self
     }
 }
 
@@ -541,6 +566,17 @@ pub enum DistroboxCommandRunnerResponse {
     /// Mock response for `distrobox ls --no-color` command
     /// Returns a list of containers in the expected pipe-delimited format
     List(Vec<ContainerInfo>),
+    /// Mock response for `distrobox ls --no-color` that returns **raw** stdout,
+    /// bypassing the generated table.
+    ///
+    /// B3 (`ContainerList.skipped`) is unobservable through `List`: that variant
+    /// renders well-formed rows from `ContainerInfo`s, so `skipped` is
+    /// structurally empty in every fixture built on it and a mutation that clears
+    /// it — or that hardcodes `skipped: 0` upstream in `app/` — leaves the suite
+    /// green. Reproducing real `distrobox` output (a header, some good rows, one
+    /// malformed row) needs the bytes, so this variant hands them over verbatim.
+    /// See I23 in `docs/migration/PLAN.md`.
+    RawList(String),
     /// Mock response for `distrobox create --compatibility` command
     /// Returns a list of compatible container images
     Compatibility(Vec<String>),
@@ -739,6 +775,11 @@ impl DistroboxCommandRunnerResponse {
             }
             Self::List(containers) => {
                 vec![Self::wrap_err_fn(Self::build_list_response(&containers))]
+            }
+            Self::RawList(output) => {
+                let mut cmd = default_cmd_factory()();
+                cmd.arg("ls").arg("--no-color");
+                vec![Self::wrap_err_fn((cmd, output))]
             }
             Self::Compatibility(images) => vec![Self::wrap_err_fn(
                 Self::build_compatibility_response(&images),
@@ -2074,6 +2115,56 @@ d24405b14180 | ubuntu               | Created            | ghcr.io/ublue-os/ubun
                 }]
             );
             assert!(got.skipped.is_empty(), "a clean fixture skips nothing");
+            Ok(())
+        })
+    }
+
+    /// B3's whole point: one malformed row must not discard its well-formed
+    /// neighbours, and must be *reported* rather than silently dropped.
+    ///
+    /// This is the fixture I23 called for. Every other `list()` test — and every
+    /// app-level one — drives `DistroboxCommandRunnerResponse::List`, which
+    /// renders well-formed rows from `ContainerInfo`s, so `skipped` is
+    /// structurally empty and an `is_empty()` assertion passes whether or not
+    /// the code under test actually preserves it. Here the stdout is raw, so a
+    /// genuinely unparseable row crosses the parser for real.
+    #[test]
+    fn list_reports_unparseable_rows_instead_of_dropping_them() -> Result<(), Error> {
+        block_on(async {
+            // Real distrobox shape: a header, two rows that parse, and one that
+            // cannot (its columns were split by a `|` inside an image tag).
+            let output = "\
+ID           | NAME                 | STATUS             | IMAGE
+d24405b14180 | ubuntu               | Created            | ghcr.io/ublue-os/ubuntu-toolbox:latest
+77aa11cc22dd | broken               | Created
+9008f7e6d5c4 | fedora               | Up 2 hours         | registry.fedoraproject.org/fedora:39";
+            let db = Distrobox::new(
+                NullCommandRunnerBuilder::new()
+                    .cmd(&["distrobox", "ls", "--no-color"], output)
+                    .build(),
+                default_cmd_factory(),
+            );
+
+            let got = db.list().await?;
+
+            // Both good rows survive, name-sorted.
+            let names: Vec<&str> = got.containers.iter().map(|c| c.name.as_str()).collect();
+            assert_eq!(
+                names,
+                vec!["fedora", "ubuntu"],
+                "one bad row must not cost the good ones"
+            );
+            // And the bad one is reported, not swallowed.
+            assert_eq!(got.skipped.len(), 1, "the malformed row must be counted");
+            assert!(
+                got.skipped[0].line.contains("77aa11cc22dd"),
+                "the issue must quote the offending line, got {:?}",
+                got.skipped[0].line
+            );
+            assert!(
+                !got.skipped[0].error.is_empty(),
+                "the issue must carry why it failed"
+            );
             Ok(())
         })
     }
