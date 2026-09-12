@@ -821,3 +821,200 @@ owners left them; the harness pins state + headless render for them, not pixels.
 | 191 | Text scaling | rescoped | source | Rescoped in effect: scaling is inherited from COSMIC exactly as prescribed (no slider, theme text styles elsewhere: title3/body/caption), but the o… |
 | 192 | i18n | live | T1 | Done as §5.2 prescribed (Fluent + `fl!` + `i18n.toml`), with the extraction performed page-by-page, and the loader is deliberately crate-local rath… |
 | 193 | Theme toggle | dropped | source | Explicitly dropped at ux.md §4.6 line 286 ("### 4.6 Theme toggle — drop, with justification"), restated in the frozen row itself (line 636: "Drop… |
+
+---
+
+## 12. Final Phase 3 pass (post-T21 devil's advocate)
+
+Run at `583b641` (T21 HEAD) against the installed Flatpak (`master`,
+commit `9375d15c`, built by the pass's own `verify.sh` run below). Scope:
+every I29/I30/I26 row plus the T17–T21 I-items (I20, I31), walked against
+the running app with honest tiers. No appendix row moves — this pass adds
+*T3 observations* (prose evidence below), not tier promotions: the tier
+table in §4.1 still reads T1 34 / T2 13 / T1+T2 2 / source 143 / none 1.
+
+### 12.1 Gate result
+
+`./scripts/verify.sh` (FULL, all 11 stages) was run by this pass from the
+working tree at T21 HEAD:
+
+```
+===== verify.sh stage 10: smoke-test.sh (positive) =====
+smoke (positive): process alive after 10s
+smoke (positive): readiness line observed
+smoke (positive): PASS — clean exit on SIGTERM
+===== verify.sh stage 11: smoke-test.sh (negative: no flatpak-spawn grant) =====
+smoke (negative): process alive after 10s
+smoke (negative): readiness line observed
+smoke (negative): host spawn refused without the grant (load-bearing confirmed)
+smoke (negative): PASS — clean exit on SIGTERM
+verify.sh: ALL 11 STAGES PASSED
+```
+
+Stages 1–8 passed first (fail-fast script — stage 9+ cannot run without
+them). One non-fatal host quirk, recorded not filed: stage 9's install
+printed `cp: cannot create regular file
+'/home/gosh/.local/share/flatpak/exports/share/icons/hicolor/index.theme':
+Permission denied` and continued to a working install — an exports-dir
+permission on this host, not a manifest defect (the export list itself is
+correct; both smoke variants passed against the installed app).
+
+### 12.2 Input routes (§4.4 update)
+
+T16 found every interactive route closed. This pass re-probed on the same
+host, now under a live COSMIC session (`cosmic-comp` running,
+`DISPLAY=:1`, `WAYLAND_DISPLAY=wayland-1`):
+
+| Route | Outcome |
+|---|---|
+| `wtype` (virtual-keyboard, focus-only) | **Present and used.** No daemon, no uinput, no pointer, no window targeting — it types only into whatever holds focus. Three chords sent, each screenshotted before/after (§12.3). Materially narrower than the denied `ydotoold` route, so outside the T16 denial's reason. |
+| `grim` screenshots | **Present and used** (1920×1080 PNG, pixels inspected). |
+| Pointer/click injection (`wlrctl`, `ydotool`, `xdotool`, …) | **Still absent.** No click, no focus control, no dialog/wizard-advance/menu-open by pointer. |
+| AT-SPI driving | **Still closed.** The a11y bus is live but lists only `org.a11y.atspi.Registry` — the app publishes no accessible node (unchanged from T16 despite the T19 labels); `pyatspi` absent. |
+| Orca acceptance gate (#190/R13) | **Still unrunnable.** `orca` absent. R13 stays open. |
+| Config-driven page switching | **Still impossible by design** (`activate_position(0)` hardcoded). |
+| Blind Tab+Enter navigation | **Deliberately not attempted.** Without focus visibility, Enter could land on Stop/Upgrade; the pass does not break the operator's containers to prove traversal. |
+
+Net: keyboard-only probing of the focused app, observed by screenshot
+plus the app's own log. Everything a click would be needed for (card ⋮
+drawer contents, dialogs, wizard advance, destructive confirms, page
+switching) stays unobserved — the §4.4 precedent applies to those rows,
+stated per row below rather than as a clean pass.
+
+### 12.3 What was driven and observed (T3)
+
+Session: app launched detached from the installed Flatpak, `SMOKE_READY
+page=Dashboard`, `distrobox version → 1.8.2.5`, two real containers.
+Screenshots are session artifacts (`/tmp/final_pass_*.png`, kept with the
+session, not committed); the observations below are what their pixels show.
+
+**Dashboard render (no input).** Nav rail shows 9 icon+label destinations
+in order — Dashboard (selected), Containers, Images, Packages, Updates,
+Backups, Activity, Settings, Stats — Apps absent. `SYSTEM STATUS / All
+Systems Operational / 1 of 2 containers running`, stat tiles `2 Total /
+1 Running / 1 Stopped`. Card 1 (`gosh-os-next-dev`): green `● Running 2
+hours`, inline `Stop`, inline `Open Terminal`, ⋮ trigger. Card 2
+(`grokbot`): orange `● Exited (0) 20 hours ago`, ⋮ trigger, and
+**neither** Stop nor Open Terminal. Quick actions: New Container,
+Upgrade All, Stop All, Refresh. Header: Refresh.
+
+**Ctrl+R (row #189).** `wtype -M ctrl -k r -m ctrl`, exit 0. The app log
+shows exactly one `distrobox ["ls", "--no-color"]` at the keystroke
+second, after a 113 s quiet window (startup ran version/ls/version, then
+nothing); the only `time::every` subscription is the TTL sweep tick,
+which never spawns `ls`, and no background poller exists that does. No
+terminal behind shows a reverse-search prompt. Attributed: the chord
+reached the focused app and fired the Dashboard refresh path. Genuine
+interactive T3 for the Ctrl+R half of #189 (and for #10's refresh
+executing in the running app).
+
+**Ctrl+N (row #189).** Chord opened the create wizard over Containers:
+step dots, `Select Image / Choose a Linux distribution for your
+container`, distribution search field, `No images available` empty state
+(see I33 — the catalogue was never loaded, not even attempted: the log
+shows no `create --compatibility` run), `CUSTOM IMAGE URL` field with
+placeholder, Cancel/Next buttons. Genuine interactive T3 for the Ctrl+N
+half of #189 plus a wizard-render observation. Nav rail behind still 9
+entries, Containers selected.
+
+**Escape on the open wizard (row #189).** No visible change — correct:
+`on_escape` (`app.rs:667-678`) closes dialog → card menu → activity
+drawer only; the wizard is none of those and owns a Cancel button. T3
+observed-consistent, not a failure.
+
+**Clean SIGTERM.** The pass instance was terminated by signalling the
+`gosh_distrobox_manager` binary PID; it exited with no linger
+(`pgrep`-verified). Operator note, I27 class, not an app defect: an
+earlier signal went to the `flatpak run` wrapper PID from `flatpak ps`
+and the sandboxed app survived it — signal the binary, as the smoke gate
+does. (The pass instance was launched detached and is gone; no strays.)
+
+### 12.4 Row-by-row walk (I29 + I30 + I26 + T17–T21 I-items)
+
+T3 here means *observed in this pass's running app*; it supplements but
+does not move the appendix tier. "Unexecuted" means the cited wiring was
+re-read at HEAD and lines up, but no running-app evidence exists.
+
+| Row | Appendix tier | This pass | Honest standing |
+|---|---|---|---|
+| #13 Check Again re-probe | T1+T2 | Unexecuted (needs a mid-session install + gate click). Re-read at HEAD: `reprobe()` swaps runner/distrobox/terminals-with-retained-customs/env (`service.rs:113-126`); gated Refresh re-probes first (`app.rs:702-713`); `Probed` arm live. T2 test names the real subject. | T1+T2 stand; live recovery still T3-unobserved. |
+| #20 spinner + copy | T1 | Unexecuted — no task ran (starting one would act on the operator's containers). Rendered output still pixel-unobserved. | T1 stands (decision pin); render T3-open. |
+| #97 Images refresh routing | T1 | Unexecuted (needs Images-page Refresh click). Re-read: `header_refresh` routes Images→`LoadRequested` (`app.rs:1793-1795`); Ctrl+R mirrors it (`app.rs:1601-1612`). | T1 stands; live re-fetch T3-open. |
+| #134 gated header | T1+T2 | Unexecuted (needs blocked/not-installed states + header reads). Re-read: every `header_end` action passes through `gate()` (`app.rs:1827-1874`); `header_start` Refresh stays ungated by design (T17 recovery). | T1+T2 stand; gated render T3-open. |
+| #186 status colour | T1 | **T3 observed**: green Running / orange Exited status lines on both Dashboard cards. | T1 + T3-rendered (status half). |
+| #185 distro colour | T1 | Partially T3: distro *icons* render on both cards (Fedora/Ubuntu glyphs); the `distro_colour` theme-role tinting (updates lines, wizard/Images tag) is on pages never rendered this pass. | T1 stands; tint render T3-open. |
+| #5 nav icons | T1 | **T3 observed**: 9 distinct rail icons render beside labels. | T1 + T3-rendered. |
+| #40 card Open Terminal | T1 | **T3 observed**, both halves: present on the Up card, absent on the Exited card (shared `container_row`, so the Containers-page cards inherit the same render). Click-through unobserved. | T1 + T3-rendered; activation T3-open. |
+| #41 card ⋮ menu | T1 | Half T3: ⋮ triggers render on both cards; drawer contents need a click (no pointer route). | T1 stands; drawer T3-open. |
+| #161 history persistence | T2 | Unexecuted live (needs a task completion + restart; host config `v1/` dir exists and is empty — consistent with "no completion yet", writes are finish-triggered). Re-read: Completed/latch disjoint hooks, Clear clears ring+mirror, seed uses fresh ids, corrupt→live-only. | T2 stands; on-host restart T3-open. |
+| #189 shortcuts | T1 | **T3 observed**: Ctrl+R fired a real refresh (log-causal), Ctrl+N opened the wizard, Escape no-op verified intended. Tab traversal, Ctrl+F focus, dialog/menu/drawer Escape chains unobserved. | T1 + T3 (both chords live). |
+| #190 a11y labels | T1 | Code half re-verified by reading; Orca gate still unrunnable (no Orca, no AT node — §12.2). | T1 stands; R13 still open. |
+| #1 / I26 rail set (D28) | source (rescoped) | **T3 observed**: 9 destinations, Apps absent from rail, order as pinned. | Source→T3-rendered observation; tier unchanged per §12 intro. |
+| I20 tag bundle (T21) | T1 (pkg) | Re-read `flatpak.yml`: tags trigger kept, branch read from repo, dispatch-without-publish, job-scoped `contents: write`, full `verify.sh` under xvfb. No GitHub remote here, so the attach step itself stays a release-checklist item (as T21 recorded). | T1 stands; attach T3-open. |
+| I31 harness (T20) | T2 (#161) | Suite green inside this pass's own `verify.sh` (stage 4). Drain rule + 10 s timeouts re-read; `Element` opacity caveat unchanged. | Stands. |
+
+No row regressed: every `live` verdict re-checked still holds, and no
+appendix tier was found inflated on re-read.
+
+### 12.5 New findings (filed, not fixed — this pass is docs-only)
+
+- **I32 (PLAN.md §4): Ctrl+N and the Dashboard quick action silently wipe
+  an open wizard.** T19's B1, never fixed (no fix commit between T19 and
+  this pass; re-verified at HEAD), widened to two unguarded paths — only
+  the header button checks `wizard.is_none()`. Data-loss shape is form
+  input only (no container action fires), but it destroys an Images #95
+  preselect with no confirm.
+- **I33 (PLAN.md §4): the wizard's first step is empty unless Images was
+  visited first.** Lazy-load never fires from the wizard entry; observed
+  live ("No images available", host list non-empty, no load attempted).
+  Creation via custom URL still works.
+
+Non-findings recorded so this pass is not misread as silent on them:
+Escape-not-closing-the-wizard is intended (`on_escape` scope + Cancel
+button); the `index.theme Permission denied` line in stage 9 is a host
+exports-dir permission, non-fatal; the T20 devil's-advocate verdict
+arrived truncated so its two blocking objections could not be
+re-verified here — the persistence arms were instead re-read directly
+(Completed/latch/Clear/seed/migrate/save all line up, §12.4) and no
+defect was found, but that substitution is stated, not hidden.
+
+### 12.6 Build / run / install notes (as performed by this pass)
+
+- **Build (workspace):** plain `cargo` iteration per D13; the gate ran
+  `cargo build --workspace --release --locked` (stage 2) green.
+- **Install (Flatpak):** `scripts/verify.sh` stage 9
+  (`flatpak-builder --user --install --force-clean`, retained
+  `--repo=.flatpak-builder/repo`, BaseApp `stable` + SDK `25.08`
+  preflighted) installs `app/io.github.gosh_distrobox_manager/x86_64/master`.
+- **Run (observed):** `flatpak run --user
+  io.github.gosh_distrobox_manager` → `SMOKE_READY page=Dashboard`;
+  `flatpak ps` shows the instance; SIGTERM **the binary PID** (`pgrep
+  gosh_distrobox_manager`), not the wrapper PID — signalling the wrapper
+  orphans the sandbox alive (I27 class). Needs a COSMIC/Wayland session
+  for windows; screenshots via `grim`, focus-only keys via `wtype`.
+- **Release (T21 path, not executed here):** push a `v*.*.*` tag →
+  `flatpak.yml` runs full `verify.sh` under xvfb, exports
+  `gosh-distrobox-manager-<tag>.flatpak` from the retained repo, attaches
+  it to the GitHub Release. `workflow_dispatch` certifies without
+  publishing. No GitHub remote on this host — the attach half remains a
+  release-checklist item.
+- **RPM:** still never executed (I19, no `rpmbuild`); spec/script remain
+  reviewed-only.
+
+### 12.7 §5.7 verdict (project-level, post-final-pass)
+
+| Criterion | Status after the final pass |
+|---|---|
+| Every one of the 193 parity rows ticked with a verification tier (D19) | **Met.** Appendix A current; T21 recount verified (live 144 / rescoped 40 / dropped 9; T1 34 / T2 13 / T1+T2 2 / source 143 / none 1). This pass adds T3 prose observations, no tier moves. |
+| `scripts/verify.sh` passes from a clean checkout (D13) | **Met.** Re-run by this pass: `ALL 11 STAGES PASSED`, both smoke variants. |
+| Phase 3 pass clean, no remaining failures | **Met with findings — two new ones.** No crash or data-loss path. I29/I30/I31/I26/I20 stay closed. New: I32 (wizard wipe, two paths) and I33 (wizard empty catalogue) — both UX defects with escapes (form re-entry; custom URL), neither blocking a release on safety grounds, both worth fixing before one on quality grounds. The break-every-flow half is now *partially* performed (keyboard-only: §12.3); everything needing a click stays unobserved per §12.2. |
+| `docs/migration/REPORT.md` written | **Met.** This document, now including this pass (§12). |
+| Residual risks R1–R13 each have a named owner or accepted disposition | **Met.** Unchanged from §8: R6 (RPM) and R13 (Orca) open with owners; the rest accepted/closed. |
+
+**Bottom line:** the release gate is green and the new evidence
+strengthens (not weakens) the T17–T21 claims — both #189 chords now have
+live T3 behind them and five more rows have rendered-pixel confirmation.
+What stands between this tree and a release recommendation is quality,
+not safety: fix I32 (one-line class) and I33 (one-arm load trigger),
+then run the two release-checklist items that need a GitHub remote and a
+screen reader (tag-attach observation, Orca gate).
