@@ -1,26 +1,13 @@
 //! Gosh Distrobox Manager — libcosmic native binary (S5, T3).
 //!
 //! Entry point only: logging init (moved out of the dropped `api.rs::init_app`)
-//! plus `cosmic::app::run`. Everything else lives in `app.rs`/`message.rs`.
-
-mod activity;
-mod app;
-mod apps_view;
-mod backups;
-mod i18n;
-mod icons;
-mod images_view;
-mod message;
-mod packages;
-mod settings;
-mod terminal;
-mod updates;
-mod views;
-mod wizard;
-mod wizard_view;
+//! plus `cosmic::app::run`. Everything else lives in the library crate
+//! (`lib.rs`), so that `app/tests/*.rs` can import it — see the note at the top
+//! of `lib.rs` and I31 in `docs/migration/PLAN.md` for why that matters.
 
 use cosmic::app::Settings;
 use cosmic::iced::Size;
+use gosh_distrobox_manager::{app, i18n};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Was `api.rs::init_app` (`#[frb(init)]`); the FRB shim was deleted in S7

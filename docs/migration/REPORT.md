@@ -464,7 +464,7 @@ being kept. Filed as **I28**.
 | I28 | Two doc comments asserted a test that did not exist (`from_list`) | **Fixed in T16** |
 | I29 | Five parity rows regressed to `bug` (#13, #20, #97, #134, #186) | Open |
 | I30 | Seven parity rows are `missing` (#5, #40, #41, #161, #185, #189, #190) | Open |
-| I31 | `app/`'s missing lib target is a systemic verification ceiling (148/193 rows at `source`) | Open |
+| I31 | `app/`'s missing lib target is a systemic verification ceiling (148/193 rows at `source`) | **Structural half fixed** — lib target added; headless harness open |
 
 Carried forward from earlier tasks, unchanged by this one: **I19** (RPM never executed),
 **I20** (CI publishes no artifact), **I21** (dead screenshots), **I22** (dead distro SVGs),
@@ -514,6 +514,41 @@ claim, and that all 26 `§` references resolve to real headings.
 
 ---
 
+### 11.2 I31 — the `app/` lib target (structural half closed)
+
+I31 was filed as the largest verification gap in the migration: `app/` declared only
+`[[bin]]` and had no `src/lib.rs`, so the module tree lived in `main.rs` and was private
+to the binary crate. An integration test can only import a *library*, so no test could
+reach `App`, a page module or the view helper. Of 193 parity rows, **148 rested on
+`source` tier**, against 26 T1 and 12 T2.
+
+**What changed.** `app/src/lib.rs` now declares the same module tree, `main.rs` keeps only
+the entry point, and `app/Cargo.toml` gained a `[lib]` target. `app/tests/parity_rows.rs`
+is the first test that imports the app crate.
+
+**What that half buys, concretely.** Six assertions that were previously unwritable now
+exist: the nav rail's ten destinations and their order (I26 — the order is load-bearing,
+because `activate_page` resolves by `Page::ALL.iter().position(...)` before
+`activate_position(pos as u16)`, so a reorder activates the wrong tab); that the eight
+`ux.md` destinations all survive and the additions are exactly `Apps`/`Stats`; that no two
+destinations share a title; `TaskMsg::Completed`'s `success` flag; and the task row's
+affordance decision across all four flag combinations. Two of them kill a real mutation —
+verified by hand before being kept: mapping `(true, false)` to `Succeeded` (row #21
+regressing to a success check on a failed task) and letting `success` influence the
+running branch both turn the suite red.
+
+**What it does not buy, stated so this is not read as a tier improvement.** The ceiling
+moved; the 148 rows did not. Each still needs a test written against it, and **no tier
+count in §4 or Appendix A was changed by this work.** A headless render harness — which
+would have to construct `App`, and therefore a `cosmic::app::Core` and a running executor
+— remains the larger half and is still open. Until it exists, what is assertable is the
+*decision behind* a widget, not the rendered widget: `Element` is opaque by design, which
+is why `views::task_affordance` was factored out rather than asserted on in place.
+
+**No user-facing bug was fixed.** #20's missing spinner is still missing. What changed is
+that the gap is now named in the type system — `TaskAffordance::RunningCancelOnly` — and
+pinned by a test, instead of living only in a doc comment that claims a spinner the
+running branch does not render.
 ## Appendix A — the 193 parity rows, walked
 
 Every row from `ux.md` §6, with the verdict reached in T16 and the highest verification tier
@@ -536,7 +571,7 @@ a call path, a citation, or the reason for an absence. Rows whose status in `ux.
 | 10 | Refresh action | live | source | No `Ctrl+R` accelerator: `grep -rn "keyboard_nav\|shortcut\|set_keyboard_nav" app/src` returns zero hits — §5.1 item 5 (ux.md:317) is unimplemented… |
 | 11 | Full-page loading spinner | rescoped | source | Deliberately not ported — §3.4 (ux.md:185): the full-page spinner 'is a regression to avoid; COSMIC convention is to keep content and show progress… |
 | 12 | Environment-blocked view (icon, title, message, "Check Again") | live | source | Implemented once at the SHELL level (all 10 pages inherit it) exactly as §3.4/§6.1.8 decided (ux.md:187). 'Check Again' re-runs refresh only — ther… |
-| 13 | Distrobox-not-found view (title, copy, "Check Again") | bug | source | Live at the shared shell gate; no callerless-helper risk — `gate` is called at app.rs:1445 from `view()`. Tier is source only because no test drive… |
+| 13 | Distrobox-not-found view (title, copy, "Check Again") | live | T1+T2 | Fixed by T17 (was `bug` in the T16 walk): "Check Again" sends `EnvMsg::ReprobeRequested`, the `Task` future runs `Backend::reprobe()` (fresh `env::detect` + swap of runner/`Distrobox`/guard/terminals), and the live `Probed` arm reloads containers + version on recovery. T2: `reprobe_recovers_a_mid_session_distrobox_install` (guard flips false→true, post-reprobe `containers()` answers on the new runner); T1: `reprobe_outcome` truth table in `parity_rows.rs` (Blocked/message precedence included). |
 | 14 | System status card (SYSTEM STATUS, healthy/degraded headline, running-of-total) | live | T1 | Live. Two deltas: (a) Flutter's right-side check_circle/warning icon badge (dashboard_page.dart:302-324) is not ported; (b) `healthy` no longer con… |
 | 15 | Inline error strip inside status card | live | source | Live (icon+message strip → `widget::warning`, which carries `.on_close`). Flagged duplication: the shell ALREADY renders the same `self.error` stri… |
 | 16 | Stat card: Total Containers | live | source | Live. Matches the approach column (label+value row, no icon/colour). Tier is source, not T1: `DashboardCounts::from_list` is asserted to be unit-te… |
@@ -620,7 +655,7 @@ a call path, a citation, or the reason for an absence. Rows whose status in `ux.
 | 94 | Step 2: Cancel / Done / Close | rescoped | source | Two affordances exist where Flutter had three: the else-branch collapses 'Done' (success) and 'Close' (failure) into one label, and the failure pat… |
 | 95 | `preselectedImage` arg | live | T1 | The frozen-defect row is resolved: the argument that no caller ever passed now has two callers, each the exact wiring §4.2 prescribed. The T1 test… |
 | 96 | Name validation (empty check only) | live | source | The ux.md approach cell asked for exactly two things: surface the backend diagnostic in the UI (done — inline `widget::warning`, not a snackbar) an… |
-| 97 | Header "Images" + refresh | bug | source | Live but the refresh half is mis-wired for this page (it is a global containers refresh). This is the same mis-wiring the tree explicitly documents… |
+| 97 | Header "Images" + refresh | live | T1 | Fixed by T17 (was `bug` in the T16 walk): the header Refresh is page-aware through `views::header_refresh` — Images sends `ImageMsg::LoadRequested` (`backend.images()`), mirroring the Apps special-case, instead of the global containers refresh. T1: `the_images_header_refresh_reloads_images_not_containers` pins all ten pages (Images→images, seven→containers, Updates/Apps→own actions); the `images()` re-query contract itself was already T2-pinned (`images_lists_compatibility_catalogue`). |
 | 98 | Headline + subtitle | live | source | Subtitle copy is the rewritten catalogue wording, which is row #104's rescope landing in this row's string. |
 | 99 | Live search filter | live | T1 | Filter logic is the same function row #80 uses in the wizard; the test targets the function, and the images view is its call site. |
 | 100 | Loading / error+Retry / empty (none & no-match) | live | T2 | T2 is for the backend half only (the catalogue load these states render); the three UI branches are source-level. Retry is genuinely wired: ImageMs… |

@@ -13,10 +13,11 @@
 
 use crate::fl;
 use crate::icons::{distro_icon, is_running, status_label};
-use crate::message::{ContainerMsg, DetailsMsg, DialogMsg, Message, TaskMsg};
+use crate::message::{ContainerMsg, DetailsMsg, DialogMsg, EnvMsg, Message, TaskMsg, is_blocked};
 use cosmic::iced::Length;
 use cosmic::widget::toaster::{Toast, Toasts};
 use cosmic::widget::{self, nav_bar};
+use gosh_distrobox_core::EnvGuard;
 use gosh_distrobox_core::models::ContainerInfo;
 
 /// Pages in the nav bar. Dashboard first (Flutter rail order).
@@ -209,34 +210,83 @@ pub fn gate(
 ) -> Option<cosmic::Element<'static, Message>> {
     if let Some(message) = blocked {
         // Row #12: Environment Blocked (icon, title, message, Check Again).
-        // "Check Again" re-runs refresh — the probe itself runs in `init`,
-        // and refresh re-queries version/installed state. No re-probe button
-        // until T9/T12 (EnvMsg::Probed); refresh is the honest action today.
+        // "Check Again" re-probes the environment (T17): the probe is no
+        // longer frozen at `init`, so installing `distrobox-host-exec`
+        // mid-session and checking again recovers without a restart.
         return Some(empty_state(
             "dialog-error-symbolic",
             fl!("dash-env-blocked-title"),
             message,
             Some(
                 widget::button::suggested(fl!("dash-check-again"))
-                    .on_press(Message::Containers(ContainerMsg::RefreshRequested))
+                    .on_press(Message::Env(EnvMsg::ReprobeRequested))
                     .into(),
             ),
         ));
     }
     if !distrobox_installed && !loading_anything {
-        // Row #13: Distrobox Not Found.
+        // Row #13: Distrobox Not Found. Same re-probe path as #12 above —
+        // re-running `containers()` against the frozen guard is what made
+        // this button inert for the process lifetime (I29).
         return Some(empty_state(
             "dialog-warning-symbolic",
             fl!("dash-distrobox-missing-title"),
             fl!("dash-distrobox-missing-body"),
             Some(
                 widget::button::suggested(fl!("dash-check-again"))
-                    .on_press(Message::Containers(ContainerMsg::RefreshRequested))
+                    .on_press(Message::Env(EnvMsg::ReprobeRequested))
                     .into(),
             ),
         ));
     }
     None
+}
+
+/// Post-reprobe decision (T17, row #13): what the `Probed` arm owes the user
+/// for this guard. Pure so `app/tests/parity_rows.rs` pins it — the arm
+/// itself needs a constructed `App` (I31 harness, still open), so without
+/// this seam the gate-state transition would be `source` tier again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReprobeOutcome {
+    /// The environment answers again: clear the banner and reload
+    /// containers + version, the same two loads `init` fires.
+    Recovered,
+    /// Still gated: the banner to show (`Some` only for `Blocked`, whose
+    /// message is the Dart guard's wording verbatim — same as `init`).
+    StillGated { error: Option<String> },
+}
+
+/// See [`ReprobeOutcome`].
+pub fn reprobe_outcome(guard: &EnvGuard) -> ReprobeOutcome {
+    if is_blocked(guard) {
+        return ReprobeOutcome::StillGated {
+            error: guard.message.clone(),
+        };
+    }
+    if guard.distrobox_installed {
+        ReprobeOutcome::Recovered
+    } else {
+        ReprobeOutcome::StillGated { error: None }
+    }
+}
+
+/// Header Refresh routing (T17, row #97): which domain the shell header's
+/// Refresh button reloads for `page`. `None` = the page owns its own header
+/// actions (Updates, Apps) and the generic button stays hidden — the Apps
+/// special-case this mirrors. Pure so `parity_rows.rs` pins every page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderRefresh {
+    Containers,
+    Images,
+}
+
+/// See [`HeaderRefresh`].
+pub fn header_refresh(page: Page) -> Option<HeaderRefresh> {
+    match page {
+        Page::Images => Some(HeaderRefresh::Images),
+        Page::Updates | Page::Apps => None,
+        _ => Some(HeaderRefresh::Containers),
+    }
 }
 
 /// Shared container row (§6.3, rows #24/#37–#39): distro icon, name, status
@@ -510,40 +560,92 @@ fn stat_tile(title: String, value: String) -> cosmic::Element<'static, Message> 
         .into()
 }
 
-/// Active-task row (rows #19–#21): label + spinner/done + cancel while
-/// running. `completed`/`success` come from the T5 mirror — no
+/// What a task row's trailing affordance is, given the T5 mirror's two flags.
+///
+/// **Why this is a named type rather than an `if` inside `task_row`.** An
+/// `Element` is opaque, so a test cannot inspect what a row rendered — which is
+/// how row #20's gap survived to the T16 walk. Making the decision a pure value
+/// gives the view's contract something executable to assert against, the same
+/// seam `DashboardCounts::from_list` gives the Dashboard's skip count.
+///
+/// The running variant is deliberately **not** called `Running`. I29/#20 is the
+/// finding that a running task row renders no spinner at all — only a Cancel
+/// button — while both the frozen row and `task_row`'s doc comment claim
+/// "spinner while running". `RunningCancelOnly` puts that gap in the type's own
+/// vocabulary, so adding a progress affordance forces this variant's rename and
+/// therefore updates the test that pins it, instead of silently leaving two
+/// documents describing behaviour that now exists.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TaskAffordance {
+    /// Completed successfully: a check.
+    Succeeded,
+    /// Completed with a failure: an error icon, never a check (row #21).
+    Failed,
+    /// Still running: a Cancel control, and nothing else (row #20 / I29).
+    RunningCancelOnly,
+}
+
+impl TaskAffordance {
+    /// The theme icon name this affordance renders as, or `None` when it is a
+    /// control rather than an icon.
+    ///
+    /// This is the single source for the icon choice. `task_row` previously
+    /// re-derived the success/failure icon from `success` while
+    /// `task_affordance` independently picked the variant — two sources for one
+    /// decision, which is the shape that let row #20's doc comment drift from the
+    /// code it describes.
+    pub fn icon_name(self) -> Option<&'static str> {
+        match self {
+            TaskAffordance::Succeeded => Some("object-select-symbolic"),
+            TaskAffordance::Failed => Some("dialog-error-symbolic"),
+            TaskAffordance::RunningCancelOnly => None,
+        }
+    }
+}
+
+/// The trailing-affordance decision, factored out of `task_row` so it is
+/// testable. `completed`/`success` come from the T5 mirror — no
 /// string-sniffing (§3.1).
+pub fn task_affordance(completed: bool, success: bool) -> TaskAffordance {
+    match (completed, success) {
+        (true, true) => TaskAffordance::Succeeded,
+        (true, false) => TaskAffordance::Failed,
+        (false, _) => TaskAffordance::RunningCancelOnly,
+    }
+}
+
+/// Active-task row (rows #19–#21): label + done/cancel.
+///
+/// **Row #20 is not met, and I29 filed it as such.** The frozen row and this
+/// doc comment both say "spinner while running"; the running branch renders a
+/// Cancel button and no progress affordance. See `TaskAffordance::RunningCancelOnly`
+/// for why the gap is spelled out rather than papered over.
 pub fn task_row(
     id: gosh_distrobox_core::TaskId,
     label: String,
     completed: bool,
     success: bool,
 ) -> cosmic::Element<'static, Message> {
-    // Rows #20/#21: spinner while running; success check vs failure icon
-    // when done (a failed task must not render a success check).
+    // Rows #20/#21: success check vs failure icon when done (a failed task must
+    // not render a success check).
     let mut row = widget::Row::new()
         .push(widget::text::body(label).width(Length::Fill))
         .spacing(8)
         .align_y(cosmic::iced::Alignment::Center);
-    if completed {
-        row = row.push({
-            let icon = if success {
-                "object-select-symbolic"
-            } else {
-                "dialog-error-symbolic"
-            };
-            let done: cosmic::Element<'static, Message> =
-                widget::icon::from_name(icon).size(16).icon().into();
-            done
-        });
+    // The icon name comes off the resolved variant rather than being re-derived
+    // from `success` here: `task_affordance` already made that decision, and two
+    // sources for one decision is how row #20's doc comment drifted from its code.
+    if let Some(icon) = task_affordance(completed, success).icon_name() {
+        let done: cosmic::Element<'static, Message> =
+            widget::icon::from_name(icon).size(16).icon().into();
+        row = row.push(done);
     } else {
-        row = row.push({
-            let cancel: cosmic::Element<'static, Message> =
-                widget::button::text(fl!("action-cancel"))
-                    .on_press(Message::Tasks(TaskMsg::CancelRequested(id)))
-                    .into();
-            cancel
-        });
+        // `RunningCancelOnly`: the Cancel control is the only trailing widget,
+        // because there is no progress affordance (I29 / row #20).
+        let cancel: cosmic::Element<'static, Message> = widget::button::text(fl!("action-cancel"))
+            .on_press(Message::Tasks(TaskMsg::CancelRequested(id)))
+            .into();
+        row = row.push(cancel);
     }
     row.into()
 }

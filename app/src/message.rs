@@ -11,7 +11,9 @@
 //! Two namespaces are reserved and carry no producer yet, each marked
 //! `#[allow(dead_code)]` with its reason at the variant: `NavSelect` (built
 //! by libcosmic) and `Updates(msg)` (the page reads shared state).
-//! `Env(EnvMsg::Probed)` is reserved for the T13+ re-probe path.
+//! `Env(EnvMsg::…)` is the T17 re-probe path: the gate's "Check Again"
+//! buttons request a fresh `env::detect`, and `Probed` carries the new guard
+//! back to the gate state (row #13).
 
 use gosh_distrobox_core::models::{AppInfo, ContainerInfo, ContainerStats, ExportedBinary};
 use gosh_distrobox_core::{CoreFailure, EnvGuard, EnvMode, TaskId};
@@ -41,8 +43,9 @@ pub enum Message {
     Apps(AppMsg),
     Stats(StatsMsg),
     Tasks(TaskMsg),
-    /// Re-probe result path (§2.3 draft). No producer until T9/T12.
-    #[allow(dead_code)]
+    /// Re-probe path (§2.3 draft, live since T17, row #13): the gate's
+    /// "Check Again" buttons produce `ReprobeRequested`, the `Task` future
+    /// answers with `Probed`.
     Env(EnvMsg),
     Ui(UiMsg),
 }
@@ -445,9 +448,13 @@ pub enum StatsMsg {
 
 #[derive(Clone, Debug)]
 pub enum EnvMsg {
-    /// Re-probe result. No producer in T3 (probe runs in `init`); re-probe
-    /// buttons land in T9/T12.
-    #[allow(dead_code)]
+    /// "Check Again" (rows #12/#13): re-run `env::detect` on a fresh base
+    /// runner. The blocking `Backend::reprobe()` runs in a `Task` future;
+    /// the answer comes back as `Probed`.
+    ReprobeRequested,
+    /// Re-probe result: the new guard, already swapped into the `Backend`.
+    /// The arm updates gate state and, on recovery, reloads containers +
+    /// version (the same two loads `init` fires).
     Probed(EnvGuard),
 }
 
@@ -473,7 +480,9 @@ pub fn stopped_count(containers: &[ContainerInfo]) -> usize {
     containers.len() - running_count(containers)
 }
 
-/// Whether the env guard blocks all backend access.
-pub fn is_blocked(env: &EnvGuard) -> bool {
-    env.mode == EnvMode::Blocked
+/// Whether the env guard blocks all backend access. Generic over `Borrow`
+/// so both the owned guard `Backend::env()` returns (T17: cloned out from
+/// under the reprobe lock) and a plain `&EnvGuard` answer without ceremony.
+pub fn is_blocked(env: impl std::borrow::Borrow<EnvGuard>) -> bool {
+    env.borrow().mode == EnvMode::Blocked
 }

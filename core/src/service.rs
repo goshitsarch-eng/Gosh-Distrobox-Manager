@@ -30,19 +30,43 @@ pub struct Backend {
     inner: Arc<BackendInner>,
 }
 
-struct BackendInner {
-    /// Kept so the env-mapped runner has a named owner; all execution goes
-    /// through `distrobox`, which holds its own clone.
-    #[allow(dead_code)]
+/// The env-dependent handles, snapshotted out from under the reprobe locks.
+///
+/// `reprobe()` (T17, row #13) swaps the runner, `Distrobox`, guard and
+/// terminal list while the app is running, so every method clones what it
+/// needs through [`BackendInner::handles`] and never holds a lock across
+/// `.await` — the clones are `Arc`s and the locks release inside `handles()`.
+struct EnvHandles {
     runner: CommandRunner,
     distrobox: Distrobox,
+}
+
+struct BackendInner {
+    /// The env-mapped runner `detect` returned. All execution goes through
+    /// `distrobox`, which holds its own clone; this copy has a named owner
+    /// here so `reprobe()` can swap the mapping (`set_custom_terminals`
+    /// and `command_runner` read it back out).
+    runner: std::sync::Mutex<CommandRunner>,
+    distrobox: std::sync::Mutex<Distrobox>,
     tasks: TaskRegistry,
-    env: EnvGuard,
+    env: std::sync::Mutex<EnvGuard>,
+    /// T12 customs, retained so `reprobe()` rebuilds the same terminal list
+    /// on the new runner instead of silently dropping user terminals.
+    customs: std::sync::Mutex<Vec<crate::backends::Terminal>>,
     /// The terminal list the UI indexes into, owned HERE rather than
     /// re-derived per call site (T12): a `Vec` per render would let a
     /// custom terminal imported mid-session shift the index under a
     /// picker's own selection.
     terminals: std::sync::Mutex<crate::backends::TerminalRepository>,
+}
+
+impl BackendInner {
+    fn handles(&self) -> EnvHandles {
+        EnvHandles {
+            runner: self.runner.lock().unwrap().clone(),
+            distrobox: self.distrobox.lock().unwrap().clone(),
+        }
+    }
 }
 
 impl Backend {
@@ -53,10 +77,11 @@ impl Backend {
         let terminals = crate::backends::TerminalRepository::new(runner.clone());
         Self {
             inner: Arc::new(BackendInner {
-                runner,
-                distrobox,
+                runner: std::sync::Mutex::new(runner),
+                distrobox: std::sync::Mutex::new(distrobox),
                 tasks: TaskRegistry::new(),
-                env,
+                env: std::sync::Mutex::new(env),
+                customs: std::sync::Mutex::new(Vec::new()),
                 terminals: std::sync::Mutex::new(terminals),
             }),
         }
@@ -69,8 +94,41 @@ impl Backend {
         Self::new(runner, env)
     }
 
-    pub fn env(&self) -> &EnvGuard {
-        &self.inner.env
+    /// Re-run environment detection on a fresh base runner and swap the
+    /// env-dependent state under it (T17, row #13).
+    ///
+    /// `detect` ran once in `init`; without this, a user who installs
+    /// distrobox (or `distrobox-host-exec`) while the app is open is told to
+    /// "Check Again" and checking again changes nothing, because the guard,
+    /// the mapped runner and the `Distrobox` built on it are all frozen.
+    /// This re-probes and swaps all four (runner, `Distrobox`, guard,
+    /// terminal list — customs retained) so the next `containers()` answers
+    /// against the new environment. The task registry is untouched:
+    /// in-flight tasks keep the handles they cloned at spawn.
+    ///
+    /// Blocking (the `check_installed` helper-thread probe inside `detect`
+    /// joins before returning), so callers run it in a `Task` future like
+    /// every other blocking backend call — never synchronously on the UI
+    /// thread. Returns the new guard for the `Probed` arm.
+    pub fn reprobe(&self, base: &CommandRunner) -> EnvGuard {
+        let (runner, guard) = detect_host(base);
+        let distrobox = Distrobox::new(runner.clone(), default_cmd_factory());
+        let customs = self.inner.customs.lock().unwrap().clone();
+        let terminals = crate::backends::TerminalRepository::with_customs(runner.clone(), customs);
+        // Sequential swaps, one lock at a time — no nesting, no lock order
+        // to violate (`handles()` is the only place two locks nest, and it
+        // always takes runner before distrobox).
+        *self.inner.runner.lock().unwrap() = runner;
+        *self.inner.distrobox.lock().unwrap() = distrobox;
+        *self.inner.terminals.lock().unwrap() = terminals;
+        *self.inner.env.lock().unwrap() = guard.clone();
+        guard
+    }
+
+    /// The current environment verdict. Cloned (T17): `reprobe()` swaps the
+    /// guard while the app runs, so no reference into the lock escapes.
+    pub fn env(&self) -> EnvGuard {
+        self.inner.env.lock().unwrap().clone()
     }
 
     pub fn tasks(&self) -> &TaskRegistry {
@@ -81,8 +139,12 @@ impl Backend {
     /// terminal list (T12). Called whenever the config changes, so the list
     /// the pickers index is always the same list the ids resolve against.
     pub fn set_custom_terminals(&self, customs: Vec<crate::backends::Terminal>) {
-        *self.inner.terminals.lock().unwrap() =
-            crate::backends::TerminalRepository::with_customs(self.inner.runner.clone(), customs);
+        *self.inner.terminals.lock().unwrap() = crate::backends::TerminalRepository::with_customs(
+            self.inner.handles().runner,
+            customs.clone(),
+        );
+        // Retained so `reprobe()` rebuilds the same list (T17, row #13).
+        *self.inner.customs.lock().unwrap() = customs;
     }
 
     /// The ONE terminal list (built-ins + customs): every picker renders it
@@ -92,15 +154,17 @@ impl Backend {
     }
 
     /// Today's `is_distrobox_installed`, without the throwaway runner +
-    /// `Distrobox` per call: the probe ran once in `detect`.
+    /// `Distrobox` per call: the probe ran in `detect` (init) or the last
+    /// `reprobe()`.
     pub fn is_distrobox_installed(&self) -> bool {
-        self.inner.env.distrobox_installed
+        self.env().distrobox_installed
     }
 
     /// Today's `get_distrobox_version`, typed.
     pub async fn distrobox_version(&self) -> Result<String, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .version()
             .await
@@ -114,6 +178,7 @@ impl Backend {
     pub async fn containers(&self) -> Result<ContainerList, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .list()
             .await
@@ -125,6 +190,7 @@ impl Backend {
     pub async fn images(&self) -> Result<Vec<String>, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .list_images()
             .await
@@ -137,6 +203,7 @@ impl Backend {
         self.guard_ok()?;
         let apps = self
             .inner
+            .handles()
             .distrobox
             .list_apps(container)
             .await
@@ -168,6 +235,7 @@ impl Backend {
         self.guard_ok()?;
         let binaries = self
             .inner
+            .handles()
             .distrobox
             .get_exported_binaries(container)
             .await
@@ -189,6 +257,7 @@ impl Backend {
     pub async fn container_stats(&self, container: &str) -> Result<ContainerStats, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .get_container_stats(container)
             .await
@@ -208,6 +277,7 @@ impl Backend {
     pub async fn remove_container(&self, name: &str) -> Result<String, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .remove(name)
             .await
@@ -218,16 +288,17 @@ impl Backend {
     /// Today's `get_enter_command` (row #69): the `distrobox enter` argv
     /// for display (selectable, monospace) + terminal launch.
     pub fn enter_command(&self, name: &str) -> Vec<String> {
-        let cmd = self.inner.distrobox.enter_cmd(name);
+        let cmd = self.inner.handles().distrobox.enter_cmd(name);
         let mut argv = vec![cmd.program.to_string_lossy().to_string()];
         argv.extend(cmd.args.iter().map(|a| a.to_string_lossy().to_string()));
         argv
     }
 
     /// Env-mapped runner handle (T12 legacy import): probes run host-side
-    /// under Flatpak through the same mapping as everything else.
-    pub fn command_runner(&self) -> &crate::fakers::CommandRunner {
-        &self.inner.runner
+    /// under Flatpak through the same mapping as everything else. Cloned
+    /// (T17): `reprobe()` swaps the mapping while the app runs.
+    pub fn command_runner(&self) -> crate::fakers::CommandRunner {
+        self.inner.handles().runner
     }
 
     /// Terminal launch (D8): spawn `terminal` attached to `container`
@@ -239,11 +310,11 @@ impl Backend {
         terminal: &crate::backends::Terminal,
     ) -> Result<(), CoreFailure> {
         self.guard_ok()?;
-        let enter = self.inner.distrobox.enter_cmd(container);
+        let enter = self.inner.handles().distrobox.enter_cmd(container);
         // Runner = the env-mapped one Distrobox holds (flatpak-spawn/host-exec
         // mapping applies to the terminal too).
         terminal
-            .launch(self.inner.distrobox.runner(), &enter)
+            .launch(self.inner.handles().distrobox.runner(), &enter)
             .map_err(CoreError::from)
             .map_err(CoreFailure::from)
     }
@@ -253,6 +324,7 @@ impl Backend {
     pub async fn start_container(&self, name: &str) -> Result<String, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .start(name)
             .await
@@ -264,6 +336,7 @@ impl Backend {
     pub async fn stop_container(&self, name: &str) -> Result<String, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .stop(name)
             .await
@@ -279,6 +352,7 @@ impl Backend {
     ) -> Result<String, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .export_app(container, desktop_file)
             .await
@@ -294,6 +368,7 @@ impl Backend {
     ) -> Result<String, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .unexport_app(container, desktop_file)
             .await
@@ -309,6 +384,7 @@ impl Backend {
     ) -> Result<String, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .export_binary(container, binary)
             .await
@@ -332,6 +408,7 @@ impl Backend {
         let mut cmd = Command::new("xdg-open");
         cmd.arg(url);
         self.inner
+            .handles()
             .distrobox
             .runner()
             .spawn(cmd)
@@ -349,6 +426,7 @@ impl Backend {
         self.guard_ok()?;
         let out = self
             .inner
+            .handles()
             .distrobox
             .list_snapshots(None)
             .await
@@ -366,6 +444,7 @@ impl Backend {
     ) -> Result<String, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .create_snapshot(container, snapshot)
             .await
@@ -377,6 +456,7 @@ impl Backend {
     pub async fn delete_snapshot(&self, snapshot: &str) -> Result<String, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .delete_snapshot(snapshot)
             .await
@@ -388,6 +468,7 @@ impl Backend {
     pub async fn stop_all_containers(&self) -> Result<String, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .stop_all()
             .await
@@ -408,7 +489,7 @@ impl Backend {
     pub async fn create_container(&self, args: CreateArgs) -> Result<TaskId, CoreFailure> {
         self.guard_ok()?;
         let label = format!("Create {}", args.name);
-        let distrobox = self.inner.distrobox.clone();
+        let distrobox = self.inner.handles().distrobox;
         spawn_task(
             &self.inner.tasks,
             SpawnTask {
@@ -429,7 +510,7 @@ impl Backend {
     pub async fn upgrade_container(&self, name: &str) -> Result<TaskId, CoreFailure> {
         self.guard_ok()?;
         let label = format!("Upgrade {name}");
-        let distrobox = self.inner.distrobox.clone();
+        let distrobox = self.inner.handles().distrobox;
         let name = name.to_string();
         spawn_task(
             &self.inner.tasks,
@@ -456,7 +537,7 @@ impl Backend {
     ) -> Result<TaskId, CoreFailure> {
         self.guard_ok()?;
         let label = format!("Clone to {}", args.name);
-        let distrobox = self.inner.distrobox.clone();
+        let distrobox = self.inner.handles().distrobox;
         let source_name = source_name.to_string();
         spawn_task(
             &self.inner.tasks,
@@ -481,6 +562,7 @@ impl Backend {
     ) -> Result<crate::models::PackageManager, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .detect_package_manager(container)
             .await
@@ -496,6 +578,7 @@ impl Backend {
         self.guard_ok()?;
         let out = self
             .inner
+            .handles()
             .distrobox
             .list_installed_packages(container)
             .await
@@ -513,6 +596,7 @@ impl Backend {
     ) -> Result<Vec<crate::models::PackageInfo>, CoreFailure> {
         self.guard_ok()?;
         self.inner
+            .handles()
             .distrobox
             .search_packages(container, query)
             .await
@@ -528,7 +612,7 @@ impl Backend {
     ) -> Result<TaskId, CoreFailure> {
         self.guard_ok()?;
         let label = format!("Install {package} in {container}");
-        let distrobox = self.inner.distrobox.clone();
+        let distrobox = self.inner.handles().distrobox;
         let (container, package) = (container.to_string(), package.to_string());
         spawn_task(
             &self.inner.tasks,
@@ -555,7 +639,7 @@ impl Backend {
     ) -> Result<TaskId, CoreFailure> {
         self.guard_ok()?;
         let label = format!("Remove {package} from {container}");
-        let distrobox = self.inner.distrobox.clone();
+        let distrobox = self.inner.handles().distrobox;
         let (container, package) = (container.to_string(), package.to_string());
         spawn_task(
             &self.inner.tasks,
@@ -582,7 +666,7 @@ impl Backend {
     ) -> Result<TaskId, CoreFailure> {
         self.guard_ok()?;
         let label = format!("Restore {snapshot} to {new_container}");
-        let distrobox = self.inner.distrobox.clone();
+        let distrobox = self.inner.handles().distrobox;
         let (snapshot, new_container) = (snapshot.to_string(), new_container.to_string());
         spawn_task(
             &self.inner.tasks,
@@ -613,7 +697,7 @@ impl Backend {
     ) -> Result<TaskId, CoreFailure> {
         self.guard_ok()?;
         let label = format!("Export {container} to {output_path}");
-        let distrobox = self.inner.distrobox.clone();
+        let distrobox = self.inner.handles().distrobox;
         let (container, output_path) = (container.to_string(), output_path.to_string());
         spawn_task(
             &self.inner.tasks,
@@ -640,7 +724,7 @@ impl Backend {
     ) -> Result<TaskId, CoreFailure> {
         self.guard_ok()?;
         let label = format!("Import {archive_path} as {image_name}");
-        let distrobox = self.inner.distrobox.clone();
+        let distrobox = self.inner.handles().distrobox;
         let (archive_path, image_name) = (archive_path.to_string(), image_name.to_string());
         spawn_task(
             &self.inner.tasks,
@@ -713,7 +797,7 @@ impl Backend {
     }
 
     fn guard_ok(&self) -> Result<(), CoreFailure> {
-        match self.inner.env.mode {
+        match self.env().mode {
             crate::env::EnvMode::Blocked => Err(CoreFailure::from(CoreError::BlockedEnvironment)),
             _ => Ok(()),
         }
@@ -780,6 +864,110 @@ mod tests {
     fn installed_flag_comes_from_guard() {
         let runner = NullCommandRunnerBuilder::new().build();
         assert!(backend_with(runner).is_distrobox_installed());
+    }
+
+    /// T17 (row #13, T2): a backend built while distrobox is missing recovers
+    /// through `reprobe()` — the guard flips to installed and the next
+    /// `containers()` answers against the NEW runner (14 rows), not the old
+    /// one (which never stubbed `ls`). A `reprobe()` that returned the new
+    /// guard without swapping the `Distrobox` would fail the last assertion.
+    #[test]
+    fn reprobe_recovers_a_mid_session_distrobox_install() {
+        // `reprobe()` runs the real `detect_host`: only the Native path is
+        // assertable here (same skip guards as the `env` tests).
+        for var in [
+            "DISTROBOX_ENTERED",
+            "DISTROBOX_CONTAINER_NAME",
+            "DISTROBOX_HOST_HOME",
+        ] {
+            if std::env::var(var).is_ok() {
+                eprintln!("skipping: {var} set in test environment");
+                return;
+            }
+        }
+        if std::path::Path::new("/.flatpak-info").exists() {
+            eprintln!("skipping: running inside Flatpak");
+            return;
+        }
+        use crate::backends::Distrobox;
+        use crate::backends::distrobox::DistroboxCommandRunnerResponse;
+        // Built while distrobox is absent: `version` fails.
+        let backend = Backend::new(
+            Distrobox::null_command_runner(&[DistroboxCommandRunnerResponse::NoVersion]),
+            EnvGuard {
+                mode: EnvMode::Native,
+                message: None,
+                distrobox_installed: false,
+            },
+        );
+        assert!(!backend.is_distrobox_installed());
+        // Mid-session install: the fresh base runner answers `version` (for
+        // the probe inside `detect`) AND `ls` (for the calls after it).
+        let base = Distrobox::null_command_runner(&[
+            DistroboxCommandRunnerResponse::Version,
+            DistroboxCommandRunnerResponse::new_list_common_distros(),
+        ]);
+        let guard = backend.reprobe(&base);
+        assert!(guard.distrobox_installed);
+        assert_eq!(guard.mode, EnvMode::Native);
+        assert!(backend.is_distrobox_installed());
+        let list = smol::block_on(backend.containers()).expect("list succeeds after re-probe");
+        assert_eq!(
+            list.len(),
+            14,
+            "post-reprobe calls must run on the new runner — the old one \
+             never stubbed `ls`, so a swap that did not happen reads back empty"
+        );
+    }
+
+    /// The customs half of the swap: `reprobe()` rebuilds the terminal list
+    /// on the new runner WITHOUT dropping T12 customs. A rebuild through
+    /// `TerminalRepository::new` (customs-blind) would fail the last assertion.
+    #[test]
+    fn reprobe_keeps_custom_terminals() {
+        for var in [
+            "DISTROBOX_ENTERED",
+            "DISTROBOX_CONTAINER_NAME",
+            "DISTROBOX_HOST_HOME",
+        ] {
+            if std::env::var(var).is_ok() {
+                eprintln!("skipping: {var} set in test environment");
+                return;
+            }
+        }
+        if std::path::Path::new("/.flatpak-info").exists() {
+            eprintln!("skipping: running inside Flatpak");
+            return;
+        }
+        use crate::backends::Distrobox;
+        use crate::backends::distrobox::DistroboxCommandRunnerResponse;
+        let backend = backend_with(Distrobox::null_command_runner(&[
+            DistroboxCommandRunnerResponse::Version,
+        ]));
+        backend.set_custom_terminals(vec![crate::backends::Terminal {
+            name: "Custom Reprobe Probe".to_string(),
+            program: "reprobe-probe-term".to_string(),
+            extra_args: vec![],
+            separator_arg: "--".to_string(),
+            read_only: false,
+        }]);
+        assert!(
+            backend
+                .terminals()
+                .iter()
+                .any(|t| t.program == "reprobe-probe-term"),
+            "custom installed before the re-probe"
+        );
+        backend.reprobe(&Distrobox::null_command_runner(&[
+            DistroboxCommandRunnerResponse::Version,
+        ]));
+        assert!(
+            backend
+                .terminals()
+                .iter()
+                .any(|t| t.program == "reprobe-probe-term"),
+            "re-probing the environment must not drop user terminals"
+        );
     }
 
     /// The `spawn_test_child` seam executes the full runner path (spawn →

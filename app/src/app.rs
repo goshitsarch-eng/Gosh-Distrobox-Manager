@@ -21,6 +21,7 @@ use cosmic::app::{ApplicationExt, Core, Task};
 use cosmic::iced::{Length, Subscription};
 use cosmic::widget::toaster::Toasts;
 use cosmic::widget::{self, nav_bar};
+use gosh_distrobox_core::fakers::CommandRunner;
 use gosh_distrobox_core::models::{AppInfo, ContainerInfo, ContainerStats, ExportedBinary};
 use gosh_distrobox_core::{
     Backend, ContainerList, CoreError, CoreFailure, MAX_TASK_OUTPUT_LINES, TaskEvent, TaskId,
@@ -503,7 +504,10 @@ impl cosmic::Application for App {
         if legacy_import_pending {
             let b3 = Arc::clone(&backend);
             tasks.push(Self::run(async move {
-                let legacy = gosh_distrobox_core::import_legacy(b3.command_runner()).await;
+                // Owned (T17): `command_runner()` clones out from under the
+                // reprobe lock, so bind it before borrowing across `.await`.
+                let runner = b3.command_runner();
+                let legacy = gosh_distrobox_core::import_legacy(&runner).await;
                 Message::Settings(crate::message::SettingsMsg::LegacyImported(legacy))
             }));
         }
@@ -590,9 +594,12 @@ impl cosmic::Application for App {
             Message::NavSelect(id) => return self.on_nav_select(id),
             Message::Containers(msg) => match msg {
                 ContainerMsg::RefreshRequested => {
-                    if is_blocked(self.backend.env()) {
-                        self.error = self.backend.env().message.clone();
-                        return Self::none();
+                    // T17 (row #13): a refresh from a gated state re-probes
+                    // first — re-running `containers()` against a frozen
+                    // guard is what made "Check Again" inert. The healthy
+                    // path below is byte-identical to before.
+                    if is_blocked(self.backend.env()) || !self.backend.is_distrobox_installed() {
+                        return self.update(Message::Env(EnvMsg::ReprobeRequested));
                     }
                     self.loading.containers = true;
                     self.error = None;
@@ -1375,11 +1382,45 @@ impl cosmic::Application for App {
                     }
                 }
             },
-            Message::Env(EnvMsg::Probed(_)) => {
-                // No producer in T3 (the probe runs synchronously in `init`);
-                // the variant exists so the match stays exhaustive per the §2.3
-                // draft, and re-probe buttons land in T9/T12.
-            }
+            Message::Env(msg) => match msg {
+                EnvMsg::ReprobeRequested => {
+                    // Row #13: the gate's "Check Again" (+ any gated
+                    // Refresh). The blocking `reprobe()` runs in the `Task`
+                    // future (§0.2), never synchronously — the answer comes
+                    // back as `Probed`.
+                    self.loading.containers = true;
+                    self.error = None;
+                    let backend = Arc::clone(&self.backend);
+                    return Self::run(async move {
+                        let guard = backend.reprobe(&CommandRunner::new_real());
+                        Message::Env(EnvMsg::Probed(guard))
+                    });
+                }
+                EnvMsg::Probed(guard) => {
+                    self.loading.containers = false;
+                    match views::reprobe_outcome(&guard) {
+                        views::ReprobeOutcome::Recovered => {
+                            self.error = None;
+                            self.loading.containers = true;
+                            self.loading_version = true;
+                            let b1 = Arc::clone(&self.backend);
+                            let b2 = Arc::clone(&self.backend);
+                            return Task::batch(vec![
+                                Self::refresh_containers(&b1),
+                                Self::run(async move {
+                                    let result = b2.distrobox_version().await;
+                                    Message::Settings(crate::message::SettingsMsg::VersionLoaded(
+                                        result,
+                                    ))
+                                }),
+                            ]);
+                        }
+                        views::ReprobeOutcome::StillGated { error } => {
+                            self.error = error;
+                        }
+                    }
+                }
+            },
             Message::Ui(msg) => match msg {
                 UiMsg::DismissError => self.error = None,
                 UiMsg::ToastClosed(id) => {
@@ -1533,19 +1574,27 @@ impl cosmic::Application for App {
                     .into(),
             ];
         }
-        // O6: Updates owns Refresh+Upgrade All in `header_end` (row #123) —
-        // the generic Refresh here would render it twice. Same for Apps
-        // (#172): its generic Refresh reloads CONTAINERS, which changes
-        // nothing on a page showing one container's apps, so the header_end
-        // one (which reloads apps) is the only one worth showing.
-        if matches!(self.active_page(), Page::Updates | Page::Apps) {
-            return vec![];
+        // Row #97 (T17): the header Refresh is page-aware — Images reloads
+        // the catalogue (`backend.images()`), every other page reloads
+        // containers. Updates and Apps own their own header actions (O6, row
+        // #123; #172 — a containers reload changes nothing on a page showing
+        // one container's apps), so the generic button hides there. The
+        // routing decision itself is `views::header_refresh`, pinned per
+        // page in `parity_rows.rs`; the pushed-stack Back above takes
+        // precedence on Containers.
+        match views::header_refresh(self.active_page()) {
+            Some(views::HeaderRefresh::Images) => vec![
+                widget::button::standard(fl!("action-refresh"))
+                    .on_press(Message::Images(ImageMsg::LoadRequested))
+                    .into(),
+            ],
+            Some(views::HeaderRefresh::Containers) => vec![
+                widget::button::standard(fl!("action-refresh"))
+                    .on_press(Message::Containers(ContainerMsg::RefreshRequested))
+                    .into(),
+            ],
+            None => vec![],
         }
-        vec![
-            widget::button::standard(fl!("action-refresh"))
-                .on_press(Message::Containers(ContainerMsg::RefreshRequested))
-                .into(),
-        ]
     }
 
     /// Row #44 (FAB → header): the create affordance lives here, not in a

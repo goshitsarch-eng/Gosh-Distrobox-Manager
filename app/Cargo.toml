@@ -6,6 +6,14 @@ name = "gosh_distrobox_manager"
 version = "1.0.2"
 edition = "2024"
 
+# Lib + thin bin (I31). The lib target exists so `app/tests/*.rs` can import the
+# module tree: an integration test can only reach a *library*, so a binary-only
+# crate made every page unreachable from a test. `main.rs` is now just the entry
+# point. The module list lives in `src/lib.rs`.
+[lib]
+name = "gosh_distrobox_manager"
+path = "src/lib.rs"
+
 [[bin]]
 name = "gosh_distrobox_manager"
 path = "src/main.rs"
