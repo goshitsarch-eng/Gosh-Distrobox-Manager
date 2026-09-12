@@ -584,6 +584,12 @@ dash-distrobox-missing-title = Distrobox Not Found
 dash-distrobox-missing-body = Distrobox is required to manage Linux containers. Please install it to use Gosh Distrobox Manager.
 dash-check-again = Check Again
 
+# Container card menu: the trigger's label + a11y description (row #190)
+# and the Details row (#47); the other rows reuse dash-open-terminal,
+# action-stop, dash-upgrade-container and app-delete.
+card-menu-label = Container actions
+card-menu-details = Details
+
 # Details page
 dash-container-id = ID: { $id }
 dash-upgrading = Upgrading…

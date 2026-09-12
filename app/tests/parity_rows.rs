@@ -18,23 +18,26 @@
 //! design — where a row's behaviour needed pinning, the decision was factored into
 //! a pure function first (see `views::task_affordance`).
 
+use gosh_distrobox_core::models::{ContainerInfo, Status};
 use gosh_distrobox_core::{EnvGuard, EnvMode};
-use gosh_distrobox_manager::message::{AppMsg, BackupsMsg, ContainerMsg, Message, TaskMsg};
+use gosh_distrobox_manager::message::{
+    AppMsg, BackupsMsg, CardMenuAction, ContainerMsg, Message, Shortcut, TaskMsg,
+};
 use gosh_distrobox_manager::views::{
-    self, HeaderRefresh, Page, ReprobeOutcome, TaskAffordance, gate_header_message, header_refresh,
-    reprobe_outcome,
+    self, HeaderRefresh, IconControl, MenuRowState, Page, ReprobeOutcome, TaskAffordance,
+    card_actions, card_menu_message, card_menu_row, gate_header_message, header_refresh,
+    page_search_id, reprobe_outcome, shortcut_for,
 };
 
 // ------------------------------------------------------------- I26 / row #5
 
 /// Row #5: the nav rail's destinations, in order.
 ///
-/// I26 flagged that this list has **10** entries while `ux.md` §4.2 authorises
-/// **8** — `Apps` and `Stats` are additions the port made, since `apps_page.dart`
-/// was a pushed route in Flutter and no Flutter tree renders a "Stats"
-/// destination at all. That is an open question about the chrome, not a bug, so
-/// this test does not decide it. It pins the list so the question cannot be
-/// closed by accident: any change here — adding a destination, dropping one,
+/// I26 flagged that this list had **10** entries while `ux.md` §4.2 authorises
+/// **8**. D28 ruled the split: `Apps` returned to a details-pushed route (as in
+/// Flutter) and `Stats` stayed as the single deliberate addition, so the rail
+/// is **9**. This pins the ruled set so the question cannot be re-closed by
+/// accident: any change here — adding a destination, dropping one,
 /// reordering — must be a deliberate edit that updates this test.
 ///
 /// The order assertion is not decoration. `activate_page` finds a page by
@@ -42,12 +45,12 @@ use gosh_distrobox_manager::views::{
 /// `nav_model.activate_position(pos as u16)`, so this array's order **is** the nav
 /// model's index space; a silent reorder would activate the wrong tab.
 #[test]
-fn the_nav_rail_has_the_ten_destinations_i26_flagged() {
+fn the_nav_rail_has_the_ruled_nine_destinations_in_order() {
     assert_eq!(
         Page::ALL.len(),
-        10,
-        "ux.md §4.2 authorises 8 (see I26); 10 is the shipped count and the two \
-         extras are the open question — pin it rather than let it drift"
+        9,
+        "D28 ruled 8 ux.md destinations + Stats; Apps is a pushed route, not a \
+         rail entry — pin the ruled count rather than let it drift"
     );
     assert_eq!(
         Page::ALL,
@@ -59,7 +62,6 @@ fn the_nav_rail_has_the_ten_destinations_i26_flagged() {
             Page::Updates,
             Page::Backups,
             Page::Activity,
-            Page::Apps,
             Page::Settings,
             Page::Stats,
         ],
@@ -68,13 +70,14 @@ fn the_nav_rail_has_the_ten_destinations_i26_flagged() {
     );
 }
 
-/// I26's finding made checkable: the eight Flutter destinations are still
-/// present, and the two additions are exactly `Apps` and `Stats`.
+/// I26, decided by D28: the eight Flutter destinations are still present,
+/// the only addition is `Stats`, and `Apps` is absent from the rail.
 ///
-/// This is the assertion that fails if someone "fixes" I26 by deleting a Flutter
-/// destination rather than reconsidering the two additions.
+/// The first half fails if someone "fixes" the rail by deleting a Flutter
+/// destination rather than ruling on the additions; the second half fails if
+/// the demotion silently reverts (Apps re-added to `ALL`).
 #[test]
-fn the_only_destinations_beyond_ux_md_are_apps_and_stats() {
+fn the_only_destination_beyond_ux_md_is_stats_and_apps_is_not_on_the_rail() {
     let flutter_eight = [
         Page::Dashboard,
         Page::Containers,
@@ -98,9 +101,51 @@ fn the_only_destinations_beyond_ux_md_are_apps_and_stats() {
         .collect();
     assert_eq!(
         added,
-        vec![Page::Apps, Page::Stats],
-        "the additions beyond ux.md §4.2 are the I26 question; a change here is \
-         either a dropped Flutter destination (regression) or a decision on I26"
+        vec![Page::Stats],
+        "D28 keeps Stats as the single deliberate addition; anything else here \
+         is either a dropped Flutter destination (regression) or an unruled \
+         chrome change"
+    );
+    assert!(
+        !Page::ALL.contains(&Page::Apps),
+        "D28 demoted Apps to a details-pushed route: it must not be a rail \
+         destination again without a new ruling"
+    );
+}
+
+/// Row #5: every rail destination has a distinct, well-formed icon name.
+///
+/// `Page::icon()` is what `init` chains into `nav_model.insert().icon()`,
+/// so an empty name renders no glyph and a duplicated name renders two
+/// indistinguishable entries. The `-symbolic` suffix is the contract with
+/// the icon theme (all ten names verified against pop-icon-theme 3.5.0 in
+/// T19; Stats is Pop-only, noted at the table).
+#[test]
+fn every_rail_destination_has_a_distinct_symbolic_icon() {
+    let icons: Vec<&str> = Page::ALL.iter().map(|p| p.icon()).collect();
+    for (page, icon) in Page::ALL.iter().zip(&icons) {
+        assert!(
+            !icon.trim().is_empty(),
+            "{page:?} has no nav icon — the rail renders it text-only (row #5)"
+        );
+        assert!(
+            icon.ends_with("-symbolic"),
+            "{page:?}'s icon {icon:?} is not a symbolic theme name"
+        );
+        assert!(
+            !icon.contains(' '),
+            "{page:?}'s icon {icon:?} is not a single theme token"
+        );
+    }
+    let mut sorted = icons.clone();
+    sorted.sort();
+    let before = sorted.len();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        before,
+        "two destinations share a nav icon, so the rail shows two identical \
+         glyphs: {icons:?}"
     );
 }
 
@@ -216,9 +261,10 @@ fn a_running_row_is_distinguishable_from_a_finished_one() {
 /// I29 filed this as `bug`: Refresh was the *global containers* refresh on
 /// every page, so `backend.images()` could never be re-fetched after its
 /// single lazy load. `header_start` now routes through `header_refresh`;
-/// this pins all ten pages, so Images cannot silently fall back to the
+/// this pins every page, so Images cannot silently fall back to the
 /// containers reload (the exact regression) and no other page can lose its
-/// own.
+/// own. (`Page::Apps` stays in the table: the pushed Apps view owns its
+/// actions exactly as the tab did.)
 #[test]
 fn the_images_header_refresh_reloads_images_not_containers() {
     assert_eq!(
@@ -382,5 +428,245 @@ fn the_header_gate_passes_non_header_messages_through() {
     assert!(
         gate_header_message(msg, true, false).is_some(),
         "non-header messages are outside the gate's contract"
+    );
+}
+
+// ------------------------------------------------------------ T19 / row #40
+
+/// Row #40: the card's inline actions are running-only.
+///
+/// Both Stop (#25) and "Open Terminal" (#40, mirroring the details-page
+/// control and its gate) render only while the container runs; a stopped
+/// card offers neither. `container_row` renders from this decision, so a
+/// gate deleted here breaks the card the test cannot otherwise see.
+#[test]
+fn the_card_offers_stop_and_terminal_only_while_running() {
+    let running = card_actions(&Status::Up("2 hours".into()));
+    assert!(
+        running.stop && running.terminal,
+        "a running card must offer both Stop and Open Terminal, got {running:?}"
+    );
+    for status in [
+        Status::Created("".into()),
+        Status::Exited("0".into()),
+        Status::Other("paused".into()),
+    ] {
+        let actions = card_actions(&status);
+        assert!(
+            !actions.stop && !actions.terminal,
+            "{status:?} must offer no inline actions, got {actions:?}"
+        );
+    }
+}
+
+// ------------------------------------------------------------ T19 / row #41
+
+/// Row #41 → §6.4 rows #47–#51: the card-menu row table, both states.
+///
+/// Details/Upgrade/Delete are unconditional; Open Terminal disables when
+/// stopped (Flutter #48 verbatim); Stop hides when stopped (Flutter #49 is
+/// running-only). The drawer renders from this table, so a row lost here
+/// is a row lost in the UI.
+#[test]
+fn the_card_menu_table_gates_terminal_and_stop_on_running() {
+    use CardMenuAction::{Delete, Details, OpenTerminal, Stop, Upgrade};
+    for action in [Details, Upgrade, Delete] {
+        assert_eq!(
+            card_menu_row(action, true),
+            MenuRowState::Active,
+            "{action:?} must always be pressable"
+        );
+        assert_eq!(
+            card_menu_row(action, false),
+            MenuRowState::Active,
+            "{action:?} must stay pressable when stopped"
+        );
+    }
+    assert_eq!(
+        card_menu_row(OpenTerminal, true),
+        MenuRowState::Active,
+        "row #48: Open Terminal is offered when running"
+    );
+    assert_eq!(
+        card_menu_row(OpenTerminal, false),
+        MenuRowState::Disabled,
+        "row #48: Open Terminal disables (stays visible) when stopped"
+    );
+    assert_eq!(
+        card_menu_row(Stop, true),
+        MenuRowState::Active,
+        "row #49: Stop is offered when running"
+    );
+    assert_eq!(
+        card_menu_row(Stop, false),
+        MenuRowState::Hidden,
+        "row #49: Stop hides when stopped — it is running-only"
+    );
+}
+
+/// Row #41 dispatch: every menu row reuses an existing arm.
+///
+/// The drawer adds triggers, not behaviour — so each row's message must be
+/// one an existing arm already handles. Delete especially must route
+/// through the shared destructive confirm (`RemoveRequested`), never a
+/// direct run.
+#[test]
+fn every_card_menu_row_redispatches_through_an_existing_arm() {
+    use gosh_distrobox_manager::message::{DetailsMsg, TerminalMsg};
+    let container = ContainerInfo {
+        id: "abc123".into(),
+        name: "fussy-box".into(),
+        status: Status::Up("".into()),
+        image: "docker.io/library/fedora:41".into(),
+    };
+    match card_menu_message(CardMenuAction::Details, &container) {
+        Message::Details(DetailsMsg::OpenRequested(c)) => {
+            assert_eq!(c.name, "fussy-box", "Details must open this container");
+        }
+        other => panic!("Details must open the details page, got {other:?}"),
+    }
+    match card_menu_message(CardMenuAction::OpenTerminal, &container) {
+        Message::Terminal(TerminalMsg::OpenRequested(name)) => {
+            assert_eq!(name, "fussy-box", "Terminal must open for this container");
+        }
+        other => panic!("Open Terminal must open the terminal page, got {other:?}"),
+    }
+    match card_menu_message(CardMenuAction::Stop, &container) {
+        Message::Containers(ContainerMsg::StopRequested(name)) => {
+            assert_eq!(name, "fussy-box");
+        }
+        other => panic!("Stop must run the container stop arm, got {other:?}"),
+    }
+    match card_menu_message(CardMenuAction::Upgrade, &container) {
+        Message::Containers(ContainerMsg::UpgradeRequested(name)) => {
+            assert_eq!(name, "fussy-box");
+        }
+        other => panic!("Upgrade must run the container upgrade arm, got {other:?}"),
+    }
+    match card_menu_message(CardMenuAction::Delete, &container) {
+        Message::Containers(ContainerMsg::RemoveRequested(name)) => {
+            assert_eq!(
+                name, "fussy-box",
+                "Delete must go through the shared destructive confirm"
+            );
+        }
+        other => panic!("Delete must request removal (confirm path), got {other:?}"),
+    }
+}
+
+// ----------------------------------------------------------- T19 / row #189
+
+/// Row #189: Ctrl+R refreshes, Ctrl+N opens the wizard, nothing else fires.
+///
+/// `keyboard_nav::subscription` binds Tab/Shift+Tab/Escape/F11/Ctrl+F only,
+/// so these two accelerators ride the app's own listener — this pins its
+/// decision, including the negatives that matter: no Ctrl, Logo held, a
+/// named key, or any other character must all stay silent.
+#[test]
+fn ctrl_r_and_ctrl_n_fire_and_no_other_chord_does() {
+    use cosmic::iced::keyboard::{Key, Modifiers};
+    let ctrl = Modifiers::CTRL;
+    assert_eq!(
+        shortcut_for(&Key::Character("r".into()), ctrl),
+        Some(Shortcut::RefreshPage),
+        "Ctrl+R is the page refresh (ux.md §5.1.5)"
+    );
+    assert_eq!(
+        shortcut_for(&Key::Character("R".into()), ctrl | Modifiers::SHIFT),
+        Some(Shortcut::RefreshPage),
+        "Ctrl+Shift+R still refreshes — the match is case-insensitive"
+    );
+    assert_eq!(
+        shortcut_for(&Key::Character("n".into()), ctrl),
+        Some(Shortcut::NewContainer),
+        "Ctrl+N opens the create wizard (ux.md §5.1.5)"
+    );
+    // Negatives: each is a real mis-fire shape, not padding.
+    assert_eq!(
+        shortcut_for(&Key::Character("r".into()), Modifiers::empty()),
+        None,
+        "bare R must not refresh — typing 'r' in a field is not a chord"
+    );
+    assert_eq!(
+        shortcut_for(&Key::Character("r".into()), ctrl | Modifiers::LOGO),
+        None,
+        "a window-manager chord must not fire an app action"
+    );
+    assert_eq!(
+        shortcut_for(&Key::Character("f".into()), ctrl),
+        None,
+        "Ctrl+F belongs to keyboard_nav (focus search), not to this listener"
+    );
+    assert_eq!(
+        shortcut_for(&Key::Character("q".into()), ctrl),
+        None,
+        "unbound characters stay silent"
+    );
+    assert_eq!(
+        shortcut_for(
+            &Key::Named(cosmic::iced::keyboard::key::Named::Escape),
+            ctrl
+        ),
+        None,
+        "named keys belong to keyboard_nav, never to this listener"
+    );
+}
+
+/// Row #189: Ctrl+F focuses the page's own search field.
+///
+/// Images/Packages/Activity own search inputs; every other rail
+/// destination has none and `on_search` no-ops there (the pushed wizard
+/// and Apps overlays resolve in the caller, not in this table). A wrong id
+/// here focuses nothing — the focus task silently targets an input that
+/// does not exist — so the table pins the exact strings.
+#[test]
+fn ctrl_f_targets_each_search_field_and_no_ops_elsewhere() {
+    assert_eq!(page_search_id(Page::Images), Some("search-images"));
+    assert_eq!(page_search_id(Page::Packages), Some("search-packages"));
+    assert_eq!(page_search_id(Page::Activity), Some("search-activity"));
+    for page in [
+        Page::Dashboard,
+        Page::Containers,
+        Page::Updates,
+        Page::Backups,
+        Page::Settings,
+        Page::Stats,
+        Page::Apps,
+    ] {
+        assert_eq!(
+            page_search_id(page),
+            None,
+            "{page:?} has no search field, so Ctrl+F must no-op there"
+        );
+    }
+}
+
+// ----------------------------------------------------------- T19 / row #190
+
+/// Row #190: every icon-only control has a distinct, non-empty label.
+///
+/// The label feeds both the a11y `description()` and the sighted tooltip
+/// from one source (`IconControl::label`), so non-empty pins "announced at
+/// all" and distinct pins "announced as itself". The rendered tree itself
+/// is T3-observed until T20's harness lands.
+#[test]
+fn every_icon_only_control_has_a_distinct_non_empty_label() {
+    let labels = [
+        IconControl::CopyCommand.label(),
+        IconControl::CardMenu.label(),
+    ];
+    for (control, label) in [IconControl::CopyCommand, IconControl::CardMenu]
+        .iter()
+        .zip(&labels)
+    {
+        assert!(
+            !label.trim().is_empty(),
+            "{control:?} renders an unlabelled icon button — invisible to a screen reader"
+        );
+    }
+    assert_ne!(
+        labels[0], labels[1],
+        "two icon-only controls share a label, so a screen reader announces \
+         two identical buttons: {labels:?}"
     );
 }

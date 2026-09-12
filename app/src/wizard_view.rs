@@ -56,6 +56,7 @@ fn view_step_image(
             fl!("wizard-search-placeholder"),
             state.search.clone(),
         )
+        .id(cosmic::iced::widget::Id::new(crate::views::SEARCH_WIZARD))
         .on_input(|s| Message::Wizard(WizardMsg::SearchChanged(s)))
         .into();
         search

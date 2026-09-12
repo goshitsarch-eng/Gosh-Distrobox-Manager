@@ -108,6 +108,15 @@ pub enum ContainerMsg {
     RemoveRequested(String),
     StopAllRequested,
     UpgradeRequested(String),
+    /// Card ⋮ trigger (row #41): open the quick-actions drawer for this
+    /// container. The drawer resolves the `ContainerInfo` from the list by
+    /// name at render time, so it never shows a stale status.
+    MenuRequested(String),
+    /// Card ⋮ drawer dismissed (close button / Escape).
+    MenuClosed,
+    /// Card ⋮ drawer row chosen (rows #47–#51): the arm closes the drawer
+    /// and re-dispatches the row's message via `views::card_menu_message`.
+    MenuAction(CardMenuAction, String),
     /// B5 start (typed): true start leaving the container `Up`; callers
     /// refresh `list()` so the transition is observed, not assumed.
     StartRequested(String),
@@ -172,6 +181,44 @@ pub struct ConfirmSpec {
     pub action: ConfirmAction,
 }
 
+/// Card ⋮ drawer rows (row #41 → §6.4 rows #47–#51): Details, Open
+/// Terminal, Stop, Upgrade, Delete. Visibility/enabled state per row is
+/// `views::card_menu_row`; the message each row re-dispatches is
+/// `views::card_menu_message`. `Copy` so drawer rows and tests pass it by
+/// value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardMenuAction {
+    Details,
+    OpenTerminal,
+    Stop,
+    Upgrade,
+    Delete,
+}
+
+impl CardMenuAction {
+    pub const ALL: [CardMenuAction; 5] = [
+        CardMenuAction::Details,
+        CardMenuAction::OpenTerminal,
+        CardMenuAction::Stop,
+        CardMenuAction::Upgrade,
+        CardMenuAction::Delete,
+    ];
+}
+
+/// App-level keyboard shortcuts (row #189, ux.md §5.1.5). Produced by the
+/// raw-key subscription in `App::subscription` (Ctrl+R / Ctrl+N —
+/// `keyboard_nav::subscription` only binds Tab/Escape/F11/Ctrl+F, so the
+/// accelerators need their own listener) and carried as
+/// `UiMsg::Shortcut`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shortcut {
+    /// Ctrl+R: refresh the current page (page-aware, like the header).
+    RefreshPage,
+    /// Ctrl+N: open a blank create wizard (delegates to
+    /// `ContainerMsg::NewContainerRequested`).
+    NewContainer,
+}
+
 /// Follow-up for a confirmed dialog. `Clone` (Message: Clone) — the payloads
 /// are data, re-dispatched as fresh messages on confirm.
 #[derive(Clone, Debug)]
@@ -188,6 +235,9 @@ pub enum ConfirmAction {
 
 #[derive(Clone, Debug)]
 pub enum AppMsg {
+    /// Back button on the pushed Apps page (D28: Apps is a details-pushed
+    /// route again, not a rail destination) → pop to the list.
+    Closed,
     /// Container-tagged (same reason as `BackupsMsg::SnapshotsLoaded`): an
     /// export re-sync runs alongside whatever the user navigates to next,
     /// so an untagged reply could land after the page already shows another
@@ -460,6 +510,9 @@ pub enum EnvMsg {
 
 #[derive(Clone, Debug)]
 pub enum UiMsg {
+    /// Keyboard accelerator fired (row #189): the subscription maps the raw
+    /// key to a `Shortcut`; this arm performs it page-aware.
+    Shortcut(Shortcut),
     DismissError,
     /// Toast closed (toaster `on_close`).
     ToastClosed(cosmic::widget::toaster::ToastId),

@@ -117,11 +117,18 @@ pub fn view_terminal(
         col = col.push(widget::text::body(fl!("misc-terminal-enter-lead")));
         col = col.push(widget::text::monotext(cmd.clone()));
         col = col.push({
+            // Row #190: the icon-only copy button carries its label into the
+            // a11y tree AND a sighted tooltip, both from the one
+            // `IconControl` label so they cannot disagree.
+            let copy_label = crate::views::IconControl::CopyCommand.label();
             let copy: cosmic::Element<'static, Message> = widget::Row::new()
-                .push(
+                .push(widget::tooltip::tooltip(
                     widget::button::icon(widget::icon::from_name("edit-copy-symbolic").handle())
+                        .description(copy_label.clone())
                         .on_press(Message::Terminal(TerminalMsg::CopyRequested(cmd.clone()))),
-                )
+                    widget::text::body(copy_label),
+                    widget::tooltip::Position::Bottom,
+                ))
                 .push(
                     widget::button::suggested(fl!("misc-terminal-copy-command"))
                         .on_press(Message::Terminal(TerminalMsg::CopyRequested(cmd))),

@@ -34,6 +34,7 @@ pub fn view_images(
             fl!("misc-images-search-placeholder"),
             search.to_string(),
         )
+        .id(cosmic::iced::widget::Id::new(crate::views::SEARCH_IMAGES))
         .on_input(|s| Message::Images(ImageMsg::SearchChanged(s)))
         .into();
         search_el

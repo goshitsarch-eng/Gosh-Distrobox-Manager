@@ -123,6 +123,15 @@ pub struct App {
     /// Details page stack: `Some` = pushed over Containers (row #53 back
     /// button pops). Single level — details never nests deeper.
     details_for: Option<ContainerInfo>,
+    /// Apps pushed route (D28): `true` = the Apps view is pushed over
+    /// Containers for `selected_container` (Back pops). Apps is NOT a rail
+    /// destination — `Page::ALL` excludes it and `activate_page` no-ops it.
+    apps_pushed: bool,
+    /// Card ⋮ menu (row #41): `Some(name)` = the quick-actions drawer is
+    /// open for this container. A name, not a clone: the drawer resolves
+    /// the `ContainerInfo` from the list at render time, so it never shows
+    /// a stale status (unlike the details page's frozen clone).
+    card_menu_for: Option<String>,
     /// Single active modal (§3.3).
     dialog: Option<ActiveDialog>,
     /// Toasts (§3.4): every mutation reports here.
@@ -419,7 +428,11 @@ impl cosmic::Application for App {
     fn init(core: Core, _: Self::Flags) -> (Self, Task<Self::Message>) {
         let mut nav_model = nav_bar::Model::default();
         for page in Page::ALL {
-            nav_model.insert().text(page.title()).data(page);
+            nav_model
+                .insert()
+                .text(page.title())
+                .icon(cosmic::widget::icon::from_name(page.icon()).icon())
+                .data(page);
         }
         nav_model.activate_position(0);
 
@@ -474,11 +487,19 @@ impl cosmic::Application for App {
             loading: Loading::default(),
             tasks: BTreeMap::new(),
             details_for: None,
+            apps_pushed: false,
+            card_menu_for: None,
             dialog: None,
             toasts: Toasts::new(|id| Message::Ui(UiMsg::ToastClosed(id))),
             busy: std::collections::BTreeSet::new(),
         };
         app.sync_terminals();
+        // Row #189: focus traversal + the keyboard_nav bindings (Tab /
+        // Shift+Tab / Escape / F11 / Ctrl+F). libcosmic subscribes the
+        // listener itself when this is set (cosmic.rs at the pinned rev)
+        // and routes Escape/Search to `on_escape`/`on_search` below;
+        // Ctrl+R / Ctrl+N ride the app's own listener in `subscription`.
+        app.core_mut().set_keyboard_nav(true);
         app.core_mut()
             .set_header_title("Gosh Distrobox Manager".to_string());
 
@@ -521,13 +542,16 @@ impl cosmic::Application for App {
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Self::Message> {
         self.nav_model.activate(id);
-        // Leaving Containers pops the pushed stacks (details + terminal —
-        // single-level each; O2: a stale terminal.container leaks the page
-        // past the tab AND dead-ends the New button).
+        // Leaving Containers pops the pushed stacks (details + terminal +
+        // apps — single-level each; O2: a stale terminal.container leaks the
+        // page past the tab AND dead-ends the New button) and closes the
+        // card menu (its drawer is a Containers-page surface).
         if self.active_page() != Page::Containers {
             self.details_for = None;
             self.terminal = crate::terminal::TerminalState::default();
+            self.apps_pushed = false;
         }
+        self.card_menu_for = None;
         // Lazy-load each domain on first visit; containers load at init.
         match self.active_page() {
             Page::Dashboard | Page::Containers => {
@@ -585,7 +609,46 @@ impl cosmic::Application for App {
                 }
                 Self::none()
             }
+            // Apps is a pushed route, never a nav destination (D28) — this
+            // arm is unreachable via the rail and stays only because the
+            // match is exhaustive.
             Page::Apps | Page::Stats => Self::none(),
+        }
+    }
+
+    /// Escape closes the topmost transient surface (row #189, ux.md §5.1.2):
+    /// dialog first, then the card menu, then the activity output drawer.
+    /// Pushed pages (details / terminal / apps / wizard) are NOT popped —
+    /// their Back/Cancel buttons own that, and an Escape that navigates
+    /// would strand keyboard users who otherwise keep their place.
+    fn on_escape(&mut self) -> Task<Self::Message> {
+        if self.dialog.take().is_some() {
+            return Self::none();
+        }
+        if self.card_menu_for.take().is_some() {
+            return Self::none();
+        }
+        if self.activity.expanded.take().is_some() {
+            return Self::none();
+        }
+        Self::none()
+    }
+
+    /// Ctrl+F focuses the current page's search field (row #189, ux.md
+    /// §5.1.4). Pushed overlays resolve first (wizard, then Apps — both
+    /// live over Containers); rail destinations go through
+    /// `views::page_search_id`, and pages without a search field no-op.
+    fn on_search(&mut self) -> Task<Self::Message> {
+        let id = if self.wizard.is_some() {
+            Some(views::SEARCH_WIZARD)
+        } else if self.apps_pushed {
+            Some(views::SEARCH_APPS)
+        } else {
+            views::page_search_id(self.active_page())
+        };
+        match id {
+            Some(id) => cosmic::widget::text_input::focus(cosmic::iced::widget::Id::new(id)),
+            None => Self::none(),
         }
     }
 
@@ -817,6 +880,31 @@ impl cosmic::Application for App {
                     });
                     return Task::batch(vec![toast, spawn]);
                 }
+                ContainerMsg::MenuRequested(name) => {
+                    // Row #41: open the card ⋮ drawer. Only for a container
+                    // still in the list — a press for a deleted container
+                    // (stale row mid-refresh) opens nothing.
+                    if self.containers.iter().any(|c| c.name == name) {
+                        self.card_menu_for = Some(name);
+                    }
+                }
+                ContainerMsg::MenuClosed => {
+                    self.card_menu_for = None;
+                }
+                ContainerMsg::MenuAction(action, name) => {
+                    // Row #41: close the drawer, then re-dispatch the row's
+                    // message — every row reuses an existing arm (see
+                    // `views::card_menu_message`), so the drawer adds a
+                    // trigger, not behaviour. A container deleted while the
+                    // drawer was open resolves to nothing and the press is
+                    // dropped (same stale-row rule as `MenuRequested`).
+                    self.card_menu_for = None;
+                    if let Some(container) =
+                        self.containers.iter().find(|c| c.name == name).cloned()
+                    {
+                        return self.update(views::card_menu_message(action, &container));
+                    }
+                }
                 ContainerMsg::ViewAllRequested => {
                     // Row #23 (dead in Flutter): switch to Containers tab.
                     views::activate_page(&mut self.nav_model, Page::Containers);
@@ -833,6 +921,8 @@ impl cosmic::Application for App {
                     // swallow the fresh wizard).
                     self.details_for = None;
                     self.terminal = crate::terminal::TerminalState::default();
+                    self.apps_pushed = false;
+                    self.card_menu_for = None;
                     if self.active_page() != Page::Containers {
                         views::activate_page(&mut self.nav_model, Page::Containers);
                     }
@@ -959,12 +1049,13 @@ impl cosmic::Application for App {
                     return Task::batch(vec![write, toast]);
                 }
                 DetailsMsg::AppsRequested(name) => {
-                    // Full Apps page lands in T12 — select + switch to the
-                    // Apps tab so the existing Apps view shows this
-                    // container's apps (named `activate_page`, never a
-                    // positional literal).
+                    // D28: Apps is a pushed route over Containers (as in
+                    // Flutter), not a rail destination — pushing keeps the
+                    // container context a tab switch would drop, and Back
+                    // returns to details. `Selected` loads apps + binaries
+                    // (+ stats, harmless) for the container.
                     if let Some(c) = self.containers.iter().find(|c| c.name == *name).cloned() {
-                        views::activate_page(&mut self.nav_model, Page::Apps);
+                        self.apps_pushed = true;
                         return self.update(Message::Containers(ContainerMsg::Selected(Some(c))));
                     }
                 }
@@ -1002,6 +1093,11 @@ impl cosmic::Application for App {
             Message::Updates(_) => return Self::none(), // namespace reserved (T9+)
             Message::Terminal(msg) => return self.update_terminal(msg),
             Message::Apps(msg) => match msg {
+                AppMsg::Closed => {
+                    // D28 Back: pop the pushed Apps view (the selection
+                    // stays — Stats and the card highlight read it too).
+                    self.apps_pushed = false;
+                }
                 AppMsg::Loaded(container, result) => {
                     // Stale-response guard (T8 pattern, and load-bearing here
                     // because every export triggers a re-sync that can land
@@ -1422,6 +1518,43 @@ impl cosmic::Application for App {
                 }
             },
             Message::Ui(msg) => match msg {
+                UiMsg::Shortcut(shortcut) => {
+                    // Row #189: Ctrl+R refreshes the current page, Ctrl+N
+                    // opens the create wizard. Refresh is page-aware exactly
+                    // like the header (T17): Images reloads the catalogue,
+                    // the pushed Apps view reloads its container's apps, and
+                    // every other page reloads containers — `RefreshRequested`
+                    // re-probes first from a gated state, so the shortcut is
+                    // the recovery path too, not a dead chord.
+                    use crate::message::Shortcut;
+                    match shortcut {
+                        Shortcut::NewContainer => {
+                            return self
+                                .update(Message::Containers(ContainerMsg::NewContainerRequested));
+                        }
+                        Shortcut::RefreshPage => {
+                            if self.apps_pushed {
+                                if let Some(name) = self.selected_container.clone() {
+                                    return self
+                                        .update(Message::Apps(AppMsg::ReloadRequested(name)));
+                                }
+                                return Self::none();
+                            }
+                            match views::header_refresh(self.active_page()) {
+                                Some(views::HeaderRefresh::Images) => {
+                                    return self.update(Message::Images(
+                                        crate::message::ImageMsg::LoadRequested,
+                                    ));
+                                }
+                                Some(views::HeaderRefresh::Containers) | None => {
+                                    return self.update(Message::Containers(
+                                        ContainerMsg::RefreshRequested,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
                 UiMsg::DismissError => self.error = None,
                 UiMsg::ToastClosed(id) => {
                     self.toasts.remove(id);
@@ -1437,7 +1570,9 @@ impl cosmic::Application for App {
 
     /// T5/T12 subscriptions (§3.4): (a) per-task output streams, keyed by
     /// `TaskId` so iced tears each down when the task leaves `self.tasks`;
-    /// (b) the TTL sweep tick; (c) the config watch (§5.1-2). The tick
+    /// (b) the TTL sweep tick; (c) the config watch (§5.1-2); (d) the
+    /// Ctrl+R / Ctrl+N accelerators (row #189 — `keyboard_nav` does not
+    /// bind them, so the app listens itself). The tick
     /// carries nothing — iced subscriptions cannot borrow `self.backend`
     /// (the builder is a plain `fn`), so the sweep runs in the `ExpiredTick`
     /// arm via `BACKEND`, and the resulting ids flow back as
@@ -1445,6 +1580,7 @@ impl cosmic::Application for App {
     fn subscription(&self) -> Subscription<Self::Message> {
         Subscription::batch(vec![
             Subscription::batch(self.tasks.keys().copied().map(task_output_subscription)),
+            cosmic::iced::event::listen_with(shortcut_subscription),
             cosmic::iced::time::every(std::time::Duration::from_secs(TASK_SWEEP_INTERVAL_SECS))
                 .map(|_| Message::Tasks(TaskMsg::ExpiredTick)),
             // §5.1-2 reactive reload: the watcher emits the full entry after
@@ -1497,6 +1633,11 @@ impl cosmic::Application for App {
                 if self.terminal.container.is_some() {
                     return self.view_terminal_page();
                 }
+                // D28: Apps pushes over Containers (from details, as in
+                // Flutter) and renders above it — Back pops back to details.
+                if self.apps_pushed {
+                    return self.view_apps_page();
+                }
                 if let Some(wizard) = &self.wizard {
                     // O2: prefer the live mirror; fall back to the latched
                     // completion when the mirror was TTL-swept (or never
@@ -1529,6 +1670,9 @@ impl cosmic::Application for App {
             Page::Backups => self.view_backups(),
             Page::Activity => self.view_activity_page(),
             Page::Updates => self.view_updates(),
+            // Unreachable via the rail (D28 — Apps is pushed, never
+            // active): renders the view anyway so the exhaustive match
+            // cannot strand a future caller on a blank page.
             Page::Apps => self.view_apps_page(),
             Page::Settings => self.view_settings_page(),
             Page::Stats => self.view_stats(),
@@ -1557,13 +1701,17 @@ impl cosmic::Application for App {
     }
 
     fn header_start(&self) -> Vec<cosmic::Element<'_, Self::Message>> {
-        // Row #53 (+ terminal Back): back button on pushed pages; Refresh otherwise.
+        // Row #53 (+ terminal / apps Back): back button on pushed pages;
+        // Refresh otherwise. Apps renders above details, so its Back pops
+        // first and reveals details beneath.
         if self.active_page() == Page::Containers
-            && (self.details_for.is_some() || self.terminal.container.is_some())
+            && (self.details_for.is_some() || self.terminal.container.is_some() || self.apps_pushed)
         {
             // Terminal page Back clears the terminal state (its own message);
             // details Back clears details (which also resets terminal).
-            let msg = if self.terminal.container.is_some() {
+            let msg = if self.apps_pushed {
+                Message::Apps(AppMsg::Closed)
+            } else if self.terminal.container.is_some() {
                 Message::Terminal(crate::message::TerminalMsg::Closed)
             } else {
                 Message::Details(DetailsMsg::Closed)
@@ -1614,8 +1762,25 @@ impl cosmic::Application for App {
         let blocked = is_blocked(self.backend.env());
         let installed = self.backend.is_distrobox_installed();
         let gate = |msg: Message| views::gate_header_message(msg, blocked, installed);
+        // D28: the pushed Apps view keeps its own header reload (row #172) —
+        // it fired from the Apps tab before, it fires from the pushed stack
+        // now. Enabled only with a container to reload AND a working env
+        // (row #134).
+        if self.active_page() == Page::Containers && self.apps_pushed {
+            let reload = self
+                .selected_container
+                .clone()
+                .and_then(|c| gate(Message::Apps(AppMsg::ReloadRequested(c))));
+            return vec![
+                widget::button::standard(fl!("action-refresh"))
+                    .on_press_maybe(reload)
+                    .into(),
+            ];
+        }
         match self.active_page() {
-            Page::Containers if self.details_for.is_none() && self.wizard.is_none() => {
+            Page::Containers
+                if self.details_for.is_none() && self.wizard.is_none() && !self.apps_pushed =>
+            {
                 vec![
                     widget::button::suggested(fl!("app-new-container"))
                         .on_press_maybe(gate(Message::Containers(
@@ -1644,21 +1809,9 @@ impl cosmic::Application for App {
                     )))
                     .into(),
             ],
-            // Row #172: header refresh, enabled only with a container to
-            // reload (the page itself renders "Select a container" without
-            // one, so a press would have nothing to act on) AND a working
-            // env (row #134).
-            Page::Apps => {
-                let reload = self
-                    .selected_container
-                    .clone()
-                    .and_then(|c| gate(Message::Apps(AppMsg::ReloadRequested(c))));
-                vec![
-                    widget::button::standard(fl!("action-refresh"))
-                        .on_press_maybe(reload)
-                        .into(),
-                ]
-            }
+            // (Row #172's reload moved to the pushed-Apps early return
+            // above — `Page::Apps` is never the active page now, so no arm
+            // here can fire for it.)
             _ => vec![],
         }
     }
@@ -1668,6 +1821,11 @@ impl cosmic::Application for App {
         // the Activity tab is active and a task is expanded.
         if self.active_page() == Page::Activity {
             return self.activity_drawer();
+        }
+        // Row #41: card ⋮ quick-actions drawer. Single-window per D9 —
+        // this is the §3.2 drawer, not a new window.
+        if self.card_menu_for.is_some() {
+            return self.card_menu_drawer();
         }
         None
     }
@@ -1840,6 +1998,54 @@ impl App {
             crate::activity::output_drawer(view),
             Message::Activity(crate::message::ActivityMsg::DrawerClosed),
         ))
+    }
+
+    /// Card ⋮ quick-actions drawer (row #41 → §6.4 rows #47–#51).
+    /// Resolves the container from the live list by name (never a frozen
+    /// clone); a container deleted while the drawer was open renders
+    /// nothing and the drawer closes on next interaction. Row
+    /// visibility/enabled state is `views::card_menu_row`, pinned per row;
+    /// every press re-dispatches through `ContainerMsg::MenuAction`, which
+    /// closes the drawer first.
+    fn card_menu_drawer(&self) -> Option<cosmic::app::ContextDrawer<'_, Message>> {
+        use crate::message::CardMenuAction;
+        let name = self.card_menu_for.as_deref()?;
+        let container = self.containers.iter().find(|c| c.name == name)?;
+        let running = crate::icons::is_running(&container.status);
+        let mut col = widget::Column::new().spacing(4);
+        for action in CardMenuAction::ALL {
+            let msg = Message::Containers(ContainerMsg::MenuAction(action, name.to_string()));
+            let row: cosmic::Element<'_, Message> = match action {
+                CardMenuAction::Details => widget::button::standard(fl!("card-menu-details"))
+                    .on_press(msg)
+                    .into(),
+                CardMenuAction::OpenTerminal => widget::button::standard(fl!("dash-open-terminal"))
+                    .on_press_maybe(
+                        (views::card_menu_row(action, running) == views::MenuRowState::Active)
+                            .then_some(msg),
+                    )
+                    .into(),
+                CardMenuAction::Stop => {
+                    if views::card_menu_row(action, running) == views::MenuRowState::Hidden {
+                        continue;
+                    }
+                    widget::button::standard(fl!("action-stop"))
+                        .on_press(msg)
+                        .into()
+                }
+                CardMenuAction::Upgrade => widget::button::standard(fl!("dash-upgrade-container"))
+                    .on_press(msg)
+                    .into(),
+                CardMenuAction::Delete => widget::button::destructive(fl!("app-delete"))
+                    .on_press(msg)
+                    .into(),
+            };
+            col = col.push(row);
+        }
+        Some(
+            cosmic::app::context_drawer(col, Message::Containers(ContainerMsg::MenuClosed))
+                .title(container.name.clone()),
+        )
     }
 
     /// Backups page (T10, rows #133–#151): picker + tabs + snapshots /
@@ -2295,6 +2501,7 @@ impl App {
         col = col.push({
             let search: cosmic::Element<'_, Message> =
                 widget::text_input::search_input(fl!("app-search-packages"), st.query.clone())
+                    .id(cosmic::iced::widget::Id::new(views::SEARCH_PACKAGES))
                     .on_input(|s| Message::Packages(crate::message::PackagesMsg::QueryChanged(s)))
                     .on_submit(|_| Message::Packages(crate::message::PackagesMsg::SearchSubmitted))
                     .into();
@@ -3604,9 +3811,9 @@ impl App {
     }
 
     /// Containers page (§6.3): gate states, then the card list with quick
-    /// actions inline (context_drawer owns the drawer variant — T6 renders
-    /// the actions as rows; the drawer shell lands with the card menu in
-    /// the advocate pass if a drawer proves better than inline rows).
+    /// actions inline (Stop + Open Terminal when running) and the ⋮ drawer
+    /// trigger on every card (row #41 — `card_menu_drawer` owns the drawer
+    /// variant, per the §3.2 recommendation).
     fn view_containers_page(&self) -> cosmic::Element<'_, Message> {
         if self.loading.containers && self.containers.is_empty() {
             // First load only: keep content during refresh (row #11).
@@ -3711,6 +3918,29 @@ static BACKEND: std::sync::OnceLock<Arc<Backend>> = std::sync::OnceLock::new();
 /// poll. Read by the subscription above — one documented number, not two
 /// literals.
 pub const TASK_SWEEP_INTERVAL_SECS: u64 = 30;
+
+/// Accelerator listener (row #189): Ctrl+R / Ctrl+N via
+/// `views::shortcut_for`. Plain `fn` — no captures, per
+/// `listen_with`'s signature. Ignores captured events (a keypress a widget
+/// consumed, e.g. typing "r" in a search field, must not refresh) and
+/// everything that is not a key press; the key→shortcut decision itself
+/// is the pure helper, pinned in `parity_rows.rs`.
+fn shortcut_subscription(
+    event: cosmic::iced::event::Event,
+    status: cosmic::iced::event::Status,
+    _window: cosmic::iced::window::Id,
+) -> Option<Message> {
+    if status != cosmic::iced::event::Status::Ignored {
+        return None;
+    }
+    let cosmic::iced::event::Event::Keyboard(key) = event else {
+        return None;
+    };
+    let cosmic::iced::keyboard::Event::KeyPressed { key, modifiers, .. } = key else {
+        return None;
+    };
+    views::shortcut_for(&key, modifiers).map(|s| Message::Ui(crate::message::UiMsg::Shortcut(s)))
+}
 
 /// Plain `fn` — no captures, per `Subscription::run_with`'s signature.
 /// `data` is the `TaskId`, so iced keys each stream by task and tears it

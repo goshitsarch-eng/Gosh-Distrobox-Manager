@@ -110,6 +110,7 @@ pub fn view_apps_page(
     col = col.push({
         let search: cosmic::Element<'static, Message> =
             widget::text_input::search_input(fl!("apps-search-placeholder"), state.search.clone())
+                .id(cosmic::iced::widget::Id::new(crate::views::SEARCH_APPS))
                 .on_input(|s| Message::Apps(AppMsg::SearchChanged(s)))
                 .into();
         search

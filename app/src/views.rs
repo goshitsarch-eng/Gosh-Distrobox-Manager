@@ -14,7 +14,8 @@
 use crate::fl;
 use crate::icons::{distro_icon, is_running, status_color, status_label};
 use crate::message::{
-    AppMsg, BackupsMsg, ContainerMsg, DetailsMsg, DialogMsg, EnvMsg, Message, TaskMsg, is_blocked,
+    AppMsg, BackupsMsg, CardMenuAction, ContainerMsg, DetailsMsg, DialogMsg, EnvMsg, Message,
+    Shortcut, TaskMsg, is_blocked,
 };
 use cosmic::iced::Length;
 use cosmic::widget::toaster::{Toast, Toasts};
@@ -53,7 +54,41 @@ impl Page {
         }
     }
 
-    pub const ALL: [Page; 10] = [
+    /// Freedesktop icon name for the nav rail (row #5), chained into
+    /// `nav_model.insert().icon(...)` in `init`.
+    ///
+    /// Every name verified present in pop-icon-theme 3.5.0 (what the Flatpak
+    /// gets via the Cosmic BaseApp, packaging.md §1.1); all but Stats also
+    /// resolve in Adwaita, which Pop inherits — so on a host without Pop
+    /// only the Stats glyph is at risk, the same theme-reliance class I22
+    /// records for the distro names. No selected/unselected variants: the
+    /// rail's selected state is the framework's highlight, not a second
+    /// glyph (row #5's Flutter variants collapse into it).
+    pub fn icon(self) -> &'static str {
+        match self {
+            Page::Dashboard => "user-home-symbolic",
+            Page::Containers => "network-server-symbolic",
+            Page::Images => "image-x-generic-symbolic",
+            Page::Packages => "package-x-generic-symbolic",
+            Page::Updates => "software-update-available-symbolic",
+            Page::Backups => "document-save-symbolic",
+            Page::Activity => "view-list-symbolic",
+            // Pushed route, not a rail entry (D28) — kept total so the table
+            // cannot silently lose it if it ever returns to the chrome.
+            Page::Apps => "applications-system-symbolic",
+            Page::Settings => "preferences-system-symbolic",
+            // Pop-only: Adwaita ships no system-monitor glyph, so an RPM
+            // host without Pop renders no Stats icon (I22 class).
+            Page::Stats => "utilities-system-monitor-symbolic",
+        }
+    }
+
+    /// The nav rail's destinations, in order (D28: the 8 ux.md destinations
+    /// plus Stats; Apps is a details-pushed route, not a rail entry).
+    /// `Page::Apps` stays a variant — the pushed view, `header_refresh` and
+    /// the Apps-absent-from-rail guard all name it — but it is NOT in this
+    /// array, and `activate_page` no-ops for anything outside it.
+    pub const ALL: [Page; 9] = [
         Page::Dashboard,
         Page::Containers,
         Page::Images,
@@ -61,7 +96,6 @@ impl Page {
         Page::Updates,
         Page::Backups,
         Page::Activity,
-        Page::Apps,
         Page::Settings,
         Page::Stats,
     ];
@@ -325,8 +359,167 @@ pub fn gate_header_message(
     }
 }
 
-/// Shared container row (§6.3, rows #24/#37–#39): distro icon, name, status
-/// dot + text, chevron. Tap → details; inline Stop when running (row #25).
+/// Which inline actions a container card offers (rows #25/#40).
+///
+/// Pure so `parity_rows.rs` pins the gate: both actions are running-only —
+/// a stopped container offers neither (tap still reaches details, where
+/// the disabled terminal control explains itself).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CardActions {
+    /// Inline Stop (row #25).
+    pub stop: bool,
+    /// Inline "Open Terminal" (row #40), mirroring the details-page control
+    /// and its running gate.
+    pub terminal: bool,
+}
+
+/// See [`CardActions`]. `container_row` is the only caller.
+pub fn card_actions(status: &gosh_distrobox_core::models::Status) -> CardActions {
+    let running = is_running(status);
+    CardActions {
+        stop: running,
+        terminal: running,
+    }
+}
+
+/// How one card-menu row renders (row #41 → §6.4 rows #47–#51).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuRowState {
+    /// Rendered and pressable.
+    Active,
+    /// Rendered but disabled (row #48: Open Terminal when stopped).
+    Disabled,
+    /// Not rendered at all (row #49: Stop when stopped).
+    Hidden,
+}
+
+/// The card-menu row table. Details/Upgrade/Delete are unconditional;
+/// Open Terminal disables when stopped (Flutter #48 semantics verbatim);
+/// Stop hides when stopped (Flutter #49 is running-only). Pure so
+/// `parity_rows.rs` pins all five rows × both states.
+pub fn card_menu_row(action: CardMenuAction, running: bool) -> MenuRowState {
+    match action {
+        CardMenuAction::Details | CardMenuAction::Upgrade | CardMenuAction::Delete => {
+            MenuRowState::Active
+        }
+        CardMenuAction::OpenTerminal => {
+            if running {
+                MenuRowState::Active
+            } else {
+                MenuRowState::Disabled
+            }
+        }
+        CardMenuAction::Stop => {
+            if running {
+                MenuRowState::Active
+            } else {
+                MenuRowState::Hidden
+            }
+        }
+    }
+}
+
+/// What a card-menu row re-dispatches (row #41). Every row reuses an
+/// existing arm — no new behaviour, only a new trigger: Details opens the
+/// details page, Terminal opens the terminal page, Stop/Upgrade run the
+/// container arms, Delete goes through the shared destructive confirm
+/// (`ContainerMsg::RemoveRequested`, never a direct run).
+pub fn card_menu_message(action: CardMenuAction, container: &ContainerInfo) -> Message {
+    match action {
+        CardMenuAction::Details => Message::Details(DetailsMsg::OpenRequested(container.clone())),
+        CardMenuAction::OpenTerminal => Message::Terminal(
+            crate::message::TerminalMsg::OpenRequested(container.name.clone()),
+        ),
+        CardMenuAction::Stop => {
+            Message::Containers(ContainerMsg::StopRequested(container.name.clone()))
+        }
+        CardMenuAction::Upgrade => {
+            Message::Containers(ContainerMsg::UpgradeRequested(container.name.clone()))
+        }
+        CardMenuAction::Delete => {
+            Message::Containers(ContainerMsg::RemoveRequested(container.name.clone()))
+        }
+    }
+}
+
+/// Raw-key → accelerator decision (row #189, ux.md §5.1.5).
+///
+/// `keyboard_nav::subscription` binds Tab/Shift+Tab/Escape/F11/Ctrl+F only
+/// (verified at the pinned rev), so Ctrl+R / Ctrl+N need the app's own
+/// `listen_with` filter — this is that filter's decision, factored pure so
+/// `parity_rows.rs` pins it. Matches case-insensitively (Ctrl+Shift+R still
+/// refreshes); requires Ctrl and refuses Logo so a window-manager chord
+/// cannot fire an app action.
+pub fn shortcut_for(
+    key: &cosmic::iced::keyboard::Key,
+    modifiers: cosmic::iced::keyboard::Modifiers,
+) -> Option<Shortcut> {
+    use cosmic::iced::keyboard::Key;
+    if !modifiers.control() || modifiers.logo() {
+        return None;
+    }
+    let Key::Character(c) = key else {
+        return None;
+    };
+    if c.eq_ignore_ascii_case("r") {
+        Some(Shortcut::RefreshPage)
+    } else if c.eq_ignore_ascii_case("n") {
+        Some(Shortcut::NewContainer)
+    } else {
+        None
+    }
+}
+
+/// Stable search-field ids (row #189, ux.md §5.1.4): the single source
+/// both the inputs' `.id()`s and the Ctrl+F focus map read, so the two
+/// cannot drift apart.
+pub const SEARCH_IMAGES: &str = "search-images";
+pub const SEARCH_PACKAGES: &str = "search-packages";
+pub const SEARCH_ACTIVITY: &str = "search-activity";
+pub const SEARCH_APPS: &str = "search-apps";
+pub const SEARCH_WIZARD: &str = "search-wizard";
+
+/// Which search field Ctrl+F focuses on `page` (row #189, ux.md §5.1.4).
+///
+/// `None` = the page has no search field (Dashboard, Containers list,
+/// Updates, Backups, Settings) and `on_search` stays a no-op there. The
+/// pushed overlays (wizard, Apps) are resolved by the caller, not here —
+/// this maps rail destinations only. Pure so `parity_rows.rs` pins the
+/// table.
+pub fn page_search_id(page: Page) -> Option<&'static str> {
+    match page {
+        Page::Images => Some(SEARCH_IMAGES),
+        Page::Packages => Some(SEARCH_PACKAGES),
+        Page::Activity => Some(SEARCH_ACTIVITY),
+        _ => None,
+    }
+}
+
+/// Icon-only controls needing an accessible label (row #190, ux.md §5.3
+/// priority 1). The label doubles as the sighted tooltip text, so the two
+/// surfaces cannot disagree. Pure so `parity_rows.rs` pins non-empty +
+/// distinct; the rendered `description()` itself is T3-observed until
+/// T20's harness lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconControl {
+    /// Terminal page copy-command button (`terminal.rs`).
+    CopyCommand,
+    /// Container card ⋮ trigger (`container_row`).
+    CardMenu,
+}
+
+impl IconControl {
+    pub fn label(self) -> String {
+        match self {
+            IconControl::CopyCommand => fl!("misc-terminal-copy-command"),
+            IconControl::CardMenu => fl!("card-menu-label"),
+        }
+    }
+}
+
+/// Shared container row (§6.3, rows #24/#37–#40): distro icon, name, status
+/// dot + text, chevron. Tap → details; inline Stop (row #25) and inline
+/// "Open Terminal" (row #40) when running; ⋮ trigger (row #41) always.
 pub fn container_row(
     container: &ContainerInfo,
     selected: bool,
@@ -375,16 +568,46 @@ pub fn container_row(
             .selected(selected),
     );
     let mut col = widget::Column::new().push(list.into_element());
-    if is_running(&container.status) {
-        col = col.push({
-            let stop: cosmic::Element<'static, Message> = widget::button::text(fl!("action-stop"))
-                .on_press(Message::Containers(ContainerMsg::StopRequested(
-                    container.name.clone(),
-                )))
-                .into();
-            stop
-        });
+    // Rows #25/#40/#41: the inline actions live BELOW the tap target, never
+    // inside it — a button nested in the `list::button` would swallow the
+    // details press. The running gate is `card_actions`, pinned in
+    // `parity_rows.rs`; the ⋮ trigger is unconditional.
+    let actions = card_actions(&container.status);
+    let mut row = widget::Row::new().spacing(8);
+    if actions.stop {
+        let stop: cosmic::Element<'static, Message> = widget::button::text(fl!("action-stop"))
+            .on_press(Message::Containers(ContainerMsg::StopRequested(
+                container.name.clone(),
+            )))
+            .into();
+        row = row.push(stop);
     }
+    if actions.terminal {
+        let terminal: cosmic::Element<'static, Message> =
+            widget::button::text(fl!("dash-open-terminal"))
+                .on_press(Message::Terminal(
+                    crate::message::TerminalMsg::OpenRequested(container.name.clone()),
+                ))
+                .into();
+        row = row.push(terminal);
+    }
+    // Row #41 trigger + row #190 label: the icon-only button carries its
+    // name into the a11y tree (libcosmic's `a11y` feature is on) AND a
+    // sighted tooltip, both from the one `IconControl` label.
+    let menu_label = IconControl::CardMenu.label();
+    let trigger: cosmic::Element<'static, Message> = widget::tooltip::tooltip(
+        widget::button::icon(widget::icon::from_name("view-more-symbolic").handle())
+            .description(menu_label.clone())
+            .on_press(Message::Containers(ContainerMsg::MenuRequested(
+                container.name.clone(),
+            ))),
+        widget::text::body(menu_label),
+        widget::tooltip::Position::Bottom,
+    )
+    .into();
+    row = row.push(trigger);
+    let actions_row: cosmic::Element<'static, Message> = row.into();
+    col = col.push(actions_row);
     col.into()
 }
 

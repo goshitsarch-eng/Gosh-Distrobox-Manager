@@ -252,6 +252,7 @@ pub fn view_activity(
             fl!("activity-search-placeholder"),
             state.search.clone(),
         )
+        .id(cosmic::iced::widget::Id::new(crate::views::SEARCH_ACTIVITY))
         .on_input(|s| Message::Activity(ActivityMsg::SearchChanged(s)))
         .into();
         search
