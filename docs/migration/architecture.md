@@ -1173,7 +1173,7 @@ spawned through `runner` so the Flatpak/host-exec mapping applies to the *termin
 too (today's Dart path launches the terminal from inside the sandbox). `TerminalRepository`
 gains a `Config`-backed store (§5.3 `custom_terminals`), which is what its
 `save_terminal`/`delete_terminal` signatures already promise; `merge_flatpak_terminals`
-(`:164`) and `is_read_only` (`:185`) finally get callers.
+(`:203`) and `is_read_only` (`:224`) finally get callers.
 
 **As built (T12), the store sits one level up.** The custom terminals live in
 `AppConfig::custom_terminals` (cosmic-config), and `TerminalRepository::with_customs`
@@ -1183,14 +1183,18 @@ watch) for the list, both through the env-mapped runner. `save_terminal` /
 `distroshelf-terminals.json`, and no parity row in ux.md lets a user add or remove a
 terminal, so re-backing them would have meant keeping three mutators with no producer.
 The §5.3 plan above promised that this task would give `merge_flatpak_terminals`
-(`:164`) and `is_read_only` (`:185`) their first callers; **it did not.** `all_terminals`
+(`:203`) and `is_read_only` (`:224`) their first callers; **it did not.** `all_terminals`
 has one (`Backend::terminals`), but `is_read_only`, `terminal_by_name`,
 `terminal_by_program`, `default_terminal`, `merge_flatpak_terminals` and
 `fetch_flatpak_terminals` are all still callerless — no parity row renders a read-only
 badge or wires a Flatpak discovery pass, so nothing in T12 gave them a producer. They
 are left in place rather than deleted here (they predate this task and are candidates
 for the T14 deletion pass alongside S7/S8); the record above is corrected so the
-"finally get callers" line is not read as done.
+"finally get callers" line is not read as done. **T14 did not delete them.** The
+deletion pass (S8) was scoped to the Flutter tree, the FRB layer and the dead cluster
+that fed it; these are backend helpers with no caller, which is a different problem
+with a different fix (wire or drop, decided per symbol). They remain in the tree as of
+`92d0eb0` and are carried as I24 in PLAN.md rather than silently dropped.
 
 `resolve_terminal` is the one piece this task made live: `TerminalMsg::OpenRequested`
 seeds the picker from the persisted `selected_terminal` through it (#171 — the saved
@@ -1200,7 +1204,7 @@ first-available, and `TerminalState::selected` owns that fallback, because silen
 launching a terminal the user did not pick is worse than showing none.
 
 **`backends/container_runtime.rs` (54) + `docker.rs` (95) + `podman.rs` (138).**
-Currently dead — nothing calls `get_container_runtime` (`container_runtime.rs:37`),
+Currently dead — nothing calls `get_container_runtime` (`container_runtime.rs:83`),
 while `distrobox.rs` re-implements the podman→docker fallback inline **seven times**
 (§0.3-B7). Decision: **wire it, don't delete it**, because `podman.rs` carries value
 the inline code does not:
@@ -1219,7 +1223,7 @@ the inline code does not:
 Shape of the change: extend `ContainerRuntime` with the operations the seven inline
 sites need (`start`, `commit`, `rmi`, `images`, `stats_raw`), implement them once in
 `Podman`/`Docker`, and add `Distrobox::runtime() -> Result<Arc<dyn ContainerRuntime>>`
-memoized at construction. `get_container_runtime` (`:37`) already prefers Podman and
+memoized at construction. `get_container_runtime` (`:83`) already prefers Podman and
 falls back to Docker with the rationale documented (`// Prefer Podman when both are
 available because Podman is rootless by default`) — that reasoning is currently lost
 in the inline copies. **Q11 — answered by T13 (D27): the helper, not the trait.**
@@ -1230,7 +1234,9 @@ builds, so the trait would have re-encoded the same argv in two more places; and
 `#[async_trait(?Send)]` objection below is real, so growing the trait would have forced
 a `Send` conversion for operations that never needed one. `get_container_runtime`
 remains callerless — it cannot serve these sites (no run method, `?Send`, returns
-`Option`, and drops the runner), which is worth deleting in T14.
+`Option`, and drops the runner). **T14 did not delete it either** (see the note above);
+the conclusion that it *should* be deleted stands, and it is filed as I24 so the
+judgement survives the task that declined to act on it.
 
 `podman.rs::map_docker_to_podman` (`:17`) is a `Command`-rewriting helper — it maps
 the **program field** `docker → podman`, and only that. It is **not** the primitive
