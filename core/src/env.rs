@@ -1,9 +1,9 @@
 //! Environment detection: the single precedence chain for where commands run.
 //!
-//! Collapses the two copies that exist today (`AppState::new` in
-//! `app_state.rs:15-28` and `is_distrobox_installed` in `api.rs:141-161`) into
-//! one function (architecture.md §2.4, §6.4 row B6). The precedence is preserved
-//! exactly:
+//! Collapsed the two copies that existed before this module did (the FRB-era
+//! `AppState::new` and `is_distrobox_installed` in `api.rs`), both deleted in
+//! T14, into one function (architecture.md §2.4, §6.4 row B6). The precedence
+//! is preserved exactly:
 //!
 //! 1. `/.flatpak-info` present → prefix every command with `flatpak-spawn --host`.
 //! 2. Inside a Distrobox container **and** `distrobox-host-exec` resolvable →

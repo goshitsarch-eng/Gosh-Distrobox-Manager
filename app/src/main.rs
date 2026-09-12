@@ -22,7 +22,7 @@ use cosmic::app::Settings;
 use cosmic::iced::Size;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Was `api.rs::init_app` (`#[frb(init)]`); the FRB shim is deleted in S7
+    // Was `api.rs::init_app` (`#[frb(init)]`); the FRB shim was deleted in S7
     // (T14), and tracing init belongs to the binary, not the core lib.
     //
     // Explicit `EnvFilter` (not the `fmt` default): both default to INFO

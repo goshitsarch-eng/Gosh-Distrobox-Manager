@@ -1,9 +1,10 @@
 //! Task registry with subscriptions, cancel, and TTL sweep.
 //!
-//! T5 (architecture.md §3.3, §4): replaces the FRB-era `Task`
+//! T5 (architecture.md §3.3, §4): replaced the FRB-era `Task`
 //! (`models/task.rs`) + global `STATE` helpers (`push_task_output` /
 //! `finish_task` in `task_runtime.rs`) with a registry owning
-//! `RwLock<HashMap<TaskId, Task>>`.
+//! `RwLock<HashMap<TaskId, Task>>`. Those three files were deleted in T14,
+//! so this registry is now the only task model in the crate.
 //!
 //! Design notes (all from the arch doc, verified at implementation):
 //! - `TaskId` is typed (`Uuid`, `Copy + Hash`) — `Subscription::run_with`
@@ -87,9 +88,11 @@ pub enum TaskEvent {
     Finished { success: bool },
 }
 
-/// Core task record. Named `RegistryTask` (not `Task`) to avoid colliding
-/// with the FRB-era `models::task::Task`, which S7 (T14) deletes — renaming
-/// now would churn every `api.rs` call site the new registry replaces anyway.
+/// Core task record. Named `RegistryTask` rather than `Task` because the
+/// FRB-era `models::task::Task` it once collided with still existed when T5
+/// landed. That file was deleted in T14, so the name is now history rather
+/// than a necessary qualifier; renaming it would churn call sites for no
+/// behavioural gain, so it stays.
 pub struct RegistryTask {
     pub id: TaskId,
     pub label: String,

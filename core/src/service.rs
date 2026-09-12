@@ -727,11 +727,11 @@ impl Backend {
 /// site; this is the "how many" for the journal.
 ///
 /// "At least once" is exact, not rhetorical: this is the *`Backend`* path.
-/// The FRB shim (`api.rs`) calls `Distrobox` directly and never gets here, so
-/// it calls this itself rather than dropping `skipped` on the floor — see
-/// `api::get_containers`. That module is an S7/T14 deletion target, but until
-/// it is gone it is still a live path, and a silent drop there would be the
-/// very thing B3 exists to remove.
+/// The FRB shim that used to bypass it (`api.rs`, deleted in T14) called
+/// `Distrobox` directly and never got here, so it called this itself rather
+/// than dropping `skipped` on the floor. With that module gone every caller
+/// is now a `Backend` method, and this is the single place the count is
+/// recorded — a silent drop would be the very thing B3 exists to remove.
 pub fn log_skipped(skipped: &[ParseIssue], source: &str) {
     if !skipped.is_empty() {
         tracing::warn!(

@@ -1,9 +1,9 @@
 //! Data-transfer types that used to live at the top of `api.rs`.
 //!
-//! Moved here by S3 (architecture.md §1.3) so the types outlive the FRB shim
-//! layer that S7 deletes: the app crate depends on these names, and S7 removes
-//! `api.rs` whole. `api.rs` re-exports them again through `pub use crate::models::*`
-//! because the re-export list is what flutter_rust_bridge scans.
+//! Moved here by S3 (architecture.md §1.3) precisely so the types would outlive
+//! the FRB shim layer, and they did: T14 (S7) removed `api.rs` whole — with the
+//! `pub use crate::models::*` that existed only for `flutter_rust_bridge` to
+//! scan — and nothing here moved. The app crate depends on these names.
 //!
 //! This module is where B3's `ParseIssue` lands (architecture.md §6.4).
 
