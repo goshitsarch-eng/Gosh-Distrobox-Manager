@@ -1863,7 +1863,10 @@ version = "1.0.2"
 dependencies = [
  "futures",
  "gosh-distrobox-core",
+ "i18n-embed",
+ "i18n-embed-fl",
  "libcosmic",
+ "rust-embed",
  "serde",
  "smol",
  "tokio",

@@ -1,0 +1,10 @@
+# Fluent/i18n-embed configuration for the app crate.
+#
+# Same shape as the sibling COSMIC apps (Gosh-Calc, notepad): the loader reads
+# ./i18n/<lang>/*.ftl relative to the crate root, embedded at compile time by
+# rust-embed in src/i18n.rs. `fallback_language` must have a directory or
+# `load_fallback_language` panics at first `fl!` (which runs before `app::run`).
+fallback_language = "en"
+
+[fluent]
+assets_dir = "i18n"

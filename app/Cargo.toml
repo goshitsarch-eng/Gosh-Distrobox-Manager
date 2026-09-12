@@ -26,6 +26,14 @@ tokio.workspace = true
 futures.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# i18n (T15): Fluent catalogue + compile-time embedding. These are app-only and
+# are NOT new to the dependency graph — libcosmic already pulls all four
+# transitively at exactly these versions (see Cargo.lock), which is why adding
+# them needs no vendor regeneration. `generate-cargo-sources.py --check`
+# (verify.sh stage 7) is the gate that proves it.
+i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
+i18n-embed-fl = "0.10"
+rust-embed = "8"
 
 [dev-dependencies]
 smol.workspace = true

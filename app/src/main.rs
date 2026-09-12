@@ -7,6 +7,7 @@ mod activity;
 mod app;
 mod apps_view;
 mod backups;
+mod i18n;
 mod icons;
 mod images_view;
 mod message;
@@ -39,6 +40,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .try_init();
+
+    // Before `app::run`: `App::view` renders `fl!` strings on its first pass,
+    // and `fl!` asserts the fallback catalogue is loaded.
+    i18n::init();
 
     let settings = Settings::default().size(Size::new(1024., 768.));
     cosmic::app::run::<app::App>(settings, ())?;
