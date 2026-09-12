@@ -209,6 +209,16 @@ simplicity/maintainability → COSMIC conventions.
   running-Flatpak observation. T1+T2 gate every task; T3 gates page tasks + release.
 - **Why:** The collapsed list cannot produce the auditable
   exists-148/dead-15/dup-14/missing-13/bug-3 summary.
+- **Amendment (T14, after S8 deleted the Flutter tree):** freezing rows 1–193 was
+  always two claims, and T14 is where they came apart. The *citations* — the `lib/…`
+  paths and Dart line numbers that justify each row — are **provenance and must be
+  preserved**. The *directives* — "this is where the parity source lives, go read it"
+  — are now dangling, because the tree is gone. T14 rewrote the directives and left
+  every citation byte-identical. ux.md's preamble now says which is which and points
+  at the recovery path (`git show pre-t14-flutter-parity:<path>`); the rows
+  themselves were not touched. Deleting or "updating" the citations would have
+  destroyed the evidence for the freeze while leaving the freeze looking intact —
+  the failure mode this decision exists to prevent.
 
 ## D20 — Accepted technical notes (no action, recorded)
 

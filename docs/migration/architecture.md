@@ -1,9 +1,14 @@
 # Phase 1 Architecture — Flutter/FRB → libcosmic migration
 
-Status: **design only, no source changes.** This document is the input to `PLAN.md`.
+Status: **S1–S8 executed.** This document was written as design-only input to
+`PLAN.md`; the strip plan in §1.3 has since been carried out, and T14 completed
+S8. Where execution diverged from the plan, §1.3 records the divergence at the
+end rather than editing the steps — the plan is the record of what was intended,
+and rewording it after the fact would destroy the only evidence of what changed.
 
 Branch: `cosmic-migration`. Baseline: `8eacbd8` (Flutter UI + Rust backend over
-flutter_rust_bridge 2.11.1).
+flutter_rust_bridge 2.11.1). The Flutter tree is deleted as of `c8e6cd6`; tag
+`pre-t14-flutter-parity` holds the last commit that still contained it.
 
 **Verification rule used throughout:** every libcosmic API named here was read from
 the actual source at the pinned rev `a401af8b1c54a8abd393b8c5b7c8809402f83850`
@@ -292,6 +297,43 @@ pure-move commit that relocates whatever the deletion would otherwise strand.
 - Green: `cargo build --workspace` is unaffected; only packaging/CI text changed.
 
 **S9+ — the T2/T3 work and the UI build-out.** Sequenced in §7.
+
+### 1.3.1 How execution diverged from the plan above
+
+Recorded by T14, which finished S8. Each item is a place the steps above and the
+shipped tree disagree; the steps are left as written.
+
+- **S2's crate-type drop did not happen in S2.** `[lib] crate-type =
+  ["staticlib","cdylib"]` survived until T14, which removed it once the Flutter
+  FFI was actually gone. Harmless in between — nothing but Flutter ever linked
+  the cdylib — but the step above reads as though it landed at S2.
+- **S5's `git mv core/data app/data` never happened, deliberately.** Desktop
+  integration data stayed in `core/data` and `app` reads it from there. Moving it
+  to `app/` would have made the backend crate own no data while the UI crate owned
+  the packaging inputs, which is backwards: the RPM spec and the Flatpak manifest
+  both install from `core/data`, and `%check` validates the copies there. This is
+  the "single source" rule in AGENTS.md.
+- **S8 deleted more than the step lists.** Beyond the named paths, T14 also
+  removed `assets/`, the rest of `linux/` (not only `CMakeLists.txt` and
+  `.gitignore` — the CMake runner, `linux/runner/`, `linux/flutter/` and
+  `linux/data/`), `build/linux/…` references, and the four `core/data/*.{in,
+  gschema.xml}` templates plus `core/data/icons/meson.build`, which existed only
+  to feed the deleted meson build. It also removed the committed 18 MB
+  `gosh-distrobox-manager-1.0.0-linux-x64.tar.gz` and several Flutter-era
+  scripts. Deletion and the RPM rewrite had to land in **one** commit: the spec
+  and `build-rpm.sh` read `linux/data/…`, so splitting them would have left the
+  RPM path broken in between (the E12 trap).
+- **S8's judgement of `flatpak.yml` was wrong, in the file's favour.** The step
+  says it "is already stale … replace it wholesale". By T14 it was not stale: T4
+  had already rewritten it to drive `./scripts/verify.sh`, and it was correct
+  except for one comment claiming an artifact-publish step that no step
+  implements. T14 fixed the comment and left the workflow alone — a wholesale
+  replacement would have destroyed working code.
+- **S7 removed two modules the step does not name.** `core/src/app_state.rs` and
+  `core/src/task_runtime.rs` went with `api.rs`; S3/S4 had moved DTOs and the task
+  registry out of `api.rs` precisely so that nothing would be stranded by S7, and
+  by then `Backend` (S6) owned both. `once_cell` became an unused dependency at
+  that moment and was dropped from the workspace manifest.
 
 ### 1.4 One ordering constraint to respect
 

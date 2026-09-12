@@ -18,9 +18,11 @@ name: Rust
 #   * the Flatpak build + smoke test live in flatpak.yml (T4 wires the file
 #     T14 rewrites; tags + workflow_dispatch only, §2.5.1 job 3).
 #
-# `.github/workflows/flatpak.yml` (the OLD meson/ninja workflow) is dead as
-# written (it builds a root manifest that does not exist) and is owned by
-# T14 — deliberately untouched here.
+# `.github/workflows/flatpak.yml` was the old meson/ninja workflow and used to
+# be dead as written (it built a root manifest that does not exist). T14 has
+# since rewritten it to drive the full `./scripts/verify.sh` (stages 1-10) with
+# the runtimes pre-installed, so all three jobs now share one definition of
+# green rather than three drifting re-spellings of it.
 
 on:
   # Shape ported from the sibling's ci.yml (D24a). Note what the branch filter
@@ -30,14 +32,13 @@ on:
   # starts, every push runs the full set regardless. That is deliberate -- it is
   # not a path filter and must not be turned into one.
   #
-  # `cosmic-migration` is listed alongside `main` because it is the working
-  # branch for the whole migration: every T1-T14 task lands there, and a CI stage
-  # that does not run on it gates nothing. Both entries come out at T14, when the
-  # migration branch is merged and deleted.
+  # T14 removed the `cosmic-migration` entry this comment used to justify: the
+  # migration branch is merged, so `main` is the only branch whose pushes gate
+  # anything. The scheduled run below is what keeps an untouched dependency
+  # from rotting between releases.
   push:
     branches:
       - main
-      - cosmic-migration
   pull_request:
   schedule:
     # Nightly, so a break on an untouched dependency or toolchain surfaces within

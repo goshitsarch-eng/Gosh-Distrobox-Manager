@@ -2,7 +2,16 @@
 
 Phase 1 deliverable. **No source changes.** This document is the UX half of the migration; it feeds `PLAN.md`.
 
-- **Parity source of truth:** the Flutter UI in `lib/` (8,942 lines). `AGENTS.md` confirms the GTK4/Rust UI is legacy and does not ship.
+> **Post-T14 status (this box added by T14; nothing below it was rewritten).**
+> The Flutter tree this document measures was deleted in T14 (`c8e6cd6`), so every
+> `lib/…` reference below is now a citation to something that no longer exists in
+> the working tree. Those citations are **provenance, not directives** — they are
+> the evidence for rows 1–193 and are frozen (D19). To read a cited file, recover
+> it from the pre-deletion tag:
+> `git show pre-t14-flutter-parity:lib/screens/dashboard_page.dart`.
+> The rows remain the parity record against which `app/` is walked in T16.
+
+- **Parity source of truth:** the Flutter UI as it stood at tag `pre-t14-flutter-parity`, under `lib/` (8,942 lines). Deleted from the working tree by T14; recoverable via `git show pre-t14-flutter-parity:<path>`. `AGENTS.md` confirms the GTK4/Rust UI is legacy and does not ship.
 - **Target:** libcosmic `1.0.0`, pinned rev `a401af8b1c54a8abd393b8c5b7c8809402f83850` (2026-09-10, edition 2024, `rust-version` 1.93, lib target renamed `cosmic`). Not on crates.io — git dependency only. Never depend on crates.io `cosmic` (squat) or tag `v0.12` (stale pre-1.0).
 
 ## 0. Verification method

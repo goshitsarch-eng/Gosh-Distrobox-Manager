@@ -1,31 +1,21 @@
-# Flutter/Dart
-.dart_tool/
-.packages
-build/
-*.iml
-.metadata
-pubspec.lock
-.flutter-plugins
-.flutter-plugins-dependencies
+# Rust / Cargo
+# The workspace lives at the repository root (T1), so cargo's output is ./target
+# — 24 GB of it on a working tree. `rust/target/` used to be listed alongside
+# this for the pre-T1 `rust/` crate; that path has not existed since the crate
+# was renamed to `core/`, so T14 dropped the entry.
+target/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
-
-# Rust
-rust/target/
-
-# Legacy GTK build
-target/
-_build/
+*.iml
 
 # Flatpak (T4/D26b: verify.sh pins --state-dir and the build dir inside
 # .flatpak-builder/, which flatpak-builder self-ignores via its own
 # .gitignore; `repo/` is named so a future --repo=repo regression fails
-# loudly here instead of landing untracked. `build/` stays Flutter-ignored
-# until T14 deletes the Flutter tree, then it is re-owned.)
+# loudly here instead of landing untracked.)
 .flatpak/
 .flatpak-builder/
 repo/
@@ -39,11 +29,35 @@ __pycache__/
 
 # Misc
 *.log
-flutter_output.txt*
-test_spawn
-plans/
 
 # RPM build artifacts
+# build-rpm.sh copies the built RPM into the repository root, and the spec's
+# Source0 is a `%{name}-%{version}.tar.gz` source tarball, so both need to be
+# ignored: an 18 MB `gosh-distrobox-manager-1.0.0-linux-x64.tar.gz` was
+# committed once and only deleted in T14. This guard is what stops the next
+# `git add -A` from putting it (or its successor) back.
 *.rpm
 *.src.rpm
 rpmbuild/
+gosh-distrobox-manager-*.tar.gz
+
+# ---------------------------------------------------------------------------
+# Retired in T14 with the Flutter tree. Kept here as a record of what used to
+# be ignored and why it no longer is, rather than silently vanishing:
+#
+#   .dart_tool/ .packages .metadata pubspec.lock
+#   .flutter-plugins .flutter-plugins-dependencies
+#       Dart/Flutter tooling state. No Dart toolchain is involved any more.
+#   flutter_output.txt*
+#       Scratch output from the old Flutter launcher shim.
+#   build/
+#       Flutter's output directory. Nothing in this workspace writes it now:
+#       cargo uses target/, flatpak-builder uses .flatpak-builder/, and the
+#       meson `_build/` went with the meson build. If something does create it,
+#       it should land untracked and visible rather than be silently ignored.
+#   rust/target/, _build/
+#       Pre-T1 crate path and the meson build dir; neither directory exists.
+#   test_spawn, plans/
+#       Flutter-era scratch names. `.flatpak-builder`-style self-ignoring tools
+#       cover their own output; nothing produces these.
+# ---------------------------------------------------------------------------

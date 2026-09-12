@@ -43,7 +43,7 @@ signed off on the diff; and it is committed.
 | Phase | State |
 |---|---|
 | Phase 1 — Plan | **Complete.** All three docs signed off with changes, 45 questions answered (38) or recorded (7), 21 decisions recorded. |
-| Phase 2 — Build | **Underway.** T0–T13 done; T14–T15 sequenced below (T14→{T6..T13}, T15→{T6..T12}); T16 gates Phase 3. |
+| Phase 2 — Build | **Underway.** T0–T14 done; T15 sequenced below (T15→{T6..T12}); T16 gates Phase 3. |
 | Phase 3 — Harden | Not started. |
 
 | # | Task | Owner | State |
@@ -62,9 +62,9 @@ signed off on the diff; and it is committed.
 | T11 | Activity log + TaskState enum (kills string-sniffing) | arch + ux | **Done** (`fa507ce`; 99+13+5+4+6+4+6+4+5+1 green; advocate 5 + doc rounds fixed, signed off) |
 | T12 | Apps export page + Settings/about + config persistence (one-time DistroShelf import) | arch + ux | **Done** (`59ef837`; 109+18+5+5+4+6+4+6+4+5+1 green; advocate 7 (2 HIGH) + re-review 5 fixed, signed off; `verify.sh` 11/11 stages) |
 | T13 | B3 tolerant parsing + `show_skipped_lines`; B4 field codes; B7 runtime helper | arch | **Done** (`c738ff2`; 162+24+5+5+4+6+4+7+4+5+1 green; GLib differential 39/0 at tokenizer + launch tiers; advocate 5 confirmed (1 blocking-class: quoted line continuation) + 1 refuted by measurement + 1 deferred to T14, signed off; `verify.sh` 11/11 stages) |
-| T14 | S7 + S8 deletions (tagged pre-deletion commit) + spec/scripts/AGENTS/README/CI rewrite | arch + pkg | Queued |
+| T14 | S7 + S8 deletions (tagged pre-deletion commit) + spec/scripts/AGENTS/README/CI rewrite | arch + pkg | **Done** (`b73099a` S7 FRB removal; `c8e6cd6` S6+S8 deletions + RPM rewrite; S6+S8 kept in one commit because the spec and `build-rpm.sh` read `linux/data` — the E12 trap; 179 files, 177 deletions + exactly 2 rewrites, zero Rust files; tag `pre-t14-flutter-parity` = `b73099a`; E14 already satisfied, nine sources agree at 1.0.2; RPM rewrite is reviewed but **not executed** — no `rpmbuild` on the host and no gate invokes it) |
 | T15 | i18n extraction pass 1 (per-screen Fluent strings; user-data placeables rule) | ux | Queued |
-| T16 | Harden: full parity walk in the running Flatpak, break-every-flow, file new tasks | reviewer | Queued |
+| T16 | Harden: full parity walk in the running Flatpak, break-every-flow, file new tasks; **owns `docs/migration/REPORT.md`** (assigned here by T14 — §5.7 lists it as an endgame criterion but no task owned it) | reviewer | Queued |
 
 Dependency graph: T0→∅ (first); T1→T0; T2→T1; T3→T1; T4→{T2,T3}; T5→T3; T6→T5; T7→T5;
 T8→T5; T9→T5; T10→T5; T11→T5; T12→{T9,T10}; T13→T3; T14→{T6..T13}; T15→{T6..T12};
@@ -139,7 +139,11 @@ packaging.md §1.4 in T0 — T2 authors the manifest from it), file picker
 (D16, `rfd`-configure language deleted from both docs in T0), binary name (D15),
 terminals into cosmic-config (D11, grant removed + `xdg-config/cosmic:rw`, D24),
 `.github` cleanup (T0: `AGENTS.md` header + `release.prompt.md` fix; T14:
-`flatpak.yml` — recorded partial, not closed), `start` sequencing (T9 + D7).
+`flatpak.yml` — **closed**, but not the way this line expected: T4 had already
+rewritten the workflow, so the only defect left was its comment claiming an
+artifact-publish step that does not exist, which T14 corrected. The missing
+upload is a feature gap, filed as I20 rather than treated as cleanup), `start`
+sequencing (T9 + D7).
 PLAN §2's "Corrections applied" sentence becomes true at T0 close (verified by
 grep at sign-off, per D19).
 
@@ -178,6 +182,11 @@ Residual risks and owners:
 | I16 | Container-gated empty states (Containers/Backups/Packages/Dashboard/Updates) branch on `is_clean_empty()` so an all-rows-unreadable list is never told to "create your first container"; the lie is ungated by `show_skipped_lines`, which gates only the caption (T13/B3, D27) | — | ☐ |
 | I17 | `Exec` line continuation is context-dependent: both characters vanish outside quotes, the newline is kept inside them (T13/B4, D27) | — | ☐ |
 | I18 | `distrobox ls` header recognized by field 0 + arity floor, accepting both the 1.5.x six-column and 1.6+ four-column layouts (T13/B3, D27) | — | ☐ |
+| I19 | The RPM spec and `build-rpm.sh` are **reviewed but never executed** — `rpmbuild` is absent and no `verify.sh` stage invokes it, so both are unverified against a real build (T14) | — | ☐ |
+| I20 | CI advertises no artifact: `flatpak.yml` triggers on tags but uploads nothing, and the tag build is the only thing that would produce a shippable bundle. Either add an upload step or stop triggering on tags (T14, packaging.md §2.5) | — | ☐ |
+| I21 | `images/` (13 tracked PNGs) and `core/data/screenshots/` (3 tracked PNGs) are referenced by nothing. Disposition deferred by T14 rather than deleted: they are the only screenshot material that exists for the AppStream `<screenshots>` slot, which is currently unfilled (T14) | — | ☐ |
+| I22 | `core/data/icons/*.svg` (24 distro SVGs) are dead payload: `app/src/icons.rs::distro_icon` returns **theme icon names** (`ubuntu`, `archlinux`), resolved by the host icon theme, and no code reads these files. The Flatpak still installs all 24 into `share/gosh_distrobox_manager/distro-icons/`; the T14 RPM spec deliberately does not, since copying dead files to match would be copying a bug. Consequence to check instead: the Flatpak gets pop-icon-theme from the Cosmic BaseApp, while the RPM relies on the host theme providing those names — unverified on a host without it (T14) | — | ☐ |
+| I23 | **B3's skipped-rows plumbing is un-pinned end to end** — six experimentally-confirmed coverage holes from T13's post-commit adversarial review (`subagents/workflows/wf_1426a25a-4b25*/journal.jsonl`; all 3-vote, 0-refute, severities should-fix×4 / nit×2). Each is a mutation that deletes real behaviour and leaves the suite green: (a) `core/src/service.rs:114` `Backend::containers` → `out.skipped.clear()`, (b) `app/src/app.rs:3409` hardcoding `skipped: 0` or `show_skipped: true`, (c) `app/src/views.rs:392` deleting the Dashboard caption render, (d) `app/src/updates.rs:161` deleting the Updates caption block, (e) `core/src/backends/desktop_file.rs:233` shrinking the double-quote escape set to one char, (f) `:218` giving single quotes backslash escaping. (a)–(d) share one root cause: every app fixture reaches `Backend::containers` via `List(Vec<ContainerInfo>)`, rendered by `build_list_response` as always-well-formed rows, so `skipped` is structurally empty in every test and an `is_empty()` assertion passes for both the real and cleared value. The fix is one fixture that injects an unparseable row across the service boundary; T16 owns it (T13) | — | ☐ |
 
 ## 5. Ordered task list (app stays buildable after every task)
 

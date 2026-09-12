@@ -469,14 +469,27 @@ once, on the host, through the runner.
 
 ### 1.5 Desktop file, metainfo, and icon fixes
 
-There are currently **two** desktop files and they disagree:
+**Outcome (T14).** Both copies named below were resolved to one file, and neither
+surviving path is the one this section predicted. The template (`*.desktop.in`) and
+the Flutter tree's copy were **deleted**; the single source is
+`core/data/io.github.gosh_distrobox_manager.desktop`, a plain non-`.in` file
+installed verbatim by both the Flatpak manifest and the RPM spec. `core/` replaced
+`rust/` as the crate name in T1/S2, which is why the recommendation below says
+`rust/data/` — read it as `core/data/`.
+
+The `.in` templates that existed to feed the meson build are all gone with it:
+`io.github.gosh_distrobox_manager.{desktop,metainfo.xml,service}.in` and
+`gschema.xml`. The generated `.desktop` and `.metainfo.xml` are now the real
+files rather than build products, and `core/data/icons/meson.build` went too.
+
+At this section's writing time there were **two** desktop files and they disagreed:
 
 | File | State |
 |---|---|
-| `rust/data/io.github.gosh_distrobox_manager.desktop.in` | GTK-era template. **Stale.** |
-| `linux/data/share/applications/io.github.gosh_distrobox_manager.desktop` | Flutter-era. Richer, but also needs edits. |
+| `rust/data/io.github.gosh_distrobox_manager.desktop.in` | GTK-era template. **Stale.** Deleted in T14. |
+| `linux/data/share/applications/io.github.gosh_distrobox_manager.desktop` | Flutter-era. Richer, but also needs edits. Deleted in T14. |
 
-**Recommendation:** keep exactly one, as a plain (non-`.in`) file under `rust/data/`,
+**Recommendation (as written):** keep exactly one, as a plain (non-`.in`) file under `rust/data/`,
 installed verbatim by the manifest. Delete the Flutter tree's copy along with the rest
 of `linux/`.
 
@@ -590,6 +603,30 @@ plan (§2.2) targets cosmic-config, not GSettings.
 ## 2. Build / test / CI
 
 ### 2.1 `scripts/verify.sh` — specification
+
+**This sketch was implemented with five changes; the live script is authoritative.**
+Read `scripts/verify.sh` itself rather than transcribing from here. The divergences,
+all of which landed during T4 and were exercised by T14:
+
+- It grew from 7 stages to **10**, and now wraps each command in a `stage N "<label>"`
+  helper that prints a banner, so a failure is attributable without reading the whole
+  log. `--fast` runs stages 1–8 and skips the two slow ones.
+- **`--manifest-path rust/Cargo.toml` → `--workspace`** at the repository root. T1
+  hoisted `Cargo.lock` and a virtual manifest to the root and renamed the crate to
+  `core/`, so `rust/Cargo.toml` has not existed since S2. The sketch's `--locked`
+  intent survives.
+- **`rust/data/` → `core/data/`** in stage 6 (S2's rename), and stage 6 validates the
+  generated `.desktop`/`.metainfo.xml` rather than `.in` templates.
+- **Three stages the sketch did not anticipate**: 5 `check-versions.sh` (D14 — why the
+  sketch's stage numbering in prose below is off by one from the script's), 7 the
+  offline vendoring staleness gate `generate-cargo-sources.py --check` (T2/D26), and 8
+  `tests/test_packaging.py` (T4/D26, stdlib only, no pytest).
+- **Stage 9 uses `--user --install`, not `--repo` alone** (D26d): the sketched
+  `--repo=repo` form never installed anything for stage 10 to smoke-test. Stage 10
+  runs the smoke test twice — a positive run and a negative one asserting the app
+  fails cleanly *without* the `flatpak-spawn` grant.
+
+The original sketch follows, unedited, as the record of what was intended.
 
 Exact commands, in order. Fail-fast (`set -euo pipefail`). Each stage prints a banner so a
 failure is attributable without reading the whole log.
@@ -868,7 +905,24 @@ Design notes and required follow-ups:
 
 ### 2.5 CI
 
-`.github/workflows/flatpak.yml` is **dead as written** (verified): it invokes
+**Outcome (T14).** The rewrite below was carried out — by T4 for the flatpak job, not
+by T14. T14 checked it and found one remaining inaccuracy, which it fixed: the
+workflow's header comment claimed "then artifact publish on tags" but **no step
+uploads an artifact**, so the comment advertised a capability the job does not have.
+It now says so explicitly, and also records that the Flathub git-source switch
+(§4.2) has not happened. T14 deliberately did **not** delete the workflow, which the
+comment in `rust.yml` had been claiming was dead — by then it was working code, and
+this section's own diagnosis is the reason it is easy to mistake for dead.
+
+The three jobs are now: `rust.yml` (fmt + build + clippy + test), and
+`packaging-metadata.yml` + `flatpak.yml` (both drive `./scripts/verify.sh`, `--fast`
+and full respectively, so CI and the local gate cannot drift apart). T14 dropped the
+`cosmic-migration` branch entry from the two `push` triggers, since the migration
+branch is merged; `main` plus the nightly schedule is what remains. One item below is
+still open: **there is no artifact upload**, so "publish artifacts on tags only" is
+unimplemented.
+
+The original diagnosis follows, unedited. `.github/workflows/flatpak.yml` is **dead as written** (verified): it invokes
 `flatpak-builder … io.github.gosh_distrobox_manager.json` — a manifest that does not exist
 at the repository root or anywhere else — and then runs `ninja test` and `meson dist`
 inside the build sandbox against `.flatpak-builder/build/gosh_distrobox_manager/_flatpak_build`,
@@ -1073,6 +1127,44 @@ here** (§5).
 ## 4. Version unification and release checklist
 
 ### 4.1 The drift, enumerated
+
+**Outcome (T14).** Every row below was resolved, and E14 is satisfied: all nine
+sources agree at 1.0.2, verified by `./scripts/check-versions.sh` (which greps all of
+them and is stage 5 of `verify.sh`, so this cannot silently regress). Note the
+scoping that mattered — E14's requirement was to cover `RPM-BUILD.md` and
+`build-rpm.sh` as well as the manifests, and the checker does.
+
+What the rewrite did, item by item, against the table and the bullet list below:
+
+- **Versions** — `spec` `Version:` and `%changelog` already read 1.0.2/1.0.2-1 and
+  `RPM-BUILD.md` already referenced 1.0.2 before T14; nothing needed changing. The
+  `rust/data/…metainfo.xml.in` row is moot: that template was deleted and the
+  installed `core/data/…metainfo.xml` carries the `<releases>` entry.
+- **The 18 MB tarball** — deleted, and `.gitignore` now carries a
+  `gosh-distrobox-manager-*.tar.gz` guard so `git add -A` cannot put it (or its
+  successor) back. That guard is the part of this row that is easy to skip and the
+  part that actually prevents recurrence.
+- **`Summary:`** — now "Graphical interface for managing Distrobox containers",
+  matching the metainfo `<summary>` verbatim.
+- **`BuildRequires: gtk3-devel` / `Requires: gtk3`** — removed. Build deps are now
+  `cargo`, `rust`, `desktop-file-utils`, `libappstream-glib`; `Requires: distrobox`
+  stays. No `-devel` packages are needed because the Flatpak path builds the C
+  dependencies with `flatpak-builder`, and the RPM path links GTK 3 through
+  `libcosmic` as a soname rather than by explicit `Requires:`.
+- **`%install` / `%files`** — rewritten: `cargo build --workspace --release --locked`
+  and individual install lines from `core/data/`. The `%{getenv:PWD}` hardcode and
+  the `%{_libdir}/%{name}/` bundle directory are gone.
+- **`%post`/`%postun`/`%posttrans`** — all removed. Beyond the GTK-specific
+  `gtk-update-icon-cache` this section flagged, the remaining
+  `update-desktop-database` and hicolor `touch` calls are obsolete on Fedora: glib2
+  ships `%transfiletriggerin` file triggers that maintain both per transaction.
+- **Maintained or retired** — maintained. The spec is a live second packaging path.
+
+Unverified, and it should be said plainly: `rpmbuild` is not installed on the
+development host and no `verify.sh` stage invokes it, so this rewrite is reviewed but
+**not executed**. Building the RPM is the first real test of it.
+
+The table as originally written follows.
 
 | Artifact | Version today | Correct behaviour |
 |---|---|---|

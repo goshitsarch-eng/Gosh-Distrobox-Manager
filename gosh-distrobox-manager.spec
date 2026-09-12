@@ -51,22 +51,20 @@ desktop-file-validate \
 appstreamcli validate --no-net \
     %{buildroot}%{_metainfodir}/io.github.gosh_distrobox_manager.metainfo.xml
 
+# No %post/%postun scriptlets, deliberately. The old spec ran
+# `gtk-update-icon-cache` on hicolor and `update-desktop-database` here; on
+# Fedora both are obsolete for packages installing into these directories —
+# glib2 ships %transfiletriggerin file triggers for /usr/share/applications and
+# the icon themes that do this once per transaction. Worse, the old %postun
+# gated its touch on `$1 -eq 0` but ran update-desktop-database on every
+# uninstall, including upgrades. Nothing here needs a scriptlet.
+
 %files
 %{_bindir}/gosh_distrobox_manager
 %{_datadir}/applications/io.github.gosh_distrobox_manager.desktop
 %{_metainfodir}/io.github.gosh_distrobox_manager.metainfo.xml
 %{_datadir}/icons/hicolor/scalable/apps/io.github.gosh_distrobox_manager.svg
 %{_datadir}/icons/hicolor/symbolic/apps/io.github.gosh_distrobox_manager-symbolic.svg
-
-%post
-/bin/touch --no-create %{_datadir}/icons/hicolor &>/dev/null || :
-/usr/bin/update-desktop-database &> /dev/null || :
-
-%postun
-if [ $1 -eq 0 ] ; then
-    /bin/touch --no-create %{_datadir}/icons/hicolor &>/dev/null
-fi
-/usr/bin/update-desktop-database &> /dev/null || :
 
 %changelog
 * Fri Sep 11 2026 Gosh Distrobox Manager Team <dev@example.com> - 1.0.2-1

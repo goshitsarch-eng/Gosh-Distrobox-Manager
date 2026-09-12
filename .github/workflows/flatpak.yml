@@ -1,17 +1,23 @@
 name: Flatpak
 
 # CI job 3 (packaging.md §2.5.1): full verify.sh (stages 1-10: the Rust gates
-# re-run plus the offline flatpak-builder build + install + smoke test), then
-# artifact publish on tags. Tags + workflow_dispatch ONLY — the full COSMIC
-# build takes tens of minutes cold (§5.1) and does not belong on the per-push
-# path. Per-push coverage is jobs 1-2 (rust.yml, packaging-metadata.yml).
-# Redundant with them by design: a release artifact whose own tree fails fmt
-# is not shippable, so the tag build certifies the whole gate independently.
+# re-run plus the offline flatpak-builder build + install + smoke test).
+# Tags + workflow_dispatch ONLY — the full COSMIC build takes tens of minutes
+# cold (§5.1) and does not belong on the per-push path. Per-push coverage is
+# jobs 1-2 (rust.yml, packaging-metadata.yml). Redundant with them by design:
+# a release artifact whose own tree fails fmt is not shippable, so the tag
+# build certifies the whole gate independently.
 #
-# T4 wiring; T14 owns the release-shape rewrite (artifact names, release
-# notes, the Flathub git-source switch per §4.2). What T4 guarantees: the job
-# runs verify.sh stages 9-10 (NOT a re-spelled inline build) with the
-# runtimes pre-installed, under xvfb for the smoke test.
+# T4 wired this job; T14 checked it and deliberately left it as-is. Two things
+# T14 did NOT do, so this file must not be read as claiming them:
+#   * no artifact upload and no release notes — there is no `actions/upload-*`
+#     step here. Publishing a `.flatpak` bundle is still unwired, and this
+#     comment used to say "then artifact publish on tags" as though it were.
+#   * the Flathub git-source switch (packaging.md §4.2) has not happened; the
+#     manifest still consumes the vendored `flatpak/cargo-sources.json`.
+# What it does guarantee: the job runs the whole gate via `./scripts/verify.sh`
+# (NOT a re-spelled inline build) under xvfb, so CI and the local gate cannot
+# drift apart.
 
 on:
   push:

@@ -21,9 +21,11 @@ Steps to reproduce the behavior:
 If applicable, add screenshots to help explain your problem.
 
 **Desktop (please complete the following information):**
- - OS: [e.g. Ubuntu 25.04]
- - Installation method: Flatpak
- - App version: 1.0.6
+ - OS: [e.g. Fedora 44]
+ - Installation method: [Flatpak / RPM / built from source]
+ - App version: 1.0.2
+ - Distrobox version: [output of `distrobox version`]
+ - Container runtime: [Podman / Docker, and its version]
 
 **Additional context**
 Add any other context about the problem here.

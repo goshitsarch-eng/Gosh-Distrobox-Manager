@@ -1,91 +1,92 @@
-> **MIGRATION IN PROGRESS — READ THIS FIRST (branch `cosmic-migration`).**
->
-> Everything below this box describes the **Flutter** application, which is being
-> deleted. The project is migrating to a **libcosmic/Rust** UI on this branch:
-> `flutter_rust_bridge` is removed, `lib/`, `test/`, `pubspec.yaml` and the
-> platform trees go with it (task S8/T14), and the Rust backend is split into
-> `core/` + `app/` (T1). **Treat the Flutter instructions here as historical** —
-> they will actively mislead you if you follow them.
->
-> Authoritative for the migration: `docs/migration/PLAN.md` (task list and status),
-> `DECISIONS.md` (D1–D23, the settled choices), `architecture.md`, `ux.md`,
-> `packaging.md`, and `REVIEW.md`. Where this file and those disagree, they win.
->
-> Still true and still binding:
-> - **Never call `std::process::Command` directly in backend logic.** All command
->   execution goes through the `CommandRunner`/`Command` abstraction so the app works
->   under Flatpak (`flatpak-spawn --host`) and inside a Distrobox container. This rule
->   survives the migration unchanged and is enforced by a `clippy.toml`
->   `disallowed-methods` entry (T1).
-> - Container/runtime logic lives in the Rust backend, never in UI code.
->
-> The rest of this file is rewritten in T14. Do not add to it before then.
+# Gosh Distrobox Manager — agent instructions
 
-# Gosh Distrobox Manager Copilot Instructions
+A native Linux GUI for [Distrobox](https://distrobox.it/), written in Rust with
+`libcosmic`. This file is the orientation a change is expected to start from.
 
-> The section below is the pre-migration documentation, retained until T14 rewrites
-> it. See the box above before acting on any of it.
+## The two rules that are not negotiable
 
-## Project Overview
-Gosh Distrobox Manager is a **Flutter** application for managing [Distrobox](https://distrobox.it/) containers. It uses **Rust** for the backend logic, connected via [flutter_rust_bridge](https://github.com/fzyzcjy/flutter_rust_bridge).
+1. **Never call `std::process::Command` directly in backend logic.** All command
+   execution goes through the `CommandRunner`/`Command` abstraction so the app
+   works under Flatpak (`flatpak-spawn --host`) and inside a Distrobox
+   container. `clippy.toml` enforces this with a `disallowed-methods` entry, and
+   the only sanctioned indirection point is `core/src/fakers/command.rs`. If you
+   need to run something, extend the runner — do not reach around it.
+2. **Container and runtime logic lives in the backend crate, never in UI code.**
+   `app/` renders and dispatches messages; `core/` decides. A UI module that
+   parses `distrobox` output or builds a command line is a bug, even if it works.
 
-**Note**: This project was previously a GTK4/Rust application. Legacy GTK resources may still exist in `rust/data/` or `data/`, but the active UI is pure Flutter in `lib/`.
+Also binding: backend calls that can block run inside `Task`/`Subscription`
+futures, never synchronously on the UI thread.
 
-## Architecture
+## Layout
 
-### Stack
-- **Frontend**: Flutter (Dart) using `Provider` for state management.
-- **Backend**: Rust (in `rust/` directory).
-- **Bridge**: `flutter_rust_bridge` (FRB) v2.
-
-### Directory Structure
-- `lib/`: Flutter UI and application logic.
-  - `lib/src/rust/`: **Generated** Dart code for the Rust bridge. Do not edit manually.
-  - `lib/providers/`: State management (calls Rust APIs).
-  - `lib/screens/`: UI Screens.
-- `rust/`: The Rust backend crate.
-  - `rust/src/api.rs`: The main API surface exposed to Flutter.
-  - `rust/src/frb_generated.rs`: **Generated** Rust bridge code.
-  - `rust/src/backends/`: Core logic for interacting with container runtimes (Podman, Docker, Flatpak).
-
-## Development Workflow
-
-### 1. Running the App
-Standard Flutter workflow:
-```bash
-flutter run
 ```
-This automatically compiles the Rust crate and links it.
+core/                        backend library (crate `gosh-distrobox-core`)
+  src/backends/              Distrobox, Podman, Docker, Flatpak integration
+  src/backends/desktop_file.rs   desktop-entry parsing: Exec tokenizer + field codes
+  src/fakers/                CommandRunner trait and its test doubles
+  src/models/                DTOs, known distros
+  src/service.rs             the façade the UI talks to
+  data/                      .desktop, AppStream metainfo and icons — the single source
+app/                         libcosmic binary (crate `gosh_distrobox_manager`)
+  src/app.rs                 the Application impl: state, update(), view()
+  src/<page>.rs              one module per page
+  tests/                     integration tests driving the real binary
+scripts/verify.sh            the gate; CI runs this, not a re-spelling of it
+flatpak/                     manifest + vendored crate sources
+docs/migration/              PLAN.md, DECISIONS.md, architecture.md, ux.md, REVIEW.md
+```
 
-### 2. Modifying Rust API
-If you change `rust/src/api.rs` or other exposed Rust types:
-1.  Make your changes in Rust.
-2.  Run the codegen (requires `flutter_rust_bridge_codegen` installed):
-    ```bash
-    flutter_rust_bridge_codegen generate
-    ```
-    *Note: Check project docs if a specific script or `justfile` exists for this, but this is the standard command.*
-3.  Use the updated API in Dart.
+There is no Flutter, Dart or `flutter_rust_bridge` code left. If you find a
+reference to `lib/`, `pubspec.yaml`, `frb_generated.rs` or `flutter_rust_bridge`
+in anything other than a historical `docs/migration/` note, it is stale.
 
-### 3. State Management
-- **Dart**: `AppStateProvider` (`lib/providers/app_state.dart`) holds the source of truth for the UI.
-- **Pattern**: The provider calls async Rust functions (e.g., `api.getContainers()`) and updates local state (`_containers`, `_isLoading`), notifying listeners.
+## Working here
 
-## Key Concepts
+Run the gate before claiming a change is done:
 
-### Command Execution (`CommandRunner`)
-Gosh Distrobox Manager must run in both **Native** and **Flatpak** environments.
-- **Abstraction**: `rust/src/fakers/command_runner.rs` defines a `CommandRunner` trait.
-- **Native**: Executes commands directly.
-- **Flatpak**: Detects Flatpak environment and wraps commands with `flatpak-spawn --host` automatically.
-- **Logic**: See `rust/src/backends/flatpak.rs`.
+```bash
+./scripts/verify.sh          # full
+./scripts/verify.sh --fast   # skips the two slowest stages
+```
 
-**Rule**: NEVER use `std::process::Command` directly in backend logic. Always use the `CommandRunner` or provided helpers to ensure Flatpak compatibility.
+CI (`.github/workflows/`) runs the same script, so a local pass and a green
+build mean the same thing. `cargo fmt --all`, `cargo clippy --workspace
+--all-targets -- -D warnings` and `cargo test --workspace` are stages inside it.
 
-### Distrobox Integration
-- Logic is encapsulated in `rust/src/backends/distrobox/`.
-- Desktop file parsing uses a shell script: `rust/src/backends/distrobox/POSIX_FIND_AND_CONCAT_DESKTOP_FILES.sh`.
+Two conventions worth knowing before you edit:
+
+- **`core/data/` is the single source for desktop integration.** The RPM spec
+  and the Flatpak manifest both install from it. Do not reintroduce a second
+  copy.
+- **Version numbers are checked, not trusted.** `scripts/check-versions.sh`
+  greps `core/Cargo.toml`, `app/Cargo.toml`, `Cargo.lock`,
+  `gosh-distrobox-manager.spec`, `build-rpm.sh`, `RPM-BUILD.md` and the
+  metainfo `<releases>` entry and fails on disagreement. `core/Cargo.toml` is
+  the source of truth (D14). Run the script rather than eyeballing it.
+
+## Documentation
+
+`docs/migration/` is the migration's record and is authoritative where it
+disagrees with anything else:
+
+- `PLAN.md` — task list, status table, and the phase sequencing.
+- `DECISIONS.md` — the settled choices (D1–D27). Read the relevant entry before
+  re-litigating a design decision.
+- `architecture.md` — module layout and the S1–S8 strip steps.
+- `ux.md` — the Flutter-parity record. Rows 1–193 are **frozen** and cite the
+  Flutter source they were measured against; those citations are provenance and
+  must be preserved even though the cited files are gone (D19).
+- `REVIEW.md` — the objections raised against the migration and their outcome.
 
 ## Gotchas
-- **Generated Files**: `lib/src/rust/` and `rust/src/frb_generated.rs` are auto-generated. **Do not edit them.**
-- **Legacy Files**: Ignore `meson.build` or `.ui` files in `rust/data/` or `data/` unless you are specifically working on packaging/migration tasks. The UI is built in Dart.
+
+- **`target/` is large** (tens of GB on a working tree). Builds are not cheap;
+  prefer `cargo check` while iterating.
+- **`PARITY_CORPUS`** gates the differential test against GLib's `Exec`
+  tokenizer. Without it set, that test reports skipped rather than passed — a
+  skip is not evidence, so set it when touching `desktop_file.rs`.
+- **The `.desktop` `Exec` key does not use the same unescaping as every other
+  key.** `Name`/`Icon` run through `unescape_value`; `Exec` does not, because it
+  has its own quoting rules layered on top. See DECISIONS.md D27 before
+  touching the tokenizer.
