@@ -756,3 +756,29 @@ dispositioned as T3/T4 obligations or doc follow-ups, not T2 blocks.
   logging to code scheduled for deletion buys nothing and would have to be re-verified
   against a new surface anyway. Recorded here rather than fixed, so the decision is visible
   instead of looking like an oversight.
+
+## D28 — I26 destination ruling: Apps demoted to pushed route, Stats stays (lead, with T17–T21 plan)
+
+- **Question:** The app ships 10 nav destinations; ux.md §4.2 authorises 8
+  (PLAN.md I26). `Apps` was a pushed route from the details page in Flutter
+  (`apps_page.dart`); `Stats` has no Flutter counterpart at all, though it
+  renders real measured values and ux.md:262 offered "a nav destination or
+  (better) a section on Settings". Keep 10, cut to 8, or split?
+- **Why lead rules:** the hardening planners did not converge — the UI plan
+  explicitly deferred I26 ("must not pre-decide it") and no other plan ruled
+  on the destination set — while T19's nav-icon table needs a fixed set to
+  pin. Standing priority applies: parity first.
+- **Choice:** split. `Apps` returns to a pushed route from container details,
+  as in Flutter; `Stats` stays top-level as the single deliberate addition.
+  Rail goes 10 → 9.
+- **Why:** parity plus consistency. `Apps` is contextual to one container, and
+  the other two pushed routes (`Details`, `Terminal` — ux.md:74) did not get
+  destinations, so a top-level `Apps` is both unfaithful and inconsistent.
+  `Stats` is not the warned-off placeholder: it renders real measured values
+  (`stats.cpu_percent` at the call site), and ux.md:262's destination option
+  authorises it. Keep-10 preserves the inconsistency; cut-to-8 destroys real,
+  measured functionality to satisfy a count.
+- **Consequences:** `Page::ALL` 10 → 9 in T19; the `parity_rows.rs` I26 pins
+  are updated (8 ux.md destinations + Stats, plus an Apps-absent-from-rail
+  test so the demotion cannot silently revert); #5's icon table covers the 9;
+  T21 notes the ruling in the REPORT.md appendix.

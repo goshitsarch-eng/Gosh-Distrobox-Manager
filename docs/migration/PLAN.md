@@ -208,3 +208,159 @@ in the backend group before banner copy freezes (UX-5), B2 line-buffering inside
 Verification tiers (D19): **T1** unit (`cargo test`), **T2** integration
 (`NullCommandRunner` + messages), **T3** running-Flatpak observation. T1+T2 gate every
 task; T3 gates page tasks (T6–T12) and the release.
+
+---
+
+## 6. Hardening tasks T17–T21 (ordered; T0–T16 above are frozen record)
+
+T16 closed with findings, not clean: five `bug` rows (I29), seven `missing`
+rows (I30), the I31 verification ceiling (structural half since fixed — lib +
+thin bin, `app/tests/parity_rows.rs` — render-harness half open), the I26
+destination question (ruled by D28, recorded with this plan), and the I20 CI
+gap. T17–T21 close those findings in dependency order. Sources: the three
+hardening plans (arch, ux, pkg/QA) plus the devil's-advocate review; review
+objections O1–O3 are dispositioned in T21 and the I26 disagreement in D28.
+Nothing above this section changes: the status table and §5.7 stay as T16 left
+them.
+
+| # | Task | Owner | State |
+|---|---|---|---|
+| T17 | EnvGuard re-probe (#13) + Images refresh routing (#97) | arch | ☐ open |
+| T18 | Task-card spinner (#20) + gated header actions (#134) + status/distro colours (#186/#185) | ux | ☐ open |
+| T19 | Nav icons (#5) + card terminal (#40) + card menu (#41) + shortcuts (#189) + a11y labels (#190), on the D28 destination set | ux | ☐ open |
+| T20 | Task-history persistence (#161) + I31 render-harness half | arch | ☐ open |
+| T21 | CI release artifact (I20) + full gate + REPORT.md appendix | pkg | ☐ open |
+
+Dependency graph: T17→T16; T18→T17 (refresh/message arms settle before the
+header gate is built on them); T19→{T18, D28} (colours land before the a11y
+label pass touches the same controls; #5's icon table needs the ruled
+destination set); T20→T19 (the harness asserts finished widgets); T21→{T17,
+T18, T19, T20} (certifies everything, re-tiers the appendix). T1+T2 gate every
+task; T3 gates the render claims in T18/T19 and the release in T21. The app
+stays buildable after every task.
+
+### T17 — EnvGuard re-probe + Images refresh (owner: arch)
+
+Scope: **#13** — add `Backend::reprobe()` (or `set_env`) in core that re-runs
+`env::detect` on a fresh base runner, swaps the env-mapped runner,
+`Distrobox`, and `TerminalRepository` under interior mutability, and returns
+the new guard; keep the blocking `check_installed` helper-thread shape
+(`env.rs:122-140`) so it stays callable without an ambient runtime.
+`RefreshRequested` (or a new `EnvMsg::ReprobeRequested`) dispatches one Task
+producing `EnvMsg::Probed(guard)`; the now-live `Probed` arm (`app.rs:1378`,
+today an explicit no-op) updates gate state. Fixes live in core + the
+message/state model; `app/` only renders and dispatches (AGENTS.md rules 1–2,
+§0.2 runtime rule: core spawns only from Task/Subscription futures).
+**#97** — route Images-page Refresh to `backend.images()`, mirroring the Apps
+special-case (`app.rs:1537-1540`): today Refresh is the global containers
+refresh (`refresh_containers` only), so images are never re-fetched after the
+single lazy load (`app.rs:234`).
+Verification tiers: **T2** — NullCommandRunner: Backend with
+`distrobox_installed=false`, flip fixture to success, `reprobe()` →
+`is_distrobox_installed()==true` and subsequent `containers()` succeeds;
+images list changes reflected after Refresh. **T1** — `Probed` arm gate-state
+transition; refresh-routing unit tests.
+DoD: "Check Again" recovers a mid-session distrobox install without a
+restart; Images Refresh re-fetches; `cargo build`, `clippy --all-targets -D
+warnings`, `cargo test`, `verify.sh` green; I29 #13/#97 rows re-tiered with
+evidence; reviewer sign-off; committed.
+
+### T18 — Spinner + gated header + colours (owner: ux)
+
+Scope: **#20** — lead ruling: **add** the spinner (the row's claim is the
+parity source; dropping it would need a re-scope plus a §5.7 note, which is
+the documented fallback only if the widget proves unimplementable at the
+pinned rev). Render `widget::progress_bar::indeterminate_circular()` plus an
+"In progress…/Completed" caption beside Cancel, following the existing
+pattern in `app/src/updates.rs:60-68`; rename `RunningCancelOnly` (e.g. to
+`Running`) — the variant name deliberately forces a `parity_rows.rs` edit for
+either choice. **#134** — gate `header_end` actions on env state: in the
+blocked and not-installed states the shell gate replaces the page while
+Backups still renders "New Snapshot" (`app-new-snapshot`), which can only
+toast; hide or disable page actions that cannot act, and correct the
+`app.rs:1575` comment claiming the bug "disappears with the move".
+**#186/#185** — wire `status_color` (`icons.rs:96`, today `#[allow(dead_code)]`
+and callerless) into real widgets, write the missing `distro_colour`, and
+consolidate the ×3 distro-colour / ×4 status-colour duplication per ux.md
+§3.6; theme roles only (D10, D18).
+Verification tiers: **T1** — `parity_rows.rs` affordance table updated for the
+renamed running variant; header-gating pure-helper tests; colour-mapping
+unit tests. **T2** — message-level dispatch for the gated actions.
+**T3** — running-Flatpak observation of spinner, gated header, and rendered
+colours (rendered output is unassertable until T20's harness lands).
+DoD: running tasks show spinner + status copy; no dead header action in gated
+states; colours reach widgets with zero `Colors.*`-style literals; gates
+green; I29 #20/#134/#186 and I30 #185 rows re-tiered; reviewer sign-off;
+committed.
+
+### T19 — Nav/icons/cards/shortcuts/a11y on the D28 set (owner: ux)
+
+Scope: destination set is D28 (9: the 8 ux.md destinations plus Stats; Apps
+demoted to a details-pushed route) — #5's icon table covers exactly that set.
+**#5** — add `Page::icon() -> &'static str` returning freedesktop symbolic
+names (verify each exists in pop-icon-theme/BaseApp, fall back to generic)
+and chain `.icon(...)` in `nav_model.insert()` (`app.rs:421`); keep text
+labels. **#40** — running-only inline "Open Terminal" on the container card,
+mirroring the details-page control and its running gate. **#41** — card ⋮
+trigger plus sheet via `context_drawer` (already used for the activity
+full-output drawer, `app.rs:1605`) or `popover`; single-window per D9; lifts
+the `app.rs:3545-3548` deferral. **#189** — keyboard shortcuts (Ctrl+R per the
+row's approach column) via `keyboard_nav::subscription()` +
+`set_keyboard_nav` at the pinned rev. **#190** — ux.md §5.3 priority-1 labels
+on icon-only controls, then run the Orca acceptance gate (R13's open owner).
+Verification tiers: **T1** — icon table (non-empty, distinct, theme-name
+format; order test already guards the index space) plus gating/routing helper
+tests. **T2** — dispatch tests for card terminal/menu and shortcut messages.
+**T3** — Orca pass and shortcut observation in the running Flatpak.
+DoD: 9-destination rail with icons and no reorder/regress (I26 pins updated:
+8 + Stats, Apps-absent-from-rail test added); card terminal + menu live;
+shortcuts work; §5.3 priority-1 complete with an Orca result recorded (pass
+or filed finding, not silence); gates green; I30 #5/#40/#41/#189/#190 rows
+re-tiered; reviewer sign-off; committed.
+
+### T20 — Task-history persistence + render harness (owner: arch)
+
+Scope: **#161** — persist task history (ux.md:266 classes it P1; Activity
+shows the live session only): a bounded completed-task ring, persisted via
+cosmic-config alongside existing prefs (D11) unless the owner measures cause
+for an xdg-data file; Activity renders persisted + live; eviction and schema
+versioning covered. **I31 render-harness half** — a headless harness that
+constructs `App` (needs a `cosmic::app::Core` and a running executor) so
+*rendered* output becomes assertable rather than only the decisions behind
+it; migrate a seed set of rows onto it. Deliberately not claimed: raising all
+148 `source`-tier rows — each migrated row is re-evidenced individually and
+no tier count moves without its test.
+Verification tiers: **T2** — persistence round-trip (write → re-read →
+Activity shows) with NullCommandRunner-backed tasks. **T1** — ring bound,
+eviction, and schema-migration unit tests; harness seed-row assertions.
+DoD: history survives restart within the documented bound; harness constructs
+`App` headless and asserts rendered output for the seed rows; gates green;
+I30 #161 and I31 rows updated with per-row evidence; reviewer sign-off;
+committed.
+
+### T21 — CI release artifact + full gate + appendix (owner: pkg)
+
+Scope: **I20, arm (a) only.** `actions/upload-artifact` alone does not
+satisfy packaging.md:964/:1227 — run storage is not release assets (review
+O1): attach the bundle to the GitHub Release on tags (job `permissions` to
+`contents: write`), and retain/export an OSTree repo so `flatpak
+build-bundle` has something to bundle from (`verify.sh` builds `--user
+--install` with no `--repo` today). Arm (b) (drop the tags trigger) is
+rejected (review O2): job 3 is specified "tags + workflow_dispatch only" and
+D19 requires T3 to gate the release, so deleting the trigger removes the only
+shippable-artifact certifier. **verify.sh health** — single-source the stage
+count (today `flatpak.yml:3,71` and `rust.yml:23` still say "1-10" and
+packaging.md:611-627 describes 10 while `verify.sh` has 11); `rust.yml` must
+call `verify.sh` instead of re-spelling fmt/build/clippy/test (AGENTS.md:53);
+preflight the stage-6 validators (`desktop-file-validate`, `appstreamcli`)
+and the BaseApp. **REPORT.md appendix** — re-tier every row T17–T20 touched
+and update the counts and tier distribution. Full `verify.sh` stays the
+certifier throughout.
+Verification tiers: **T1** — CI-YAML assertions in `tests/test_packaging.py`
+(stage 8): upload step present, tags trigger present, permissions correct,
+stage-count guard; no ad-hoc grep as evidence (review O3). **T3** —
+`workflow_dispatch` dry run plus a fork tag showing the bundle attached to
+the release.
+DoD: tag build publishes a shippable bundle to the release; `verify.sh` 11/11
+green from a clean checkout; zero stale stage-count references; REPORT.md
+appendix current with residual risks named; reviewer sign-off; committed.
