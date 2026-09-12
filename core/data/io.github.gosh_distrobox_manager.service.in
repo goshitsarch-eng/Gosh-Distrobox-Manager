@@ -1,3 +1,0 @@
-[D-BUS Service]
-Name=io.github.gosh_distrobox_manager
-Exec=@bindir@/gosh_distrobox_manager --gapplication-service

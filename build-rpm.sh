@@ -1,5 +1,12 @@
 #!/bin/bash
 # Script to build RPM for Gosh Distrobox Manager
+#
+# T14 rewrote this: the old script copied a pre-built Flutter bundle out of
+# build/linux/x64/release/bundle/ and wrote a launcher shim to exec it. The app
+# is a single Rust binary now, so the script builds it and installs it directly.
+# `VERSION` stays a literal on purpose — scripts/check-versions.sh greps this
+# exact line, and deriving it from core/Cargo.toml would mean editing that
+# checker in the same commit as the riskiest packaging change.
 
 set -e
 
@@ -8,37 +15,40 @@ RELEASE="1"
 NAME="gosh-distrobox-manager"
 ARCH="x86_64"
 
+# The Fedora release suffix, taken from rpm itself rather than hardcoded. The
+# previous literal was .fc43, which mislabelled the artifact on any other
+# release (this host is fc44) — the exact failure mode REVIEW E14 predicts.
+DIST="$(rpm --eval '%{?dist}' 2>/dev/null || true)"
+[ -n "$DIST" ] || DIST=""
+if [ "$DIST" = "%{?dist}" ]; then DIST=""; fi
+
 echo "Building Gosh Distrobox Manager RPM..."
 
+# Build the Rust binary first. `--locked` so the build fails loudly if Cargo.lock
+# and the manifests disagree, rather than silently resolving something new.
+echo "Building workspace (release, locked)..."
+cargo build --workspace --release --locked
+
 # Create build root structure
-BUILDROOT="$HOME/rpmbuild/BUILDROOT/${NAME}-${VERSION}-${RELEASE}.fc43.${ARCH}"
+BUILDROOT="$HOME/rpmbuild/BUILDROOT/${NAME}-${VERSION}-${RELEASE}${DIST}.${ARCH}"
 rm -rf "$BUILDROOT"
 mkdir -p "$BUILDROOT"
 
-# Install the application bundle
-echo "Installing application files..."
-mkdir -p "$BUILDROOT/usr/lib64/$NAME"
-cp -r build/linux/x64/release/bundle/* "$BUILDROOT/usr/lib64/$NAME/"
+# Install the binary
+echo "Installing application..."
+install -Dpm0755 target/release/gosh_distrobox_manager "$BUILDROOT/usr/bin/gosh_distrobox_manager"
 
-# Install the launcher script
-echo "Creating launcher script..."
-mkdir -p "$BUILDROOT/usr/bin"
-cat > "$BUILDROOT/usr/bin/gosh_distrobox_manager" << 'EOF'
-#!/bin/bash
-exec /usr/lib64/gosh-distrobox-manager/gosh_distrobox_manager "$@"
-EOF
-chmod +x "$BUILDROOT/usr/bin/gosh_distrobox_manager"
-
-# Install desktop file
-echo "Installing desktop file..."
-mkdir -p "$BUILDROOT/usr/share/applications"
-cp linux/data/share/applications/io.github.gosh_distrobox_manager.desktop \
-    "$BUILDROOT/usr/share/applications/"
-
-# Install icons
-echo "Installing icons..."
-mkdir -p "$BUILDROOT/usr/share/icons/hicolor"
-cp -r linux/data/share/icons/hicolor/* "$BUILDROOT/usr/share/icons/hicolor/"
+# Install desktop file, metainfo and icons from core/data (the single source;
+# the Flutter-era linux/data copy is deleted with the rest of that tree).
+echo "Installing desktop integration..."
+install -Dpm0644 core/data/io.github.gosh_distrobox_manager.desktop \
+    "$BUILDROOT/usr/share/applications/io.github.gosh_distrobox_manager.desktop"
+install -Dpm0644 core/data/io.github.gosh_distrobox_manager.metainfo.xml \
+    "$BUILDROOT/usr/share/metainfo/io.github.gosh_distrobox_manager.metainfo.xml"
+install -Dpm0644 core/data/icons/hicolor/scalable/apps/io.github.gosh_distrobox_manager.svg \
+    "$BUILDROOT/usr/share/icons/hicolor/scalable/apps/io.github.gosh_distrobox_manager.svg"
+install -Dpm0644 core/data/icons/hicolor/symbolic/apps/io.github.gosh_distrobox_manager-symbolic.svg \
+    "$BUILDROOT/usr/share/icons/hicolor/symbolic/apps/io.github.gosh_distrobox_manager-symbolic.svg"
 
 # Validate desktop file
 echo "Validating desktop file..."

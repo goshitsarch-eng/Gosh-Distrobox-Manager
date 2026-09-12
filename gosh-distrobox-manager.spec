@@ -1,64 +1,62 @@
 Name:           gosh-distrobox-manager
 Version:        1.0.2
 Release:        1%{?dist}
-Summary:        A Flutter application for managing Distrobox containers
+Summary:        Graphical interface for managing Distrobox containers
 
 License:        GPL-3.0-or-later
 URL:            https://github.com/goshitsarch-eng/Gosh-Distrobox-Manager
 Source0:        %{name}-%{version}.tar.gz
 
-BuildRequires:  gtk3-devel
+# The app is Rust: core/ is the backend crate, app/ the libcosmic binary.
+# No GTK and no Flutter toolchain is involved any more (T14 removed the old
+# Flutter bundle, which this spec used to install pre-built).
+BuildRequires:  cargo
+BuildRequires:  rust
 BuildRequires:  desktop-file-utils
-Requires:       gtk3
+BuildRequires:  libappstream-glib
 Requires:       distrobox
 
 %description
-Gosh Distrobox Manager is a modern, cross-platform GUI for managing Distrobox 
-containers. You can create, clone, start, stop, and remove containers without 
-touching the terminal. The app includes a built-in terminal emulator so you 
-can drop into any container with a single click.
+Gosh Distrobox Manager is a graphical interface for managing Distrobox
+containers. You can create, clone, start, stop, and remove containers without
+touching the terminal, browse and export applications from a container to the
+host, manage packages with whatever package manager the container has, and keep
+backups through snapshots.
 
 %prep
-# No prep needed - using pre-built Flutter bundle
+%autosetup -n %{name}-%{version}
 
 %build
-# Build is done separately with Flutter
+cargo build --workspace --release --locked
 
 %install
-rm -rf %{buildroot}
+install -Dpm0755 target/release/gosh_distrobox_manager \
+    %{buildroot}%{_bindir}/gosh_distrobox_manager
 
-# Get the source directory (where the spec file is located)
-SRCDIR="%{getenv:PWD}"
+install -Dpm0644 core/data/io.github.gosh_distrobox_manager.desktop \
+    %{buildroot}%{_datadir}/applications/io.github.gosh_distrobox_manager.desktop
 
-# Install the application bundle
-mkdir -p %{buildroot}%{_libdir}/%{name}
-cp -r ${SRCDIR}/build/linux/x64/release/bundle/* %{buildroot}%{_libdir}/%{name}/
+install -Dpm0644 core/data/io.github.gosh_distrobox_manager.metainfo.xml \
+    %{buildroot}%{_metainfodir}/io.github.gosh_distrobox_manager.metainfo.xml
 
-# Install the launcher script
-mkdir -p %{buildroot}%{_bindir}
-cat > %{buildroot}%{_bindir}/gosh_distrobox_manager << 'EOF'
-#!/bin/bash
-exec %{_libdir}/%{name}/gosh_distrobox_manager "$@"
-EOF
-chmod +x %{buildroot}%{_bindir}/gosh_distrobox_manager
+install -Dpm0644 core/data/icons/hicolor/scalable/apps/io.github.gosh_distrobox_manager.svg \
+    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.github.gosh_distrobox_manager.svg
 
-# Install desktop file
-mkdir -p %{buildroot}%{_datadir}/applications
-install -m 644 ${SRCDIR}/linux/data/share/applications/io.github.gosh_distrobox_manager.desktop \
-    %{buildroot}%{_datadir}/applications/
-
-# Install icons
-mkdir -p %{buildroot}%{_datadir}/icons/hicolor
-cp -r ${SRCDIR}/linux/data/share/icons/hicolor/* %{buildroot}%{_datadir}/icons/hicolor/
+install -Dpm0644 core/data/icons/hicolor/symbolic/apps/io.github.gosh_distrobox_manager-symbolic.svg \
+    %{buildroot}%{_datadir}/icons/hicolor/symbolic/apps/io.github.gosh_distrobox_manager-symbolic.svg
 
 %check
-desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.gosh_distrobox_manager.desktop
+desktop-file-validate \
+    %{buildroot}%{_datadir}/applications/io.github.gosh_distrobox_manager.desktop
+appstreamcli validate --no-net \
+    %{buildroot}%{_metainfodir}/io.github.gosh_distrobox_manager.metainfo.xml
 
 %files
-%{_libdir}/%{name}/
 %{_bindir}/gosh_distrobox_manager
 %{_datadir}/applications/io.github.gosh_distrobox_manager.desktop
-%{_datadir}/icons/hicolor/*/apps/io.github.gosh_distrobox_manager.*
+%{_metainfodir}/io.github.gosh_distrobox_manager.metainfo.xml
+%{_datadir}/icons/hicolor/scalable/apps/io.github.gosh_distrobox_manager.svg
+%{_datadir}/icons/hicolor/symbolic/apps/io.github.gosh_distrobox_manager-symbolic.svg
 
 %post
 /bin/touch --no-create %{_datadir}/icons/hicolor &>/dev/null || :
@@ -67,12 +65,8 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.gosh_distro
 %postun
 if [ $1 -eq 0 ] ; then
     /bin/touch --no-create %{_datadir}/icons/hicolor &>/dev/null
-    /usr/bin/gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
 fi
 /usr/bin/update-desktop-database &> /dev/null || :
-
-%posttrans
-/usr/bin/gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
 
 %changelog
 * Fri Sep 11 2026 Gosh Distrobox Manager Team <dev@example.com> - 1.0.2-1
