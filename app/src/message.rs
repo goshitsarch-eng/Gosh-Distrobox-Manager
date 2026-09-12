@@ -90,7 +90,11 @@ pub enum TaskMsg {
 #[derive(Clone, Debug)]
 pub enum ContainerMsg {
     RefreshRequested,
-    Loaded(Result<Vec<ContainerInfo>, CoreFailure>),
+    /// B3: the wrapper rides through so the page can report `skipped`
+    /// (architecture.md §6.4, row B3; §3.1 of the same doc). Read-through
+    /// `Deref` to `Vec<ContainerInfo>` keeps every existing consumer in this
+    /// file working.
+    Loaded(Result<gosh_distrobox_core::ContainerList, CoreFailure>),
     Selected(Option<ContainerInfo>),
     /// Result of a short (non-task) mutation; `Err` becomes a toast.
     ActionFinished(Result<String, CoreFailure>),
@@ -221,6 +225,8 @@ pub enum SettingsMsg {
     /// Preference writes (row #171 — best-effort, failures toast).
     TerminalSelected(usize),
     ConfirmToggled(bool),
+    /// B3 (§6.4): surface `ContainerList.skipped` on the Dashboard.
+    ShowSkippedLinesToggled(bool),
     SnapshotPrefixChanged(String),
     ExportDirChanged(String),
     /// About links (row #169 — URL open results toast on failure).
@@ -280,7 +286,7 @@ pub enum BackupsMsg {
     ImportBrowseRequested,
     ImportConfirmed,
     /// Clone dialog open (row #145): opens the SHARED details-clone
-    /// dialog directly (§4.5 unification — no page-local clone state).
+    /// dialog directly (ux.md §4.5 unification — no page-local clone state).
     CloneDialogRequested,
     /// Any backups dialog cancelled.
     DialogCancelled,

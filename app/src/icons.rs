@@ -82,7 +82,7 @@ pub fn is_running(status: &Status) -> bool {
     matches!(status, Status::Up(_))
 }
 
-/// Theme status colour (§3.5 — never hard-code green/orange/blue; light /
+/// Theme status colour (ux.md §3.5 — never hard-code green/orange/blue; light /
 /// dark / high-contrast all work through the theme). Read from the active
 /// theme at render time (`cosmic::theme::active()`), same as libcosmic's
 /// own widgets (e.g. `toaster`).
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn status_colors_follow_theme_roles() {
-        // No hard-coded green/orange/blue (§3.5): Up maps to the theme's
+        // No hard-coded green/orange/blue (ux.md §3.5): Up maps to the theme's
         // success role, Created to accent, Exited to warning, Other to a
         // neutral control colour. Assert against the live theme (not fixed
         // RGB) so light/dark/high-contrast all satisfy this by construction.

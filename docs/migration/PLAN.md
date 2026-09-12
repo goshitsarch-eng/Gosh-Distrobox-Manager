@@ -172,6 +172,12 @@ Residual risks and owners:
 | I10 | `block_io` column ships as the free disk-adjacent figure | A2/D18 | ☐ |
 | I11 | File-picker rows re-scoped to portal capabilities (no prefilled names) | #88, #143, #144 | ☐ |
 | I12 | `TaskState` enum replaces output string-sniffing | #160 | ☐ |
+| I13 | Tolerant parsing surfaced: `show_skipped_lines` preference + Dashboard skipped-rows caption (no Flutter counterpart, so no parity row — T13/B3, D19) | — | ☐ |
+| I14 | Header row dropped by identity, not position — `.skip(1)` predated T13 (T1 `git mv rust core`) and silently ate the first row of a headerless response (T13/B3, D27) | — | ☐ |
+| I15 | `launch_app` refuses an `Exec` that leaves no command rather than spawning a bare interactive shell (T13/B4, D27) | — | ☐ |
+| I16 | Container-gated empty states (Containers/Backups/Packages/Dashboard/Updates) branch on `is_clean_empty()` so an all-rows-unreadable list is never told to "create your first container"; the lie is ungated by `show_skipped_lines`, which gates only the caption (T13/B3, D27) | — | ☐ |
+| I17 | `Exec` line continuation is context-dependent: both characters vanish outside quotes, the newline is kept inside them (T13/B4, D27) | — | ☐ |
+| I18 | `distrobox ls` header recognized by field 0 + arity floor, accepting both the 1.5.x six-column and 1.6+ four-column layouts (T13/B3, D27) | — | ☐ |
 
 ## 5. Ordered task list (app stays buildable after every task)
 

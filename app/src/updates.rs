@@ -2,7 +2,7 @@
 //!
 //! Header Refresh + Upgrade All (#123, `header_end`), gates (#124, shared),
 //! summary header (#125), RUNNING/STOPPED sections (#126/#129 — stopped uses
-//! a caption class, never `Opacity(0.7)` per §3.5), running cards with
+//! a caption class, never `Opacity(0.7)` per ux.md §3.5), running cards with
 //! READY/UPGRADING state + Upgrade button/inline spinner (#127–#128),
 //! stopped cards with the start CTA (#130 — B5 `start`, dead in Flutter),
 //! upgrade-all confirm + empty toast (#131), shared task progress (#132,
@@ -126,18 +126,25 @@ pub fn upgrade_task_rows(
 }
 
 /// Full updates page body.
+///
+/// Takes the whole `ContainerList`, not a `&[ContainerInfo]`: this page renders
+/// every container and reports a total, so B3's `skipped` has to reach it — a
+/// fleet of 12 with one unreadable row must not read as "12 Containers
+/// Available" and nothing else, which is what a bare slice forces the page to
+/// say.
 pub fn view_updates(
-    containers: &[ContainerInfo],
+    containers: &gosh_distrobox_core::ContainerList,
     upgrading: &dyn Fn(&ContainerInfo) -> bool,
     task_rows: Vec<cosmic::Element<'static, Message>>,
 ) -> cosmic::Element<'static, Message> {
-    if containers.is_empty() {
-        return empty_state(
-            "document-open-symbolic",
-            "No Containers".to_string(),
-            "Create a container to manage updates.".to_string(),
-            None,
-        );
+    if containers.is_clean_empty() {
+        // The I16 rule (see `views::container_list_copy`): a genuinely empty
+        // account gets the create-prompt, an all-rows-unreadable list does not.
+        // T13 originally revised the Containers/Backups/Packages pages and left
+        // this fourth gated page on the bare-empty test.
+        let (icon, title, body) =
+            crate::views::container_list_copy(containers, "Create a container to manage updates.");
+        return empty_state(icon, title, body, None);
     }
     let (running_n, stopped_n) = summary(containers);
     let total = containers.len();
@@ -146,6 +153,15 @@ pub fn view_updates(
         "{total} Container{} Available",
         if total != 1 { "s" } else { "" }
     )));
+    // The fleet figure above counts only rows that parsed, so say so when the
+    // list was short. Ungated by `show_skipped_lines` for the same reason as
+    // `all_rows_failed_copy`: this page's own total is the claim being
+    // qualified, and it is wrong without the qualifier.
+    if !containers.skipped.is_empty() {
+        col = col.push(widget::text::caption(crate::views::all_rows_failed_copy(
+            containers.skipped.len(),
+        )));
+    }
     col = col.push(widget::text::body(format!(
         "{running_n} running, {stopped_n} stopped. Upgrade running containers to update their packages."
     )));

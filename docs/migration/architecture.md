@@ -115,14 +115,19 @@ All of these were read in this repo, not inferred. §6.4 gives the fixes.
    *"If the `Child` is dropped, the process keeps running in the background"* —
    `kill_on_drop` is opt-in (`:1064`) and this crate never sets it. So "Cancel" on a
    `distrobox create` abandons a still-running process and reports it as cancelled.
-7. **`podman`/`docker` fallback duplicated seven times.** `get_container_id`
-   (`:1395`), `create_snapshot` (`:1412`), `list_snapshots` (`:1430`),
-   `delete_snapshot` (`:1470`), `export_container` (`:1500`), `import_container`
-   (`:1510`), `get_container_stats` (`:1524`) each inline their own
-   "try podman, on error try docker" block with the same format strings. All of them
-   *do* route through `self.cmd_output_string` → `self.cmd_runner` (so the Flatpak /
-   host-exec mapping is applied — good), but the runtime selection logic is
+7. **`podman`/`docker` fallback duplicated six times.** `start` (`:1161`),
+   `get_container_id` (`:1485`), `create_snapshot` (`:1534`), `list_snapshots`
+   (`:1557`), `delete_snapshot` (`:1602`), `get_container_stats` (`:1668`) each inline
+   their own "try podman, on error try docker" block with the same format strings. All
+   of them *do* route through `self.cmd_output_string` → `self.cmd_runner` (so the
+   Flatpak / host-exec mapping is applied — good), but the runtime selection logic is
    copy-pasted and inconsistent.
+   *Correction (T13/D27):* this item first read "seven times" and listed
+   `export_container` (`:1500`) and `import_container` (`:1510`) among them. Counted,
+   neither ever had a docker branch — both are podman-literal, because both are
+   **streaming** (`cmd_spawn` → a `Child`) and the fallback shape is an output one. So
+   six was the true count, `start` was missing from the list, and the two streaming
+   sites were never in scope. The B7 row inherits this correction.
 8. **Env-guard detection is duplicated and weaker in Rust.** The Dart guard
    (`lib/utils/environment_guard_io.dart`) checks the three hardcoded absolute paths
    **and** scans `$PATH`; the Rust `has_distrobox_host_exec`
@@ -558,7 +563,7 @@ pub struct App {
     page: Page,
 
     // ================= domains =================
-    containers: ContainerList,          // { containers: BTreeMap<String, ContainerInfo>, skipped: Vec<ParseIssue> }
+    containers: ContainerList,          // { containers: Vec<ContainerInfo>, skipped: Vec<ParseIssue> } — see D27
     selected_container: Option<ContainerInfo>,
     container_filter: String,
     pending_confirm: Option<Confirm>,
@@ -613,7 +618,7 @@ pub struct TaskView {
 snapshots, stats, binaries, action`) so each domain's spinner is independent, exactly
 as the eight Dart getters model it. `running_containers_count` /
 `stopped_containers_count` become methods derived from
-`containers.containers.values().filter(|c| matches!(c.status, Status::Up))`.
+`containers.iter().filter(|c| matches!(c.status, Status::Up))`.
 
 ### 3.2 Why the domains are shaped this way
 
@@ -1059,9 +1064,9 @@ equally FRB-free and move in the same `git mv`, and they are **T2 (adapt), not T
 
 | File | Lines | Why T2, not T1 |
 |---|---|---|
-| `backends/container_runtime.rs` | 54 | extended or routed-through by §6.2's runtime helper (Q11) |
+| `backends/container_runtime.rs` | 161 | routed-through by §6.2's runtime helper (Q11 **closed** — helper, not trait) |
 | `backends/docker.rs` | 95 | the podman→docker fallback collapses into §6.2 |
-| `backends/podman.rs` | 138 | same; `PodmanEventStream` deferred (Q12) |
+| `backends/podman.rs` | 138 | same; `PodmanEventStream` deferred (Q12). Its `map_docker_to_podman` (`:17`, used at `:87`) is **not** the fallback primitive — it maps one way and cannot choose a target |
 | `backends/supported_terminals.rs` | 312 | revived, and its store moves to `cosmic-config` (ARCH-Q5) |
 | **subtotal** | **599** | |
 
@@ -1175,12 +1180,24 @@ sites need (`start`, `commit`, `rmi`, `images`, `stats_raw`), implement them onc
 memoized at construction. `get_container_runtime` (`:37`) already prefers Podman and
 falls back to Docker with the rationale documented (`// Prefer Podman when both are
 available because Podman is rootless by default`) — that reasoning is currently lost
-in the inline copies. **Open question Q11**: whether the trait grows (above) or a
-single `run_runtime_cmd(&self, args: &[&str]) -> Result<String, Error>` helper
-carries the fallback, with the trait left at three methods.
+in the inline copies. **Q11 — answered by T13 (D27): the helper, not the trait.**
+`Distrobox::runtime_output(cmd, Fallback)` + `container_runtime::retarget` carry the
+fallback and `ContainerRuntime` stays at three methods. Two reasons the trait branch
+lost: all six sites are plain output commands over an argv `Distrobox` already
+builds, so the trait would have re-encoded the same argv in two more places; and the
+`#[async_trait(?Send)]` objection below is real, so growing the trait would have forced
+a `Send` conversion for operations that never needed one. `get_container_runtime`
+remains callerless — it cannot serve these sites (no run method, `?Send`, returns
+`Option`, and drops the runner), which is worth deleting in T14.
 
-`podman.rs::map_docker_to_podman` (`:17`) is a `Command`-rewriting helper that
-already exists and is unused — it may be the right primitive for the helper above.
+`podman.rs::map_docker_to_podman` (`:17`) is a `Command`-rewriting helper — it maps
+the **program field** `docker → podman`, and only that. It is **not** the primitive
+for the helper above, for a sharper reason than the one first written here: it points
+one way, so it cannot produce a docker retry at all. `retarget` must *choose* the
+target program, which is precisely what a `docker → podman` map cannot do (and why
+routing a retry through a `Podman`-constructed runner silently rewrites it straight
+back). It touches no arguments, so it also cannot rename a container the way an
+earlier draft of this note claimed.
 
 ### 6.3 T3 — rewrite
 
@@ -1202,11 +1219,11 @@ already exists and is unused — it may be the right primitive for the helper ab
 |---|---|---|
 | **B1** | **`emerge` + one package-manager table.** Replace the three divergent detection scripts (`distrobox.rs:1215`, `:1316`, `:1348`) with one `detect_package_manager -> Result<PackageManager, CoreError>` plus one verb table. Extend `PackageManager` with `Xbps`, `Emerge` (`known_distros.rs:45`); fix the `gentoo`→`Unknown` mapping (`:19`) and `void`→`Unknown` (`:32`). Verbs: apt `apt-get install -y`/`remove -y`; dnf/yum/pacman/zypper/apk as today; xbps `xbps-install -y`/`xbps-remove -y` (correct today); **emerge `emerge --ask=n <pkg>` / `emerge --unmerge <pkg>`** (note `--ask=n`, not `-y` — emerge has no `-y`). `Unknown` only when genuinely nothing is found, and then the UI offers manual command entry instead of an error toast | `distrobox.rs`, `known_distros.rs` |
 | **B2** | **Line-buffered readers.** Rewrite `stream_reader_to_task_output` (`api.rs:78`) to accumulate into a `Vec<u8>` and emit complete records split on `\n` **and** `\r` (apt/dnf/pacman/emerge progress bars are `\r`-driven), stripping `\r\n`, dropping empties, holding the incomplete tail across reads, and flushing on EOF. Because both stdout and stderr feed the same task, keep the existing interleaving semantics; a per-stream buffer prevents a `\r`-less stderr chunk from ever appearing | `task_runtime.rs` |
-| **B3** | **Tolerant list parsing.** `Distrobox::list` (`distrobox.rs:1103`) returns `Err` and discards everything on one bad row. Change `ContainerInfo::from_str` failures to `warn!` + collect, and return `ContainerList { containers: BTreeMap<String, ContainerInfo>, skipped: Vec<ParseIssue> }`. Apply the same to `list_snapshots` (`:1430`), `list_installed_packages` (`:1237`), `get_exported_binaries` (`:808`), `list_apps` (`:770`). `ParseIssue` carries the raw line and the parse error so the UI can show "3 rows skipped" with a details drawer. Also fixes the inconsistency where `list()` fails hard but its peers silently skip | `distrobox.rs`, `models/dto.rs` |
-| **B4** | **Correct desktop-entry field-code handling.** Add `desktop_file::split_exec(exec: &str) -> Vec<String>`: split on whitespace honoring quotes/backslash escapes (the spec's own quoting rules), then for each token strip `%%`→`%`, drop `%i`/`%c`/`%k` (**and** the extra argument `%i` would have introduced), drop `%v`/`%m`/`%d`/`%D`/`%n`/`%N` (deprecated), and strip `%f`/`%F`/`%u`/`%U`. `launch_app` (`:908`) then feeds the resulting argv to `cmd.args()` instead of `cmd.arg(one_big_string)`, fixing both the multi-argument bug and the injection hazard of interpolating a desktop-file `Exec` (which may originate inside a container) into a single argv slot | `desktop_file.rs`, `distrobox.rs` |
+| **B3** | **Tolerant list parsing.** `Distrobox::list` returns `Err` and discards everything on one bad row. Change `ContainerInfo::from_str` failures to `warn!` + collect, and return `ContainerList { containers: Vec<ContainerInfo>, skipped: Vec<ParseIssue> }`. Apply the same to `list_snapshots`, `list_installed_packages`, `get_exported_binaries`, `list_apps`. `ParseIssue` carries the raw line and the parse error so the UI can show "3 rows skipped". Also fixes the inconsistency where `list()` fails hard but its peers silently skip. **As built (T13, D27):** `containers` is a `Vec`, not the `BTreeMap` this row originally specified — the map is erased at the `Backend` boundary anyway (`service.rs` already did `into_values()`), so the container type was never observable; the `Vec` preserves the name-sort the map happened to provide, and `Deref<Target = Vec<...>>` keeps every slice consumer unchanged. Blank lines are *not* parse issues. `TolerantList<T>` carries the other four (each returns `impl Deref<Target = Vec<T>>`), and only `containers()` hands the wrapper across the `Backend` boundary — `show_skipped_lines` is specified against `ContainerList.skipped` alone. **Also (T13, D27):** the header row is now dropped by *identity* (`is_distrobox_header`, a four-literal match on `ID/NAME/STATUS/IMAGE`, which is exactly what `distrobox-list` prints at line 231 of 1.8.2.5) rather than by position. The old `.skip(1)` predated T13 — it came in with T1's `git mv rust core` — and removed whatever line was first, so a response without a header lost a real container with no log, no count, and no UI trace: the same silent-loss class this row exists to remove. `is_clean_empty()` is wired to the Containers/Backups/Packages empty states, so an all-rows-unreadable list is never rendered as "no containers yet" | `distrobox.rs`, `models/dto.rs`, `app/src/views.rs` |
+| **B4** | **Correct desktop-entry field-code handling.** Add `desktop_file::split_exec(exec: &str) -> Vec<String>`: split on whitespace honoring quotes/backslash escapes (the spec's own quoting rules), then for each token strip `%%`→`%`, drop `%i`/`%c`/`%k` (**and** the extra argument `%i` would have introduced), drop `%v`/`%m`/`%d`/`%D`/`%n`/`%N` (deprecated), and strip `%f`/`%F`/`%u`/`%U`. `launch_app` (`:908`) then feeds the resulting argv to `cmd.args()` instead of `cmd.arg(one_big_string)`, fixing both the multi-argument bug and the injection hazard of interpolating a desktop-file `Exec` (which may originate inside a container) into a single argv slot. **As built (T13, D27):** the failure mechanism is the argv *slot count*, not a re-split — `distrobox-enter` ends in `exec "$@"` with no `eval` (1.8.2.5, the `--` branch: `shift; break` then `exec "$@"`), so the old single-string form asked for a program whose name was the whole fused string and the app never launched. `%i` **is** droppable-but-formable: `ExportableApp::entry.icon` is in scope, yet expanding it would be wrong, because `distrobox-export` rewrites `Icon=` to a host-side absolute path under `/run/host` (1.8.2.5, lines 582-590) that the container cannot open. An `Exec` that leaves no command after field-code removal is now a typed `Err` rather than a bare `enter --name <box> --` (a silent interactive shell in place of the app the user asked for) | `desktop_file.rs`, `distrobox.rs` |
 | **B5** | **`start`.** Add to `Distrobox`: `start(&self, name) -> Result<String, Error>` (`podman start <name>`, Docker fallback, mirroring `get_container_id` `:1395`) and `start_and_enter(&self, name) -> Result<Box<dyn Child + Send>, Error>` (`enter_cmd(name)` then `cmd_spawn`). Rationale: `distrobox enter` implicitly starts a stopped container (`enter_cmd`, `:1086`), so "Start" can be `enter`-detached or a true `podman start`; the latter is what a UI button labelled "Start" should mean, and it leaves the container `Up` with no attached process. New messages: `ContainerMsg::StartRequested(String)`. Requires the `Status::Created|Exited → Up` transition to be reflected by a `list()` refresh — where the `PodmanEventStream` subscription (§6.2) pays off | `distrobox.rs` |
 | **B6** | **Env guard dedupe + PATH scan.** `has_distrobox_host_exec` (`host_exec.rs:20`) gains the `$PATH` scan the Dart guard already has (`environment_guard_io.dart:28-45`), and the precedence chain collapses to `env::detect` (§2.4), called once. The `Blocked` message text is preserved so user-facing wording does not drift | `host_exec.rs`, `env.rs` |
-| **B7** | **Single runtime-selection helper.** The seven inline podman→docker blocks (`:1395,1412,1430,1470,1500,1510,1524`) route through one place (§6.2) | `distrobox.rs`, `container_runtime.rs` |
+| **B7** | **Single runtime-selection helper.** The **six** inline podman→docker blocks route through one place (§6.2). **As built (T13, D27):** this row's "seven" was an overcount — counted in `HEAD`, six functions carried a fallback (`start`, `get_container_id`, `create_snapshot`, `list_snapshots`, `delete_snapshot`, `get_container_stats`) and all six convert. `export_container`/`import_container` never had a docker branch at all (they are **streaming**, `cmd_spawn` → `Child`, which a `String`-returning helper cannot serve) and stay podman-literal. Q11 is answered by the *helper* branch, not the trait — `Distrobox::runtime_output(cmd, Fallback)` plus `container_runtime::retarget`, a `Command::program` swap that leaves the argv byte-identical. The two fallback triggers are not interchangeable: five sites retry on error (`OnError`), `get_container_id` alone retries on empty output and **propagates** a podman error (`OnEmpty`) — its original podman branch ended in `?`, so retrying there would answer a broken podman with a misleading "container not found" | `distrobox.rs`, `container_runtime.rs` |
 | **B8** | **Cancel kills the child.** §3.3 — `oneshot` + `select!` + `Child::kill()` instead of `JoinHandle::abort` | `task_runtime.rs` |
 | **B9** | **Per-chunk write lock.** `push_task_output` (`api.rs:46`) takes the registry write lock once per 1024-byte chunk. With `TaskEvent` over a channel this becomes one send per *line*, and the registry is only locked on insert/finish/sweep | `task_runtime.rs` |
 
@@ -1329,16 +1346,15 @@ rule; should it be enforced? A clippy `disallowed-methods` entry for
 `std::process::Command::new` in `core/` is cheap and catches the one mistake that
 silently breaks every Flatpak user. Any reason not to?
 
-**Q11 — Extend `ContainerRuntime` or add one helper?** §6.2 prefers extending the
-trait with `start`/`commit`/`rmi`/`images`/`stats_raw` so the seven inline fallbacks
-disappear; the lighter option is a single `run_runtime_cmd(&[&str])` helper keeping
-the trait at three methods. The trait version is more code but makes the podman/docker
-difference explicit (e.g. `podman events` has no docker equivalent). Note
-`ContainerRuntime` is `#[async_trait(?Send)]` (`container_runtime.rs:13`) — a
-`?Send` trait object cannot be shared across the multi-threaded executor, so if the
-trait is extended with anything used from a `tokio::spawn`ed task, that attribute must
-become `#[async_trait]` (Send). Is that acceptable given `CommandRunner` is `Arc`-shared
-and already `Send + Sync`?
+**Q11 — Extend `ContainerRuntime` or add one helper? CLOSED** (T13, D27; see §6.2).
+Answer: **the helper, not the trait** — `Distrobox::runtime_output(cmd, Fallback)` over
+`container_runtime::retarget`, with `ContainerRuntime` left at three methods. The
+question as written assumed "seven inline fallbacks"; there were six, and all six are
+plain output commands, so extending the trait would have re-encoded an argv `Distrobox`
+already builds. The `?Send` objection raised below turned out to be decisive rather
+than a risk: it is a second reason not to grow an `#[async_trait(?Send)]` trait for
+operations that never needed `Send`. The trait's real value (e.g. `podman events` having
+no docker equivalent) is untouched by this — `Q12` still owns that.
 
 **Q12 — Should `PodmanEventStream` drive container state?** `podman.rs:66-122`
 already implements a `Stream` over `podman events`, filtered to distrobox containers.

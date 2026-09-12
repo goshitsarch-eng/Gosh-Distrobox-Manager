@@ -1,6 +1,6 @@
 //! Page views: Dashboard, Containers, Details (T6, ux.md §6.2–§6.5).
 //!
-//! Shared pieces (§3.3/§3.4/§3.6): `empty_state` (the ~20-times-repeated
+//! Shared pieces (ux.md §3.3/§3.4/§3.6): `empty_state` (the ~20-times-repeated
 //! icon→title→body→action pattern), `gate_view` (the three global gates —
 //! blocked / not-installed / load error — implemented ONCE at the shell
 //! level so every page inherits them), `container_row` (distro icon, name,
@@ -84,6 +84,117 @@ pub fn activate_containers(nav_model: &mut nav_bar::Model) {
     activate_page(nav_model, Page::Containers);
 }
 
+/// Icon/title/body for the empty state of a container list (B3, §6.4).
+///
+/// An "empty" list has two meanings and they are not interchangeable: a
+/// genuinely empty account, where "create one" is the right advice, and a
+/// list where every row was returned but failed to parse, where it is a lie —
+/// the user has containers, we just could not read the report. All three
+/// parts switch together so they cannot contradict each other, and
+/// `clean_body` is the caller's own phrasing for the first case ("before
+/// managing backups" / "managing packages" / "to get started").
+///
+/// The three container-gated pages (Containers, Backups, Packages) all render
+/// through this. Only the Dashboard carries a skipped-row caption, so on those
+/// pages this copy is the *only* explanation of why the list looks empty.
+pub fn container_list_copy(
+    containers: &gosh_distrobox_core::ContainerList,
+    clean_body: &str,
+) -> (&'static str, String, String) {
+    if containers.is_clean_empty() {
+        return (
+            "document-open-symbolic",
+            "No containers found.".to_string(),
+            clean_body.to_string(),
+        );
+    }
+    let n = containers.skipped.len();
+    let (noun, pronoun) = if n == 1 {
+        ("container", "it did not match")
+    } else {
+        ("containers", "none of them matched")
+    };
+    (
+        "dialog-warning-symbolic",
+        format!(
+            "{} row{} could not be read.",
+            n,
+            if n == 1 { "" } else { "s" }
+        ),
+        format!(
+            "distrobox reported {n} {noun}, but {pronoun} the expected format. \
+             This is usually a distrobox version mismatch."
+        ),
+    )
+}
+
+/// The one-line honest account of a list where *every* row came back and none
+/// could be read (B3).
+///
+/// Deliberately **not** gated by `show_skipped_lines`: that preference decides
+/// whether the Dashboard volunteers a row count for an otherwise working
+/// list, and it defaults to off. When nothing parsed it is not a detail, it is
+/// the entire state of the page, so suppressing it would leave the Dashboard
+/// saying "no containers configured" to a user who has six — the exact lie
+/// `container_list_copy` exists to prevent on the three gated pages.
+///
+/// Shared by the Dashboard's status card and its container preview so those
+/// two surfaces cannot drift apart, and phrased to match
+/// `container_list_copy`'s all-rows-failed branch.
+pub fn all_rows_failed_copy(skipped: usize) -> String {
+    let (noun, pronoun) = if skipped == 1 {
+        ("container row", "it did not match")
+    } else {
+        ("container rows", "none of them matched")
+    };
+    format!("{skipped} {noun} could not be read — {pronoun} the expected format.")
+}
+
+/// The Dashboard status card's body line, as a pure function.
+///
+/// Takes **no** `show_skipped` argument, and that is the point: the empty-list
+/// wording must not be reachable from the preference, or a user with six
+/// unreadable containers reads "No containers configured." A future caller that
+/// wants the caption for a *working* list wants `skipped_summary`, which does
+/// take the flag.
+///
+/// Pure because the app crate has no lib target: this is the only tier that can
+/// pin the copy without driving the widget tree, the same reason `skipped_summary`
+/// lives here rather than inline in the view.
+pub fn dashboard_status_body(running: usize, total: usize, skipped: usize) -> String {
+    if total == 0 {
+        if skipped == 0 {
+            "No containers configured. Create one to get started!".to_string()
+        } else {
+            all_rows_failed_copy(skipped)
+        }
+    } else {
+        format!(
+            "{running} of {total} container{} running.",
+            if total != 1 { "s" } else { "" }
+        )
+    }
+}
+
+/// The Dashboard container-preview empty state (icon, title, body), same rule
+/// and same reason as `dashboard_status_body` — both surfaces derive from this
+/// one decision so they cannot disagree about whether the list was readable.
+pub fn dashboard_preview_copy(skipped: usize) -> (&'static str, &'static str, String) {
+    if skipped == 0 {
+        (
+            "document-open-symbolic",
+            "No containers yet",
+            "Create your first container to get started".to_string(),
+        )
+    } else {
+        (
+            "dialog-warning-symbolic",
+            "Container list unreadable",
+            all_rows_failed_copy(skipped),
+        )
+    }
+}
+
 /// Shared empty state (§3.4): icon → title → body → optional action.
 pub fn empty_state(
     icon: &'static str,
@@ -159,7 +270,7 @@ pub fn container_row(
     // unit-tested, but NEITHER `Text::color` NOR `SelectableText::color`
     // satisfy `<Theme as Catalog>::Class: From<StyleFn>` in this iced rev —
     // coloured text is structurally unavailable. No hard-coded colours
-    // (§3.5 holds); the coloured dot lands when the bound lifts.
+    // (ux.md §3.5 holds); the coloured dot lands when the bound lifts.
     let status = status_label(&container.status);
     let row = widget::Row::new()
         .push(
@@ -213,16 +324,55 @@ pub fn container_row(
 /// Dashboard (rows #9–#34): status card, stat tiles, active tasks (only when
 /// non-empty), container preview (first 5), quick actions. NO pull-to-refresh
 /// (row #32, touch idiom — header Refresh button instead); content stays
+/// B3 (§6.4 row B3, and the `containers: ContainerList` field of the §2.3 DRAFT
+/// `Message` struct): the one-line account of rows that `Distrobox::list`
+/// could not parse. `None` when the setting is off, in which case the
+/// Dashboard says nothing at all.
+///
+/// Pure and separately tested: the app crate has no lib target, so this is
+/// the only tier that can cover the copy without driving the whole UI.
+pub fn skipped_summary(skipped: usize, show: bool) -> Option<String> {
+    if !show || skipped == 0 {
+        return None;
+    }
+    Some(format!(
+        "{skipped} row{} skipped — could not be parsed.",
+        if skipped == 1 { "" } else { "s" }
+    ))
+}
+
+/// The numbers the Dashboard status card is built from. Grouped rather than
+/// passed as four bare `usize`s so the call site reads as named fields and
+/// the signature stays inside clippy's argument limit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DashboardCounts {
+    pub running: usize,
+    pub stopped: usize,
+    pub total: usize,
+    /// Rows `list()` could not parse (B3). The view turns this into the
+    /// caption itself — including applying the setting — so the call site
+    /// passes the count, not a pre-formatted string.
+    pub skipped: usize,
+    /// The `show_skipped_lines` preference (default off).
+    pub show_skipped: bool,
+}
+
 /// during refresh (row #11).
 pub fn view_dashboard(
     containers: &[ContainerInfo],
-    running: usize,
-    stopped: usize,
-    total: usize,
+    counts: DashboardCounts,
     active_task_count: usize,
     task_rows: Vec<cosmic::Element<'static, Message>>,
     error: Option<String>,
 ) -> cosmic::Element<'static, Message> {
+    let DashboardCounts {
+        running,
+        stopped,
+        total,
+        skipped,
+        show_skipped,
+    } = counts;
+    let skipped_summary = skipped_summary(skipped, show_skipped);
     let healthy = error.is_none();
     let mut col = widget::Column::new().spacing(16);
 
@@ -234,15 +384,14 @@ pub fn view_dashboard(
         } else {
             "Attention Required"
         }))
-        .push(widget::text::body(if total == 0 {
-            "No containers configured. Create one to get started!".to_string()
-        } else {
-            format!(
-                "{running} of {total} container{} running.",
-                if total != 1 { "s" } else { "" }
-            )
-        }))
+        .push(widget::text::body(dashboard_status_body(
+            running, total, skipped,
+        )))
         .spacing(4);
+    // B3: "12 containers, 3 rows skipped" rather than a silently short list.
+    if let Some(summary) = skipped_summary {
+        status = status.push(widget::text::caption(summary));
+    }
     if let Some(err) = error {
         let warn: cosmic::Element<'static, Message> = widget::warning(err).into();
         status = status.push(warn);
@@ -292,12 +441,10 @@ pub fn view_dashboard(
         header
     });
     if containers.is_empty() {
-        col = col.push(empty_state(
-            "document-open-symbolic",
-            "No containers yet".to_string(),
-            "Create your first container to get started".to_string(),
-            None,
-        ));
+        // Same rule as the status card above and as `container_list_copy` on
+        // the three gated pages (I16): an unreadable list is not an empty one.
+        let (icon, title, body) = dashboard_preview_copy(counts.skipped);
+        col = col.push(empty_state(icon, title.to_string(), body, None));
     } else {
         for container in containers.iter().take(5) {
             col = col.push(container_row(container, false));
@@ -620,4 +767,180 @@ pub fn with_toasts<'a>(
 /// `Task<Action<Message>>` via `From` (`Action::App`).
 pub fn push_toast(toasts: &mut Toasts<Message>, text: String) -> cosmic::app::Task<Message> {
     toasts.push(Toast::new(text)).map(cosmic::Action::App)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        all_rows_failed_copy, container_list_copy, dashboard_preview_copy, dashboard_status_body,
+        skipped_summary,
+    };
+
+    /// The Containers page picks its empty state on `is_clean_empty()`, not
+    /// `is_empty()` (B3): a list whose rows ALL failed to parse is not an
+    /// empty account, and must not be told to "create your first container".
+    /// This pins the predicate the branch is written against — including that
+    /// it stays distinct from `is_empty` in the one case that matters.
+    #[test]
+    fn all_rows_skipped_is_not_a_clean_empty() {
+        use gosh_distrobox_core::{ContainerList, ParseIssue};
+        let all_skipped = ContainerList {
+            containers: vec![],
+            skipped: vec![ParseIssue {
+                line: "garbage".into(),
+                error: "expected four fields".into(),
+            }],
+        };
+        assert!(all_skipped.is_empty(), "the cache slice is empty…");
+        assert!(
+            !all_skipped.is_clean_empty(),
+            "…but rows WERE returned, so `is_empty()` alone would show the wrong state"
+        );
+        assert!(ContainerList::default().is_clean_empty(), "no rows at all");
+    }
+
+    /// `container_list_copy` feeds all three container-gated empty states
+    /// (Containers, Backups, Packages), and only the Dashboard has a skipped
+    /// caption — so on those pages this copy is the sole explanation. A
+    /// clean-empty must give the caller's advice; an all-skipped must give the
+    /// count, switch the icon to the warning, and never offer that advice.
+    #[test]
+    fn container_list_copy_switches_all_three_parts_on_clean_empty() {
+        use gosh_distrobox_core::{ContainerList, ParseIssue};
+        let clean = ContainerList::default();
+        let (icon, title, body) = container_list_copy(&clean, "Create a container.");
+        assert_eq!(icon, "document-open-symbolic");
+        assert_eq!(title, "No containers found.");
+        assert_eq!(body, "Create a container.");
+
+        let skipped = ContainerList {
+            containers: vec![],
+            skipped: vec![
+                ParseIssue {
+                    line: "a".into(),
+                    error: "e".into(),
+                },
+                ParseIssue {
+                    line: "b".into(),
+                    error: "e".into(),
+                },
+            ],
+        };
+        let (icon, title, body) = container_list_copy(&skipped, "Create a container.");
+        assert_eq!(icon, "dialog-warning-symbolic", "not the benign glyph");
+        assert!(title.contains('2'), "the count leads the title: {title}");
+        assert!(body.contains('2'), "and is stated in the body: {body}");
+        assert!(
+            !body.contains("Create"),
+            "the create advice is a lie when rows were returned: {body}"
+        );
+
+        // Singular, since one unreadable row is the common case.
+        let one = ContainerList {
+            containers: vec![],
+            skipped: vec![ParseIssue {
+                line: "a".into(),
+                error: "e".into(),
+            }],
+        };
+        let (_, title, body) = container_list_copy(&one, "Create a container.");
+        assert!(title.contains("1 row "), "singular noun in title: {title}");
+        assert!(
+            body.contains("reported 1 container,"),
+            "singular noun: {body}"
+        );
+        assert!(
+            body.contains("it did not match"),
+            "singular pronoun: {body}"
+        );
+        assert!(!body.contains("1 containers"), "{body}");
+        assert!(
+            !body.contains("none of them"),
+            "plural-only phrasing: {body}"
+        );
+    }
+
+    /// B3 (§6.4): the Dashboard mentions skipped rows only when the setting
+    /// is on AND there is something to mention. Default-off means a user who
+    /// never asked sees no change from before this feature existed.
+    #[test]
+    fn skipped_summary_is_off_by_default_and_silent_when_empty() {
+        assert_eq!(skipped_summary(3, false), None, "setting off → nothing");
+        assert_eq!(skipped_summary(0, true), None, "nothing skipped → nothing");
+        assert_eq!(skipped_summary(0, false), None);
+    }
+
+    /// "12 containers, 3 rows skipped" (architecture.md §6.4, row B3) — and the
+    /// singular form, since a one-row skip is the common case.
+    #[test]
+    fn skipped_summary_counts_rows() {
+        assert_eq!(
+            skipped_summary(1, true).as_deref(),
+            Some("1 row skipped — could not be parsed.")
+        );
+        assert_eq!(
+            skipped_summary(3, true).as_deref(),
+            Some("3 rows skipped — could not be parsed.")
+        );
+    }
+
+    /// `all_rows_failed_copy` is deliberately NOT gated by
+    /// `show_skipped_lines`, unlike `skipped_summary` above, and the two must
+    /// not be collapsed into one helper. The preference hides a *detail* about
+    /// a working list; when nothing parsed there is no working list, and the
+    /// Dashboard would otherwise say "No containers configured" to a user who
+    /// has six. Pinned as a contrast so a future refactor that routes both
+    /// through the setting fails here rather than shipping the lie.
+    #[test]
+    fn all_rows_failed_copy_is_ungated_and_singular_aware() {
+        assert_eq!(
+            all_rows_failed_copy(1),
+            "1 container row could not be read — it did not match the expected format."
+        );
+        assert_eq!(
+            all_rows_failed_copy(6),
+            "6 container rows could not be read — none of them matched the expected format."
+        );
+        // The distinction the assertion above cannot make on its own: the same
+        // count through the setting-gated helper is `None`, so if the Dashboard
+        // ever used it for the empty case the user would see no explanation.
+        assert_eq!(skipped_summary(6, false), None);
+        assert_ne!(all_rows_failed_copy(6), skipped_summary(6, true).unwrap());
+    }
+
+    /// Both Dashboard surfaces must report an all-rows-unreadable list as a
+    /// parse failure, never as an empty account. These take no `show_skipped`
+    /// argument by construction, so no setting can suppress them — the earlier
+    /// shape of this code had the branch inline in the view, where gating it
+    /// behind the preference compiled and passed every test.
+    #[test]
+    fn dashboard_surfaces_never_call_an_unreadable_list_empty() {
+        // The lie, spelled out: this is the string the user must NOT see.
+        let lie = "No containers configured. Create one to get started!";
+        assert_ne!(dashboard_status_body(0, 0, 6), lie);
+        assert!(dashboard_status_body(0, 0, 6).contains("6"));
+        // A genuinely empty account still gets the advice.
+        assert_eq!(dashboard_status_body(0, 0, 0), lie);
+        // A working list is described by its counts, not by the skip count.
+        assert_eq!(dashboard_status_body(2, 5, 3), "2 of 5 containers running.");
+        assert_eq!(dashboard_status_body(1, 1, 0), "1 of 1 container running.");
+
+        let (icon, title, body) = dashboard_preview_copy(6);
+        assert_eq!(icon, "dialog-warning-symbolic");
+        assert_eq!(title, "Container list unreadable");
+        assert!(body.contains("6"));
+        assert!(!body.contains("Create your first container"));
+        // And the clean case is unchanged from what T6 shipped.
+        let (icon, title, body) = dashboard_preview_copy(0);
+        assert_eq!(icon, "document-open-symbolic");
+        assert_eq!(title, "No containers yet");
+        assert_eq!(body, "Create your first container to get started");
+        // Both surfaces agree: one skip count, one verdict.
+        assert_eq!(dashboard_status_body(0, 0, 6), all_rows_failed_copy(6));
+        assert_eq!(body_of(dashboard_preview_copy(6)), all_rows_failed_copy(6));
+    }
+
+    fn body_of(copy: (&'static str, &'static str, String)) -> String {
+        copy.2
+    }
 }

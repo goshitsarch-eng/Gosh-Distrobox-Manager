@@ -47,10 +47,15 @@ fn argv(
 async fn snapshot_list_queries_images() {
     let (backend, tracker) = backend_with_tracker();
     backend.list_snapshots().await.expect("list");
-    let argv = argv(&tracker);
-    assert!(
-        argv.iter().any(|a| a.contains("images")),
-        "podman/docker images argv: {argv:?}"
+    // B7: the whole ordered argv, not a `contains("images")` that would pass
+    // for either runtime and for a drifted argv alike. Exactly one command
+    // also proves podman succeeding did not trigger the docker fallback.
+    assert_eq!(
+        argv(&tracker),
+        vec![
+            "podman images --format {{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Created}}\t{{.Size}}"
+                .to_string()
+        ]
     );
 }
 
@@ -86,11 +91,15 @@ async fn snapshot_create_commits() {
         .create_snapshot("mybox", "mybox-snapshot")
         .await
         .expect("create");
-    let argv = argv(&tracker);
-    assert!(
-        argv.iter()
-            .any(|a| a.contains("commit") && a.contains("mybox-snapshot")),
-        "commit argv: {argv:?}"
+    // Both commands, in order: the ID lookup, then the commit. The commit
+    // commits `abc123` (the ID) rather than the name, so both runtimes commit
+    // the same object.
+    assert_eq!(
+        argv(&tracker),
+        vec![
+            "podman ps -a --filter name=^mybox$ --format {{.ID}}".to_string(),
+            "podman commit abc123 mybox-snapshot".to_string(),
+        ]
     );
 }
 

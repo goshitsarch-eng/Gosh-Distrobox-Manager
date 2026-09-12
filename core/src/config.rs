@@ -7,9 +7,9 @@
 //!
 //! Keys (§5.3): `selected_terminal` (legacy `selected-terminal` import,
 //! rewritten to `full_command_id`), `confirm_destructive_actions`,
-//! `snapshot_prefix`, `default_export_dir`. Window geometry + refresh
-//! interval + show-skipped + distrobox-source are deferred (no readers yet;
-//! adding a key without a reader is dead state).
+//! `snapshot_prefix`, `default_export_dir`, `show_skipped_lines` (the B3
+//! reader — §6.4). Window geometry + refresh interval + distrobox-source are
+//! deferred (no readers yet; adding a key without a reader is dead state).
 //!
 //! Legacy import (one-time): the gschema keys were kebab-case and are read
 //! by NO code (§0.4) — only `selected-terminal` carries value (default
@@ -52,6 +52,11 @@ pub struct AppConfig {
     pub snapshot_prefix: String,
     /// Start dir for export dialogs.
     pub default_export_dir: String,
+    /// B3 (§6.4): surface the rows a list parser refused to guess at
+    /// (`ContainerList.skipped`) instead of silently showing a short list.
+    /// Off by default — the rows are always collected and logged; this only
+    /// decides whether the UI mentions them.
+    pub show_skipped_lines: bool,
     /// Custom (non-read-only) terminals (ARCH-Q5/D11 store).
     pub custom_terminals: Vec<Terminal>,
 }
@@ -63,6 +68,7 @@ impl Default for AppConfig {
             confirm_destructive_actions: true,
             snapshot_prefix: "gdm".to_string(),
             default_export_dir: String::new(),
+            show_skipped_lines: false,
             custom_terminals: Vec::new(),
         }
     }
@@ -309,6 +315,10 @@ mod tests {
         let cfg = AppConfig::default();
         assert!(cfg.confirm_destructive_actions);
         assert_eq!(cfg.snapshot_prefix, "gdm");
+        assert!(
+            !cfg.show_skipped_lines,
+            "skipped rows are reported on request"
+        );
     }
 
     /// One-time probe wiring (D11/PKG-9): both legacy sources go through

@@ -8,6 +8,11 @@
 //! confirm (#170), and persisted preferences (#171): selected terminal
 //! picker, confirm-destructive toggle, snapshot prefix, export dir — all
 //! backed by cosmic-config (§5, degrade-don't-crash).
+//!
+//! The `show_skipped_lines` toggle (T13/B3) is deliberately NOT one of the
+//! rows above: it has no Flutter counterpart to reach parity with, so giving
+//! it a row number would break D19's frozen 1–193 sequence. It is recorded as
+//! I13 in PLAN.md §4 instead.
 
 use crate::message::{Message, SettingsMsg};
 use crate::views::empty_state;
@@ -42,6 +47,8 @@ pub struct PrefsEntry {
     pub confirm_destructive_actions: bool,
     pub snapshot_prefix: String,
     pub default_export_dir: String,
+    /// B3 (§6.4): mention the rows a list parser skipped.
+    pub show_skipped_lines: bool,
     pub custom_terminals: Vec<gosh_distrobox_core::backends::Terminal>,
 }
 
@@ -65,6 +72,7 @@ impl From<&AppConfig> for PrefsEntry {
             confirm_destructive_actions: cfg.confirm_destructive_actions,
             snapshot_prefix: cfg.snapshot_prefix.clone(),
             default_export_dir: cfg.default_export_dir.clone(),
+            show_skipped_lines: cfg.show_skipped_lines,
             custom_terminals: cfg.custom_terminals.clone(),
         }
     }
@@ -77,6 +85,7 @@ impl From<&PrefsEntry> for AppConfig {
             confirm_destructive_actions: entry.confirm_destructive_actions,
             snapshot_prefix: entry.snapshot_prefix.clone(),
             default_export_dir: entry.default_export_dir.clone(),
+            show_skipped_lines: entry.show_skipped_lines,
             custom_terminals: entry.custom_terminals.clone(),
         }
     }
@@ -123,6 +132,14 @@ pub fn load_entry() -> Option<(AppConfig, bool)> {
             }),
         snapshot_prefix: get_string("snapshot_prefix", &defaults.snapshot_prefix),
         default_export_dir: get_string("default_export_dir", &defaults.default_export_dir),
+        show_skipped_lines: config
+            .get::<bool>("show_skipped_lines")
+            .unwrap_or_else(|e| {
+                if e.is_err() {
+                    tracing::warn!(target: "gosh_config", "config key show_skipped_lines unreadable, using default: {e}");
+                }
+                defaults.show_skipped_lines
+            }),
         custom_terminals: config
             .get::<Vec<gosh_distrobox_core::backends::Terminal>>("custom_terminals")
             .unwrap_or_else(|e| {
@@ -214,7 +231,7 @@ pub fn preferences(
             .into();
         picker
     });
-    // Confirm toggle.
+    // Confirm toggle + B3 skipped-rows toggle share one settings list.
     col = col.push({
         let mut toggles = widget::list_column::list_column();
         toggles = toggles.add(
@@ -222,6 +239,16 @@ pub fn preferences(
                 .description("Ask before remove, stop-all, delete")
                 .toggler(config.confirm_destructive_actions, |v| {
                     Message::Settings(SettingsMsg::ConfirmToggled(v))
+                }),
+        );
+        // B3 (§6.4): the rows distrobox emitted that we could not parse are
+        // always collected and logged; this decides whether the Dashboard
+        // mentions them.
+        toggles = toggles.add(
+            widget::settings::item::builder("Show skipped rows")
+                .description("Report container rows that could not be parsed")
+                .toggler(config.show_skipped_lines, |v| {
+                    Message::Settings(SettingsMsg::ShowSkippedLinesToggled(v))
                 }),
         );
         let toggles_el: cosmic::Element<'static, Message> = toggles.into_element();
@@ -307,10 +334,32 @@ pub fn config_unavailable() -> cosmic::Element<'static, Message> {
 
 #[cfg(test)]
 mod tests {
+    /// Every field is set *away* from its default. Round-tripping
+    /// `AppConfig::default()` passes even when a `From` impl drops a field
+    /// entirely — both sides are then the same default, so nothing is
+    /// compared. Non-default values make a dropped field a real mismatch.
     #[test]
     fn entry_round_trips_core_config() {
-        let cfg = gosh_distrobox_core::AppConfig::default();
+        let cfg = gosh_distrobox_core::AppConfig {
+            selected_terminal: "kitty".to_string(),
+            confirm_destructive_actions: false,
+            snapshot_prefix: "snap".to_string(),
+            default_export_dir: "/tmp/exports".to_string(),
+            show_skipped_lines: true,
+            custom_terminals: vec![gosh_distrobox_core::backends::Terminal {
+                name: "WezTerm".to_string(),
+                program: "wezterm".to_string(),
+                extra_args: vec!["start".to_string()],
+                separator_arg: "--".to_string(),
+                read_only: true,
+            }],
+        };
         let entry = super::PrefsEntry::from(&cfg);
+        // Spot-check through the entry too, so the assertion is not satisfied
+        // by a `From` pair that loses and then re-invents the same value.
+        assert!(entry.show_skipped_lines);
+        assert_eq!(entry.selected_terminal, "kitty");
+        assert_eq!(entry.custom_terminals.len(), 1);
         let back = gosh_distrobox_core::AppConfig::from(&entry);
         assert_eq!(cfg, back);
     }
@@ -328,12 +377,32 @@ mod tests {
     /// substitutes `Self::default()` for every absent key, so an entry
     /// default that drifts from `AppConfig::default()` would hand the UI
     /// settings nobody chose (the fresh-install case: no keys on disk).
+    ///
+    /// Asserted against LITERALS, not against
+    /// `PrefsEntry::from(&AppConfig::default())` — that expression is exactly
+    /// what `impl Default for PrefsEntry` *is*, so comparing the two is a
+    /// tautology that no edit to either side can fail. These values can.
+    /// Swapping in `#[derive(Default)]` (which would give an empty terminal
+    /// id and `confirm_destructive_actions: false`, silently turning off
+    /// destructive confirms) fails every line here.
     #[test]
     fn entry_default_matches_core_default() {
+        let entry = super::PrefsEntry::default();
+        assert_eq!(entry.selected_terminal, "gnome-terminal");
+        assert!(entry.confirm_destructive_actions);
+        assert_eq!(entry.snapshot_prefix, "gdm");
+        assert!(entry.default_export_dir.is_empty());
+        assert!(!entry.show_skipped_lines);
+        assert!(entry.custom_terminals.is_empty());
+        // And the core side of the same contract, so a change to
+        // `AppConfig::default()` that forgets `PrefsEntry` is caught too.
+        let core = gosh_distrobox_core::AppConfig::default();
+        assert_eq!(entry.selected_terminal, core.selected_terminal);
         assert_eq!(
-            super::PrefsEntry::default(),
-            super::PrefsEntry::from(&gosh_distrobox_core::AppConfig::default())
+            entry.confirm_destructive_actions,
+            core.confirm_destructive_actions
         );
-        assert!(super::PrefsEntry::default().confirm_destructive_actions);
+        assert_eq!(entry.snapshot_prefix, core.snapshot_prefix);
+        assert_eq!(entry.show_skipped_lines, core.show_skipped_lines);
     }
 }

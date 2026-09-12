@@ -62,11 +62,10 @@ async fn start_sends_podman_start_argv() {
     // (verified against distrobox 1.8.2.5's dispatch table).
     let (backend, tracker) = backend_with_tracker();
     backend.start_container("mybox").await.expect("start");
-    let argv = argv(&tracker);
-    assert!(
-        argv.iter().any(|a| a == "podman start mybox"),
-        "podman start argv: {argv:?}"
-    );
+    // B7: exact, and exactly one — `.any()` would not notice the docker
+    // fallback firing, and a single command proves podman succeeding did not
+    // also trigger a retry.
+    assert_eq!(argv(&tracker), vec!["podman start mybox".to_string()]);
 }
 
 #[test]

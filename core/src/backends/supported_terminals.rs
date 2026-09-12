@@ -21,7 +21,7 @@ pub struct Terminal {
 
 impl Terminal {
     /// Build `program [extra_args…] separator_arg <enter argv>` and spawn it
-    /// through the RUNNER (D8/arch §6.2): the Flatpak/host-exec mapping
+    /// through the RUNNER (D8; architecture.md §6.2): the Flatpak/host-exec mapping
     /// applies to the *terminal* too — today's Dart path launched it from
     /// inside the sandbox. Fire-and-forget: the child is detached (the UI
     /// owns no output subscription for it).

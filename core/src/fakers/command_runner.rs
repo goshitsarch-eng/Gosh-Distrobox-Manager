@@ -207,6 +207,21 @@ impl NullCommandRunnerBuilder {
         self.responses.insert(key, Arc::new(out));
         self
     }
+    /// Register a command that FAILS with an I/O error, leaving the whole
+    /// response table intact — the other commands still answer normally.
+    ///
+    /// B7 needs this: the podman→docker fallback can only be observed if the
+    /// first runtime's command fails while the second's succeeds, and the
+    /// global `fallback` setter below would fail the retry too.
+    pub fn cmd_fails<T: AsRef<str>>(&mut self, args: &[T], message: &str) -> &mut Self {
+        let args: Vec<_> = args.iter().map(|x| x.as_ref()).collect();
+        let mut cmd = Command::new(args[0]);
+        cmd.args(&args[1..]);
+        let message = message.to_string();
+        self.cmd_full(cmd, move || {
+            Err(io::Error::new(io::ErrorKind::NotFound, message.clone()))
+        })
+    }
     #[allow(dead_code)]
     pub fn fallback(&mut self, status: ExitStatus) -> &mut Self {
         self.fallback_exit_status = status;
@@ -582,5 +597,26 @@ mod tests {
         let cmd2 = Command::new_with_args("counter", ["cmd"]);
         let result2 = block_on(runner.output_string(cmd2)).unwrap();
         assert_eq!(result2, "call 1");
+    }
+
+    /// B7's fixture: one command fails, a DIFFERENT one still succeeds. That
+    /// pair is what makes a podman→docker fallback observable — the global
+    /// `fallback` status would fail the retry as well and hide the retry.
+    #[test]
+    fn cmd_fails_is_per_command_and_leaves_the_rest_working() {
+        let runner = NullCommandRunnerBuilder::new()
+            .cmd_fails(&["podman", "start", "ubuntu"], "no podman")
+            .cmd(&["docker", "start", "ubuntu"], "started")
+            .build();
+
+        let err =
+            block_on(runner.output_string(Command::new_with_args("podman", ["start", "ubuntu"])))
+                .expect_err("the failing command must fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+
+        let ok =
+            block_on(runner.output_string(Command::new_with_args("docker", ["start", "ubuntu"])))
+                .expect("the sibling command is untouched");
+        assert_eq!(ok, "started");
     }
 }

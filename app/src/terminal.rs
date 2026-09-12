@@ -6,7 +6,7 @@
 //! filled Copy Command (#70–#72, running only), Upgrade Packages routed to
 //! the shared task flow (#73 — not a bare snackbar), Stop + confirm (#74),
 //! details rows (#75), honest help text (#76 — command display, not
-//! emulation), NO terminal emulation (#77 — dropped per §4.5).
+//! emulation), NO terminal emulation (#77 — dropped per ux.md §4.5).
 //!
 //! Launch (D8): terminal picker (supported_terminals revival) + Launch
 //! button spawns `terminal … <enter argv>` through the env-mapped runner.

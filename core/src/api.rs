@@ -58,7 +58,13 @@ pub async fn get_containers() -> anyhow::Result<Vec<ContainerInfo>> {
         .list()
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
-    Ok(map.into_values().collect())
+    // This module talks to `Distrobox` directly, so it bypasses the `Backend`
+    // boundary where B3's other drops are counted. Without this line the FRB
+    // path is the one place a skipped row vanishes unrecorded -- the exact
+    // silence B3 removes. `skipped` itself cannot cross into the DTO (Flutter
+    // has no surface for it), so the journal is where it can survive.
+    crate::service::log_skipped(&map.skipped, "api::get_containers");
+    Ok(map.containers)
 }
 
 pub async fn create_container(args: CreateArgs) -> anyhow::Result<String> {
@@ -284,6 +290,7 @@ pub async fn list_container_apps(container_name: String) -> anyhow::Result<Vec<A
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
     Ok(apps
+        .items
         .into_iter()
         .map(|app| AppInfo {
             name: app.entry.name,
@@ -327,6 +334,7 @@ pub async fn list_exported_binaries(container_name: String) -> anyhow::Result<Ve
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
     Ok(binaries
+        .items
         .into_iter()
         .map(|b| ExportedBinary {
             name: b.name,
@@ -434,6 +442,7 @@ pub async fn list_installed_packages(container_name: String) -> anyhow::Result<V
         .list_installed_packages(&container_name)
         .await
         .map_err(|e| anyhow::anyhow!(e))
+        .map(|t| t.items)
 }
 
 /// Search for packages in a container's repositories
@@ -567,6 +576,7 @@ pub async fn list_snapshots(filter_prefix: Option<String>) -> anyhow::Result<Vec
         .list_snapshots(filter_prefix.as_deref())
         .await
         .map_err(|e| anyhow::anyhow!(e))
+        .map(|t| t.items)
 }
 
 /// Delete a snapshot

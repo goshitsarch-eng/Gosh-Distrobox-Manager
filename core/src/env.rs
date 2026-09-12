@@ -2,7 +2,7 @@
 //!
 //! Collapses the two copies that exist today (`AppState::new` in
 //! `app_state.rs:15-28` and `is_distrobox_installed` in `api.rs:141-161`) into
-//! one function (architecture.md §2.4, §6.4-B6). The precedence is preserved
+//! one function (architecture.md §2.4, §6.4 row B6). The precedence is preserved
 //! exactly:
 //!
 //! 1. `/.flatpak-info` present → prefix every command with `flatpak-spawn --host`.

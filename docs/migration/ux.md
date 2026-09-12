@@ -578,6 +578,17 @@ Status key: **exists** (present and working in Flutter) · **dead** (present but
 | 170 | Danger Zone: Delete All + confirm w/ warning box | exists | `confirm()` destructive |
 | 171 | **No persisted preferences at all** | **missing** | `cosmic_config` (`Core::watch_config`, `CosmicConfigEntry`) — see §7 |
 
+> **T13 additions (B3) — no parity rows, by design.** The migration adds a
+> `show_skipped_lines` preference (default `false`, `AppConfig`) and the Dashboard
+> surface it gates: the STATUS card gains a caption — `skipped_summary` in
+> `app/src/views.rs`, reading "N rows skipped — could not be parsed." — when the
+> setting is on *and* rows were dropped. Neither gets a row in the checklist above:
+> rows 1–193 are the **frozen Flutter-parity set** (D19), and this capability has no
+> Flutter counterpart — the Flutter app had no tolerant parser to report on, so there
+> is nothing to reach parity with. It is recorded as **I13** in PLAN.md §4 where
+> migration-introduced changes belong, and the preference is tabulated in
+> architecture.md §7.
+
 ### 6.14 Apps page (8)
 
 | # | Item | Status | libcosmic approach |

@@ -403,3 +403,312 @@ dispositioned as T3/T4 obligations or doc follow-ups, not T2 blocks.
   the one doctest (`desktop_file.rs`, previously dead under staticlib/cdylib), so the
   added `use` line is a declared forced edit and sign-off must show Doc-tests
   1 passed alongside the 70 unit tests.
+
+## D27 — T13 rulings: the B3 container type, and two fallback triggers that are not one
+
+- **Question:** B3's spec says `ContainerList { containers: BTreeMap<String,
+  ContainerInfo>, skipped: Vec<ParseIssue> }`, and the B3 critique called the
+  `Deref<Target = BTreeMap>` that implies not just awkward but unsound — a map
+  `Deref` provides no slice access, so the ~17 consumer sites it listed would need
+  rewriting. B7's spec says the seven inline podman→docker blocks "route through one
+  place" and leaves Q11 (trait vs helper) open.
+- **Choice (B3):** `containers` is a **`Vec<ContainerInfo>`** with
+  `Deref<Target = Vec<ContainerInfo>>`; `TolerantList<T>` carries the other four.
+- **Why:** The critique and the plan were both partly wrong. The `BTreeMap` was
+  never observable: `Distrobox::list` already returned one, but `service.rs`
+  already did `map.into_values().collect()` at the `Backend` boundary, so the map
+  was erased before any consumer saw it. Under a `Vec` the `Deref` leaves the slice
+  consumers and every `self.containers.*` field/method read unchanged; under the map,
+  the critique's breakage list is real. The one consumer edit is the `for` loop in
+  `view_containers_page`, which needs `.iter()` because `Deref` does **not** provide
+  `IntoIterator for &ContainerList` — so "zero churn" is one line, not none. The `Vec`
+  also preserves the name-sorting the `BTreeMap` happened to provide (explicit
+  `sort_by`), so no ordering regression rides along.
+- **Choice (B7):** the helper branch of Q11 — `Distrobox::runtime_output(cmd,
+  Fallback)` over `container_runtime::retarget`, with `ContainerRuntime` left at
+  three methods.
+- **Why:** all six sites are output commands over argv `Distrobox` already
+  builds, so the trait would re-encode the same argv in two more places; and
+  `ContainerRuntime` is `#[async_trait(?Send)]`, so growing it would force a `Send`
+  conversion for operations that never needed one.
+- **Correction — B7's "seven" was wrong.** Counted in `HEAD`, exactly **six**
+  functions carried a docker fallback: `start`, `get_container_id`, `create_snapshot`,
+  `list_snapshots`, `delete_snapshot`, `get_container_stats`. `export_container` and
+  `import_container` are podman-literal and **never had a docker branch** — they are
+  *streaming* (`cmd_spawn` → `Child`), so `runtime_output`'s `String` cannot serve
+  them at all, and they are untouched for the same reason they were untouched before.
+  All six convert; the "two stayed literal" note is about sites the spec mistakenly
+  counted among the seven, not about sites this refactor declined.
+- **`retarget` is not `map_docker_to_podman`.** That helper
+  (`podman.rs:17`) is `if command.program == "docker" { program = "podman" }` — a
+  one-way `docker → podman` map on the *program field only*, installed by
+  `Podman::new` (`podman.rs:87`) so a `Docker` backend's commands reach the podman
+  runner. It cannot produce a docker retry: it points the other way, which is exactly
+  the bug `runtime_output` documents (building the retry through a
+  `Podman`-constructed runner would rewrite it straight back to podman). It also
+  **cannot** touch arguments, so it would not rename a container named `docker` —
+  that was an earlier draft of this note and it was wrong. `retarget` chooses the
+  target program and leaves the argv byte-identical, which is the property the
+  `list_snapshots` test pins.
+- **Spec amendment — the two triggers are not interchangeable.** B7 says "one place",
+  which reads as one policy; the originals had two. Five sites retried on *error*;
+  `get_container_id` retried only on *empty output* and **propagated** a podman error
+  (its podman branch ended in `?`, so docker was never consulted). Collapsing them
+  would answer a broken podman install with a misleading "container not found", or
+  hand back a same-named container from a different runtime's store. `Fallback::{
+  OnError, OnEmpty }` names both, and a test pins each.
+- **The one behaviour change, declared:** `create_snapshot` originally trimmed only
+  its podman branch and returned the docker retry's output raw. The unified helper
+  trims both. A stray newline in a returned image ID is not worth a second code path
+  to reproduce; noted at the call site rather than buried.
+- **Also:** `show_skipped_lines` and the Dashboard caption it gates get **no parity
+  row**. D19 freezes rows 1–193 as the Flutter-parity set, and this capability has no
+  Flutter counterpart to reach parity with — the Flutter app had no tolerant parser, so
+  there was nothing to report and no row to tick. It is recorded instead as **I13** in
+  PLAN.md §4 (migration-introduced changes) with a note in ux.md §6.13 pointing there.
+  An earlier draft of this decision minted ux.md ids 172–173 for it; those ids are owned
+  by §6.14 (Apps page), so minting them broke the frozen 1–193 sequence. Blank lines are
+  not parse issues: a trailing newline must not read as a skipped row.
+
+### D27 rulings from the T13 advocate pass
+
+- **Correction — the header skip was positional, and that predated T13.** `list()` did
+  `text.lines().skip(1)`, which removes whatever line happens to be first. It is
+  verifiable — `distrobox-list` prints a *fixed literal* header (1.8.2.5, line 231:
+  `printf "%-12s | %-20s | %-18s | %-30s\n" "ID" "NAME" "STATUS" "IMAGE"`) and every row
+  after it is `id|name|status|image` — so the skip now tests for those four literals by
+  identity. Two consequences the positional form had, both gone: a headerless response
+  silently lost its first real container (no log, no count, no UI trace — the exact
+  silent-loss class B3 exists to remove), and a leading non-header line shadowed the
+  real header. Because it came in with T1's `git mv rust core` rather than with T13's
+  spec, it is recorded as **I14**, not as a fix to B3.
+- **The predicate is deliberately four-literals-and-nothing-else.** No real container row
+  can satisfy it (an id is a container hash, never the literal `ID`), so it is safe at
+  any position; a looser prefix test would eat a real row whose id merely *starts* with
+  `ID`, which is the same silent-loss failure in the other direction. Pinned by a test
+  that mutates the predicate into a prefix match and fails.
+- **Correction — the `%i` rationale was wrong, and so was the re-split rationale.**
+  Two drafts of my own, both retracted in place. (1) `%i` was documented as dropped
+  because "this function sees only the `Exec` string, never the entry's `Icon`" — false:
+  `launch_app` holds `app.entry.icon`, so the pair *can* be formed. It is dropped because
+  it must not be: `distrobox-export` rewrites `Icon=` to a host-side absolute path under
+  `/run/host` (1.8.2.5, lines 582-590) that the containerised program cannot open, so
+  `--icon <host path>` is worse than no `--icon`. (2) `split_exec`'s doc claimed
+  `distrobox-enter` "had to re-split" the fused string. It does not: the `--` branch ends
+  in `exec "$@"` with no `eval` and no re-split, so the old one-string form asked for a
+  program literally named the whole fused string and **failed to launch**. Right
+  conclusion, wrong mechanism, in both cases.
+- **`launch_app` now refuses an `Exec` that leaves no command.** `%u`-only or empty
+  `Exec` used to drain to a bare `enter --name <box> --` — an interactive shell in the
+  container where the user asked to launch an app. It is a typed `Err` naming the entry
+  instead (**I15**): a silent wrong action is worse than a visible refusal, and the
+  signature can report it.
+- **`is_clean_empty()` now has a production caller, and the review's framing of its
+  defect was half right.** The method's doc claimed the UI must not render "every row
+  failed" as "no containers yet", while the Containers page tested `.is_empty()` — the
+  doc was aspirational. Worse, the *other* two container-gated pages (Backups, Packages)
+  had the same defect and the review had not listed them. All three now branch on
+  `is_clean_empty()` and share one helper (`views::container_list_copy`), which picks the count
+  and the singular/plural wording; only the Containers page offers a `Refresh`, since
+  retrying is what its unreadable list might answer to. Recorded as **I16**.
+- **`api.rs` dropping `skipped` is deliberate, not an oversight.** That module is the
+  FRB shim and is an **S7 deletion target in T14**; it erases `ContainerList` to
+  `Vec<ContainerInfo>` for the same reason `service.rs` does, and B3's `skipped` is
+  specified against the `Backend` boundary. Investing log plumbing in a file scheduled
+  for deletion would be work discarded within the same phase.
+- **Test-quality rulings — and one reviewer premise that was wrong.** Three app/core
+  tests could not fail and were rewritten to fail on a real mutation. `entry_round_trips_core_config`
+  round-tripped `AppConfig::default()`, where the field is `false`, so the round trip
+  proved nothing; it now starts from non-default values on every field. `entry_default_matches_core_default`
+  compared `PrefsEntry::default()` to the very expression that *defines* it
+  (`Self::from(&AppConfig::default())`) — a tautology; it now asserts literals plus
+  parity against the core default. The "peers stay Vec" half of the B3 boundary test was
+  dead code behind an `if let Ok` whose fixture never registered the peer's commands, and
+  `let _: &Vec<T> = &apps` is a deref coercion that a wrapper type also satisfies — it now
+  names the type at the binding and lets a fixture failure fail the test. **But** the
+  reviewer's claim that *dropping* a field from `From<&AppConfig> for PrefsEntry` would
+  leave tests green is wrong: both impls are struct literals, so a dropped field is
+  `E0063` and does not compile. The real hazard is a *wrong value* — hardcoding
+  `show_skipped_lines: false` on the write-back, or swapping `PrefsEntry` to a derived
+  `Default` — and both are now caught by test. Every new test in this pass was
+  mutation-checked (six mutations, six failures) rather than assumed to bite.
+- **`%i` drops as a *formable but forbidden* pair, not a capacity limit.** Correction to
+  an earlier draft of this bullet: `ExportableApp::entry.icon` **is** in scope at
+  `launch_app`, so `--icon <name>` could be emitted with no signature change at all. It is
+  dropped because emitting it would be wrong — `distrobox-export` rewrites `Icon=` to a
+  host-side path under `/run/host` (1.8.2.5, lines 582-590) that the containerised program
+  cannot open. A future caller with a genuinely container-usable icon should still add its
+  own expansion rather than relax this list, since the list is keyed by code, not by
+  context.
+- **`list_installed_packages` stays intolerant of an unknown package manager — that is a
+  prerequisite failure, not a row failure.** The review read the hard error as
+  inconsistency with its peers; it is the same rule they follow. `detect_package_manager`
+  returning `Unknown` means the detect script's `else` branch fired — no apt/dnf/pacman/
+  apk/zypper/xbps/emerge in the container — so *no* rows can be produced, and
+  `Ok(vec![])` would report "0 packages installed" for a container that may have
+  hundreds. Every peer draws the line identically: a missing podman is an `Err` too.
+  Only row-level refusal is tolerated (a tab-less line becomes a `ParseIssue`, which it
+  already did). Recorded in the fn's own doc so the next reader does not "fix" it.
+- **Correction — the stale-citation finding splits in two, and my first ruling of it
+  was wrong on the facts.** The direction matters, and the earlier bullet conflated them.
+
+  *Into the docs: inherited, still T14's.* `architecture.md` carries **161** source-line
+  references — **83** written `file:line` and **78** bare `:NNN` continuing a nearby
+  filename (e.g. row B1's `distrobox.rs:1215`, `:1316`, `:1348`). Across the six
+  migration docs the `file:line` form totals **151**. Of these, **10** name the
+  pre-rename `rust/src/` path that T1's `git mv rust core` killed — `rust/src/api.rs` ×3,
+  `rust/src/backends/distrobox/distrobox.rs` ×3, `rust/src/app_state.rs` ×2,
+  `rust/src/backends/host_exec.rs` ×1, `rust/src/backends/supported_terminals.rs` ×1.
+  (The earlier draft's "79" is nearest the **78** bare refs but matches no measurement I
+  can reconstruct; the figures above are counted, one grep each, and every one of the 161
+  is stale-prone the same way, so all of it goes to T14 together.) T13 added none of them
+  — `git diff -U0` over the doc shows the task introduced **zero** new source-line
+  references — so they stay filed with T14, which already owns the docs rewrite.
+
+  *Out of the Rust sources: caused by this diff, fixed here.* Five sites in `core/` and
+  `app/` cited architecture.md **by line number**, and T13's own architecture.md edit
+  (the B-row table plus the §2.3 struct) invalidated four of them, each shifted by a
+  different one of my hunks: row **B4** 1206→1223, row **B7** 1209→1226, the
+  `show_skipped_lines` key 1010→1015, and the `"12 containers, 3 rows skipped"`
+  comment 425→430. (The `containers:` field cited alongside it moved 561→566.)
+  All five now cite **section names** instead — `§6.4, row B4` / `row B3` / `row B7`,
+  `§2.3`, `§5.3` — so nothing in the Rust tree pins a doc line number any more and the
+  next doc edit cannot re-break them. (The claim in the earlier draft that
+  `architecture.md` "uses `§NNNN` as line-number notation throughout" is simply false:
+  it uses `§N.N` **section** numbers exclusively, and a scan for `§` followed by three or
+  more digits matches **nothing** in any migration doc. The line-numbered references were
+  always the *reverse* direction, doc-ward from the Rust files, which is precisely why
+  this task could invalidate them and why they were this task's to fix.)
+
+  *Two more defects the audit surfaced while fixing the above, both fixed.* (1)
+  `distrobox.rs:1708` cited **§6.9** for the B7 helper. No such section exists, and none
+  ever did — `git log -S` finds no heading by that name in the file's whole history, and
+  architecture.md's §6 runs 6.1–6.4 only. It now cites §6.2 (which names both
+  `runtime_output` and `retarget` by hand) plus §6.4 row B7. (2) Eight references in
+  `app/` — `§3.5`, `§3.6`, `§4.5` — were *unqualified* while resolving to **ux.md**, not
+  architecture.md; architecture.md happens to define §3.1–§3.4 and §4.1–§4.3, so a reader
+  who resolved them against the wrong file found either nothing (§3.5, §4.5) or the wrong
+  section. All eight now read `ux.md §3.5` etc. A re-audit resolving every `§` reference
+  in the Rust tree against the doc named on its own line returns clean.
+  (3) Two more inconsistent forms, both swept: `§6.4-B3` (3×, in `service.rs`,
+  `message.rs`, `app.rs` — an anchor form the doc never uses) is now `§6.4, row B3`, and
+  the bare `arch §` shorthand (2×, against **26** spellings of `architecture.md §`) is
+  spelled out, since "arch" is also a role label throughout PLAN.md and the `arch/` crate
+  name is one keystroke away. Rows B3/B4/B7 are cited identically in all five places now.
+- **`Exec` needs the spec's *value* escapes applied before tokenizing, and the
+  CR-not-whitespace exception is the subtle half.** `Exec` carries two escape layers in a
+  fixed order: the spec's general *string* escapes (`\s`→space, `\n`→LF, `\t`→TAB,
+  `\r`→CR, `\\`→`\`), applied to the value as read, and then the `Exec` key's own
+  quoting/tokenizing rules. Getting the order wrong is not cosmetic — the old code
+  tokenized first and passed `--dir\s"my dir"` through as the single argument
+  `--dirsmy dir` (the spaces never became separators), so the app's own default export
+  pattern did not launch. `split_exec` now runs the value pass **first** (pass A), which
+  is also why `parse_desktop_file` deliberately leaves `DesktopEntry.exec` **raw**: it
+  decodes only `Name` and `Icon`, the two values nothing re-tokenizes, because decoding
+  `Exec` as well would apply the rule twice (`--name=a\\sb` → four arguments once,
+  five twice — neither throws, so only a test can tell them apart; the asymmetry is
+  pinned by a test that asserts the two forms *differ*).
+- **Within that, CR is decoded but is NOT a separator — the one place the two layers
+  disagree, and it is GLib's disagreement, not ours.** The first implementation added
+  `\r` to the tokenizer's whitespace arm by reasoning from the escape table ("`\r` is in
+  it, so a decoded CR must be whitespace"). That reasoning was wrong, and a differential
+  test against the reference implementation caught it. GLib's `g_shell_parse_argv` splits
+  on space, TAB and LF only; a CR stays **inside** the token, so
+  `Exec=/bin/echo a\rb` is argv `["/bin/echo", "a\rb"]` — one element carrying a carriage
+  return — while `\t` in the same position yields three elements. Separators are now
+  space/TAB/LF, pinned by `split_exec_decoded_cr_stays_inside_the_argument`, which fails
+  in *both* directions: add `\r` back to the separator arm and it fails; drop `\r` from
+  the value table and it fails too.
+- **How that was established, and how far the evidence reaches.** Not by reading the spec
+  alone — which does not settle it — but by **differential testing**: 49 `Exec` values fed
+  through GLib (`GKeyFile.load_from_file` for the value layer, then
+  `g_shell_parse_argv` for the tokenizer, exactly the two-stage split GLib itself
+  performs) against this crate's `split_exec`, comparing argv element-by-element with a
+  single shared escaping so empty arguments, spaces, tabs and newlines are all visible.
+  Result after the CR fix: **39 agree, 0 differ**; the 10 remaining cases are ones GLib
+  *refuses to load at all* (the undefined escapes `\q`/`\u`/`\x0b`, an unterminated quote,
+  a trailing backslash) — the deliberate divergence recorded at `unescape_value`, where we
+  stay permissive because a malformed `Name` from a container must not cost the user the
+  app. KDE Frameworks 6.29 was independently checked (source + live probes, including a
+  compiled `KService`/`DesktopExecParser` run): it unescapes at *value* parse time too
+  (`printableToString`, kconfig `src/core/kconfigini.cpp`), it **also keeps a CR inside
+  the argument**, and it lands on the same argv for `--dir\s"my dir"` → `["--dir",
+  "my dir"]` and `C:\\path` → `["C:path"]`. So both major implementations agree with the
+  spec's *ordering*, and agree with **each other** on CR.
+- **Two corrections the primary sources forced, both narrower than the draft that preceded
+  them.** (1) The claim above was first written as "the two implementations agree with the
+  spec's ordering" *and* were left to imply agreement on the whole separator set. They do
+  not: **KDE's `KShell::splitArgs` splits on a literal space only** (`kshell_unix.cpp`
+  compares `c == QLatin1Char(' ')` at the leading-skip, tilde-path and token-terminator
+  sites — not `QChar::isSpace()`, which was my working hypothesis and is wrong), so a
+  decoded TAB or LF separates here and in GLib but stays inside the argument in KDE. And
+  the spec itself never says "whitespace" anywhere — it says **"Arguments are separated by
+  a space"**, singular — so TAB and LF are *GLib's* addition, not a spec requirement. This
+  crate follows GLib anyway (rationale at `split_exec`): the values come out of host
+  `.desktop` files that the desktop's own GLib-based parser tokenizes this way, and the
+  spec's reserved-character list names tab and newline, which only needs doing if those
+  characters separate arguments. (2) **The spec defines no single-quote rule at all** —
+  it specifies double-quote enclosing and lists `'` only among reserved characters, and
+  says nothing about quoting with it. Single-quote support is therefore a deliberate
+  extension matching both implementations' behaviour, not spec conformance, and is now
+  labelled that way in the code rather than filed under "the spec's quoting rules".
+  The harness that produced the parity numbers was temporary and is not part of the
+  commit — the *findings* are, as the tests and the doc comments at `unescape_value` and
+  the tokenizer's whitespace arm.
+- **Line continuation: the rule is *context-dependent*, and the differential run is what
+  showed it.** `\` + LF is a continuation *outside* quotes — both characters vanish and
+  the token is not broken, so `a` `\` LF `b` is one argument `ab`. Inside double quotes
+  the backslash is consumed and the **newline is kept**: `"a` `\` LF `b"` is one argument
+  holding a real LF, byte-identical to `"a` LF `b"`. I first generalised the unquoted rule
+  to quoted contexts and dropped both characters; the differential run went to `diff=1` on
+  exactly that case, and a direct probe confirmed GLib collapses both quoted forms to the
+  same element. The two arms now differ deliberately, and the quoted one is asserted
+  *against its own unbackslashed twin* so a future "simplification" that unifies them
+  fails. Reached through pass A, which is what makes it live: file text `a\\\nb` decodes to
+  `a` `\` LF `b`, and GLib cancels the pair to launch `["ab"]`.
+- **Empty quoted arguments are *kept*, and this was checked at the launch layer, not just
+  the tokenizer.** A reviewer reported as blocking that GLib *drops* an empty quoted argv
+  element, pinning our own `--dir "" --verbose` → `["--dir", "", "--verbose"]` as a
+  phantom slot that shifts every later positional argument by one. GLib's tokenizer keeps
+  it (`g_shell_parse_argv` → `['--dir', '', '--verbose']`), and because the claim was about
+  what a program *receives* I checked the launch path too rather than accepting either
+  result: `GDesktopAppInfo.launch()` against a recording script that frames `"$@"` with a
+  count and per-argument lengths returns `['--dir', '', '--verbose']` and, for an `Exec`
+  of only `""`, `['']`. The reported divergence does not exist. (My own first two attempts
+  to measure it *appeared* to confirm the finding twice — first a `printf` whose leading
+  format string was parsed as an option, then a `"$@"` capture that silently dropped the
+  first element and, later, a shell-quoted `[a<LF>b]` whose newline-containing line my
+  parser collapsed to the empty string. Each was a broken instrument, not evidence; the
+  length-prefixed frame is what settled it. The lesson is the one this file keeps
+  re-learning: a differential result is only as good as the capture pipeline.)
+- **The header predicate is version-robust; the doc claim that preceded it was not.** A
+  reviewer noted `is_distrobox_header` and its comment were locked to the 4-column header.
+  Confirmed against upstream across four release tags: 1.5.0.2 prints the six-column form
+  (`printf "%-12s | %-20s | %-18s | %-16s | %-5s | %-30s\n" "ID" "NAME" "STATUS" "MEM"
+  "CPU%" "IMAGE"`, lines 192-193) and the 4-column form arrives at 1.6.0.1 and is
+  unchanged through 1.8.2.5. On a 1.5.x host the real header failed the predicate, was
+  parsed as a data row, and was counted as a *skipped container* — copy asserting a
+  malformed row that does not exist. The predicate now keys on field 0 with an arity floor
+  (field 0 is `"ID"` and there are at least 4 fields), which accepts both layouts and still
+  rejects a container *named* `ID…`, and the doc cites both versions instead of one.
+- **I16 extends past the three pages it named — the Dashboard and Updates are the two it
+  reached last, and they are the two a user actually lands on.** Reviewers found the
+  Dashboard's status card and containers preview still branching on bare `is_empty()`, and
+  the Updates page rendering its own create-prompt from a `&[ContainerInfo]` signature
+  that had no access to `skipped` at all. All three now route through pure helpers that
+  **take no `show_skipped_lines` flag** (`dashboard_status_body`, `dashboard_preview_copy`,
+  `all_rows_failed_copy`) — deliberately, because the gate belongs to the caption, not to
+  the *lie*: the first attempt threaded the preference through and a mutation that gated
+  the copy behind it compiled and passed every test, so the API was reshaped until the
+  mutation failed. `view_updates` now takes `&ContainerList` and surfaces a partial-skip
+  caption ungated. The Dashboard is also the one page where the contradicting pair could
+  co-occur in a single card (caption "1 row skipped" two lines above "No containers
+  configured"), which is what made the earlier partial fix look complete.
+- **`api.rs` keeps its inherited gap, deferred to T14 on purpose.** The FRB shim logs the
+  aggregate skip count for `get_containers` but drops it unlogged for its four peers
+  (`list_installed_packages`, apps, exported binaries, snapshots). The finding is accurate
+  and the fix is four copies of a line that already exists — but that module is the FRB
+  shim and is an **S7 deletion target in T14**, which rewrites the file wholesale; adding
+  logging to code scheduled for deletion buys nothing and would have to be re-verified
+  against a new surface anyway. Recorded here rather than fixed, so the decision is visible
+  instead of looking like an oversight.

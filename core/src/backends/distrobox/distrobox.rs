@@ -14,6 +14,7 @@ use std::{
 };
 use tracing::{debug, error, info, warn};
 
+use crate::backends::container_runtime::{PODMAN_FIRST, retarget};
 use crate::backends::desktop_file::*;
 use crate::backends::distrobox::command::{CmdFactory, default_cmd_factory};
 
@@ -98,6 +99,25 @@ impl DesktopFiles {
     }
 }
 
+/// When a podman attempt should hand over to docker (B7). The six hand-rolled
+/// pairs in `Distrobox` did not agree on this, so it is an explicit argument
+/// rather than a rule baked into the helper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fallback {
+    /// Retry when the command fails (non-zero exit, spawn error). This is the
+    /// common case, and it also covers `list_snapshots`, whose old fallback
+    /// retried with argv that was ALREADY identical to podman's — the `?`
+    /// there only looked like error-handling because the retry sat inside the
+    /// `Err` arm.
+    OnError,
+    /// Retry only when the command SUCCEEDED but printed nothing.
+    /// `get_container_id`'s podman branch ends with `?`, so a non-zero podman
+    /// exit propagates and must NOT reach docker; only an empty-but-successful
+    /// listing falls through. Collapsing this into `OnError` would change that
+    /// error path.
+    OnEmpty,
+}
+
 #[derive(Clone)]
 pub struct Distrobox {
     cmd_runner: CommandRunner,
@@ -157,6 +177,36 @@ impl ContainerInfo {
     fn field_missing_error(text: &str, line: &str) -> Error {
         Error::ParseOutput(format!("{text} missing in line: {}", line))
     }
+}
+
+/// `distrobox list`'s header row, recognized by its leading literal field.
+///
+/// `distrobox-list` prints it before any container row, and every row after it
+/// is `id|name|status|image`. That lets `list` tell "the header we expect"
+/// apart from "a first line we failed to recognize" — a distinction a
+/// positional `.skip(1)` cannot make.
+///
+/// **Keyed on the first field alone, because the header's *width* is not
+/// stable.** The column count is part of the release, not the format:
+/// distrobox 1.5.0.2 prints six — `printf "%-12s | %-20s | %-18s | %-16s | %-5s
+/// | %-30s\n" "ID" "NAME" "STATUS" "MEM" "CPU%" "IMAGE"` (line 192) — and
+/// 1.6.0.1 through 1.8.2.5 print four (`printf "%-12s | %-20s | %-18s |
+/// %-30s\n" "ID" "NAME" "STATUS" "IMAGE"`). Matching the four full names, as
+/// this did, is therefore version-locked: on 1.5.x the real header fails the
+/// test, survives into the row loop, and is counted as an unreadable
+/// *container* — the UI then blames a header for a malformed row that does not
+/// exist, one row too many in the count.
+///
+/// Exact equality on field 0 keeps the safety property the four-literal form
+/// had: a container id is a hash, never the literal `ID`, so no real row can
+/// match at any position. It must stay `==` and not `starts_with` — a data row
+/// whose id is `ID42…` is a container, and eating it is the silent-loss failure
+/// this whole change exists to remove (pinned by test).
+fn is_distrobox_header(line: &str) -> bool {
+    let fields: Vec<&str> = line.split('|').map(str::trim).collect();
+    // `ID` alone would also match a two-field line no release prints, so the
+    // arity floor keeps the predicate honest about what a header looks like.
+    fields.len() >= 4 && fields.first() == Some(&"ID")
 }
 
 impl FromStr for ContainerInfo {
@@ -230,6 +280,119 @@ pub struct SnapshotInfo {
     pub name: String,
     pub created: String,
     pub size: String,
+}
+
+/// One row a parser refused to guess at (B3, §6.4). Carries the raw text and
+/// the parser's complaint so a skipped row is *accounted for* rather than
+/// silently dropped: each one is logged at the parse site with both fields,
+/// and the count reaches the UI (the Dashboard's "N rows skipped" caption).
+///
+/// **What the app does NOT do (T13/D27):** render the fields themselves. No UI
+/// lists the skipped lines — only `skipped.len()` crosses the boundary, and
+/// `show_skipped_lines` gates the count alone. Carrying the detail anyway is
+/// deliberate: the fields are what the log needs, and a future detail view can
+/// read them without a re-plumb. The fields are `String` because
+/// `DistroboxError` is not `Clone` and `ParseIssue` must be (`Message` is).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseIssue {
+    /// The raw line that failed. For `list_apps` there is no source line —
+    /// the desktop file's PATH is the identity of the skipped row.
+    pub line: String,
+    /// The parser's error, rendered.
+    pub error: String,
+}
+
+/// `list()`'s result: the containers that parsed, plus the rows that did not
+/// (B3, §6.4).
+///
+/// `containers` is a `Vec`, **not** the `BTreeMap<String, ContainerInfo>` that
+/// architecture.md §2.3 (the DRAFT `Message` struct) and §6.4 (row B3)
+/// specify — a
+/// recorded spec correction. The map
+/// `list()` builds internally is already erased at the `Backend` boundary
+/// (`Backend::containers` does `into_values().collect()`), no consumer wants
+/// keyed access to it, and keeping it here is actively harmful in two ways:
+/// `Deref` to a map would turn the container pickers' *positional* `.get(i)`
+/// into a *keyed* lookup (silently selecting a different row or none), and it
+/// would break all 28 `&self.containers` slice consumers, since a map cannot
+/// coerce to `&[ContainerInfo]`.
+///
+/// Order matches the old map's: name-sorted (see `list`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ContainerList {
+    pub containers: Vec<ContainerInfo>,
+    pub skipped: Vec<ParseIssue>,
+}
+
+/// Read-through to `containers`, so the ~28 existing `self.containers.*` reads
+/// (`.len`, `.is_empty`, `.first`, `.iter`, `.get(i)`, and `&self.containers`
+/// coercing to `&[ContainerInfo]` via `Vec`'s own `Deref<Target = [T]>`) keep
+/// working untouched. `skipped` is the one field reached by name through the
+/// wrapper. A `BTreeMap` target would not give the slice coercion — see the
+/// struct doc.
+///
+/// **What `Deref` does NOT cover:** `for c in &self.containers`. There is no
+/// auto-deref in a `for` head, and `&ContainerList` is not `IntoIterator`, so
+/// the one `for` loop over the list had to become `.iter()`. That is the whole
+/// of the app-side churn; D27 records it rather than claiming "zero".
+impl std::ops::Deref for ContainerList {
+    type Target = Vec<ContainerInfo>;
+    fn deref(&self) -> &Self::Target {
+        &self.containers
+    }
+}
+
+impl ContainerList {
+    /// "Nothing parsed AND nothing was dropped" — a genuinely empty account,
+    /// as opposed to "every row failed", which the UI must not render as
+    /// "no containers yet".
+    pub fn is_clean_empty(&self) -> bool {
+        self.containers.is_empty() && self.skipped.is_empty()
+    }
+}
+
+/// The same contract as `ContainerList` for the four per-container peers
+/// (`list_apps`, `get_exported_binaries`, `list_installed_packages`,
+/// `list_snapshots`), whose item type differs.
+///
+/// A peer's `skipped` does **not** ride to the app in T13: those `Backend`
+/// methods already erase their result to `Vec<T>` for the `AppInfo` /
+/// `ExportedBinary` / `PackageInfo` / `SnapshotInfo` DTO mapping, and
+/// `show_skipped_lines` (architecture.md §5.3) is specified against
+/// `ContainerList.skipped` alone. The wrapper exists so each parse loop has
+/// somewhere to record a refusal that the boundary then logs.
+#[derive(Debug, Clone)]
+pub struct TolerantList<T> {
+    pub items: Vec<T>,
+    pub skipped: Vec<ParseIssue>,
+}
+
+// Hand-written: the derive would demand `T: Default` (`ExportableApp`,
+// `ExportableBinary`, `PackageInfo` and `SnapshotInfo` all lack it), but an
+// empty list needs nothing from its element type.
+impl<T> Default for TolerantList<T> {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            skipped: Vec::new(),
+        }
+    }
+}
+
+/// Read-through to `items`, for the same reason as `ContainerList`: `.len`,
+/// indexing and `.iter()` keep working, and `skipped` is the one field reached
+/// by name.
+///
+/// **What `Deref` does NOT cover:** `for x in &wrapper`. `Deref` coercion does
+/// not apply to the `for` head — `IntoIterator` is resolved on the type written
+/// there — so `&TolerantList<T>` is not `IntoIterator` and that form is a
+/// compile error. Write `for x in wrapper.iter()` (which goes through
+/// `Deref` to the slice, and does work), or `for x in &*wrapper`.
+impl<T> std::ops::Deref for TolerantList<T> {
+    type Target = Vec<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
 }
 
 /// Resource usage statistics for a container
@@ -777,48 +940,53 @@ impl Distrobox {
             .collect::<Vec<_>>())
     }
 
-    pub async fn list_apps(&self, box_name: &str) -> Result<Vec<ExportableApp>, Error> {
+    pub async fn list_apps(&self, box_name: &str) -> Result<TolerantList<ExportableApp>, Error> {
         let files = self.get_desktop_files(box_name).await?;
         debug!(desktop_files=?files);
         let exported = self.get_exported_desktop_files().await?;
         debug!(exported_files=?exported);
-        let res: Vec<ExportableApp> = files
-            .into_iter()
-            .flat_map(|(path, content)| -> Option<ExportableApp> {
-                let entry = match parse_desktop_file(&content) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        tracing::warn!("Failed to parse desktop file {}: {}", path, e);
-                        return None;
-                    }
-                };
-                let file_name = Path::new(&path)
-                    .file_name()
-                    .map(|x| x.to_str())
-                    .unwrap_or_default()
-                    .unwrap_or_default();
-
-                let exported_as = format!("{box_name}-{file_name}");
-                let is_exported = exported.contains(&exported_as);
-                if is_exported {
-                    debug!(found_exported = exported_as);
+        // B3: this peer already warned-and-continued; it now also records the
+        // skip so the four parsers report the same way. `line` carries the
+        // desktop file's PATH — there is no source line to quote.
+        let mut out = TolerantList::default();
+        for (path, content) in files {
+            let entry = match parse_desktop_file(&content) {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!("Failed to parse desktop file {}: {}", path, e);
+                    out.skipped.push(ParseIssue {
+                        line: path,
+                        error: e.to_string(),
+                    });
+                    continue;
                 }
-                Some(ExportableApp {
-                    desktop_file_path: path,
-                    entry,
-                    exported: is_exported,
-                })
-            })
-            .collect();
+            };
+            let file_name = Path::new(&path)
+                .file_name()
+                .map(|x| x.to_str())
+                .unwrap_or_default()
+                .unwrap_or_default();
 
-        Ok(res)
+            let exported_as = format!("{box_name}-{file_name}");
+            let is_exported = exported.contains(&exported_as);
+            if is_exported {
+                debug!(found_exported = exported_as);
+            }
+            out.items.push(ExportableApp {
+                desktop_file_path: path,
+                entry,
+                exported: is_exported,
+            });
+        }
+
+        Ok(out)
     }
 
     /// Lists only the binaries that have already been exported from the container.
     pub async fn get_exported_binaries(
         &self,
         box_name: &str,
-    ) -> Result<Vec<ExportableBinary>, Error> {
+    ) -> Result<TolerantList<ExportableBinary>, Error> {
         let mut cmd = self.dbcmd();
         cmd.args([
             "enter",
@@ -831,13 +999,26 @@ impl Distrobox {
         let output = self.cmd_output_string(cmd).await?;
         debug!(binaries_output = output);
 
-        let mut binaries = Vec::new();
+        let mut out = TolerantList::default();
         for line in output.lines() {
-            if line.is_empty() || !line.contains('|') {
+            if line.trim().is_empty() {
+                continue;
+            }
+            // B3: a row with no separator is a shape this parser cannot read,
+            // and it used to be dropped without a word.
+            if !line.contains('|') {
+                warn!(line = %line, "Skipping binary row with no '|' separator");
+                out.skipped.push(ParseIssue {
+                    line: line.to_string(),
+                    error: "expected '<source> | <exported>'".to_string(),
+                });
                 continue;
             }
 
             let parts: Vec<&str> = line.split('|').collect();
+            // Unreachable past the delimiter check above (a line containing
+            // '|' always splits into >= 2 parts), so this stays the original
+            // defensive guard rather than becoming a second, dead ParseIssue.
             if parts.len() >= 2 {
                 let source_path = parts[0].trim().to_string();
                 // For some reason distrobox formats the source path between single quotes, so we need to remove those
@@ -874,7 +1055,10 @@ impl Distrobox {
                         .unwrap_or(&source_path)
                         .to_string();
 
-                    binaries.push(ExportableBinary {
+                    // Note: an empty exported path is a deliberate policy
+                    // drop (BoxBuddy parity), not a parse failure — it is not
+                    // a ParseIssue.
+                    out.items.push(ExportableBinary {
                         name,
                         source_path,
                         exported_path,
@@ -883,7 +1067,7 @@ impl Distrobox {
             }
         }
 
-        Ok(binaries)
+        Ok(out)
     }
 
     /// Extracts the original binary path from a distrobox exported wrapper script.
@@ -920,13 +1104,33 @@ impl Distrobox {
         container: &str,
         app: &ExportableApp,
     ) -> Result<Box<dyn Child + Send>, Error> {
+        // B4: real argv elements. The old code stripped four field codes with
+        // a `str::replace` fold and then passed the remainder as a SINGLE
+        // argument. `distrobox-enter` ends in `exec "$@"` (distrobox 1.8.2.5,
+        // the `--` branch at script line 257 — `shift; break` then `exec "$@"`,
+        // with no `eval` and no re-split), so one element is one argv slot and
+        // `exec "/usr/bin/foo --title My Document"` searches for a program
+        // whose name is that whole literal string: the app did not launch with
+        // mangled arguments, it failed to launch at all. Splitting here is what
+        // makes the Exec work, and it keeps a container-supplied Exec from
+        // dictating argv shape.
+        let argv = split_exec(&app.entry.exec);
+        if argv.is_empty() {
+            // An `Exec` that is empty or entirely field codes would otherwise
+            // emit a dangling `enter --name <box> --`, which enters the
+            // container with no command at all. Fail loudly instead.
+            return Err(Error::CommandFailed {
+                exit_code: None,
+                command: "launch_app".into(),
+                stderr: format!(
+                    "desktop entry '{}' has no executable command in its Exec key",
+                    app.entry.name
+                ),
+            });
+        }
         let mut cmd = self.dbcmd();
         cmd.arg("enter").arg("--name").arg(container).arg("--");
-        let to_be_replaced = [" %f", " %u", " %F", " %U"];
-        let cleaned_exec = to_be_replaced
-            .into_iter()
-            .fold(app.entry.exec.clone(), |acc, x| acc.replace(x, ""));
-        cmd.arg(cleaned_exec);
+        cmd.args(argv);
         self.cmd_spawn(cmd)
     }
 
@@ -1110,13 +1314,28 @@ impl Distrobox {
         self.cmd_spawn(cmd)
     }
     // list | ls
-    pub async fn list(&self) -> Result<BTreeMap<String, ContainerInfo>, Error> {
+    pub async fn list(&self) -> Result<ContainerList, Error> {
         let mut cmd = self.dbcmd();
         cmd.arg("ls").arg("--no-color");
         let text = self.cmd_output_string(cmd).await?;
-        let lines = text.lines().skip(1);
-        let mut out = BTreeMap::new();
-        for line in lines {
+        let mut out = ContainerList::default();
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            // B3: drop the header by IDENTITY, not by position. This used to
+            // be `text.lines().skip(1)`, which removed whatever happened to
+            // be first — so a response without a header silently lost a real
+            // container, and the drop was invisible: not logged, not counted,
+            // not shown. That is the same silent-loss class B3 removes for
+            // unparseable rows, so the header no longer gets to skip
+            // inspection. The predicate is a four-literal match, which no real
+            // container row can satisfy (its id is a container hash, never the
+            // literal `ID`), so this is safe at any position and also survives
+            // a leading line that is not the header.
+            if is_distrobox_header(line) {
+                continue;
+            }
             match line.parse::<ContainerInfo>() {
                 Ok(item) => {
                     debug!(
@@ -1126,14 +1345,26 @@ impl Distrobox {
                         status = ?item.status,
                         "Discovered container"
                     );
-                    out.insert(item.name.clone(), item);
+                    out.containers.push(item);
                 }
                 Err(e) => {
-                    error!(error = %e, line = %line, "Failed to parse container info");
-                    return Err(e);
+                    // B3: one unparseable row no longer discards the rest.
+                    // Before this, a single malformed line (an image name
+                    // containing `|`, a future distrobox column change) made
+                    // the whole list an error screen over containers that had
+                    // parsed perfectly well.
+                    warn!(error = %e, line = %line, "Skipping unparseable container row");
+                    out.skipped.push(ParseIssue {
+                        line: line.to_string(),
+                        error: e.to_string(),
+                    });
                 }
             }
         }
+        // Preserve the ordering the old `BTreeMap` produced (name-sorted) so
+        // this is not also a display-order change. Podman container names are
+        // unique, so the map's dedup-by-name had nothing to do.
+        out.containers.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
     }
     // rm
@@ -1148,7 +1379,7 @@ impl Distrobox {
         cmd.arg("stop").arg("--yes").arg(name);
         self.cmd_output_string(cmd).await
     }
-    // start (B5, arch §6.4): there is NO `distrobox start` subcommand
+    // start (architecture.md §6.4, row B5): there is NO `distrobox start` subcommand
     // (verified against distrobox 1.8.2.5's dispatch table) — the spec
     // prescribes `podman start <name>` with a Docker fallback, mirroring
     // `get_container_id`. A UI button labelled "Start" means a true start
@@ -1160,14 +1391,7 @@ impl Distrobox {
         // names, avoiding the ID-namespace mismatch between runtimes).
         let mut cmd = Command::new("podman");
         cmd.args(["start", name]);
-        match self.cmd_output_string(cmd).await {
-            Ok(out) => Ok(out),
-            Err(_) => {
-                let mut cmd = Command::new("docker");
-                cmd.args(["start", name]);
-                self.cmd_output_string(cmd).await
-            }
-        }
+        self.runtime_output(cmd, Fallback::OnError).await
     }
     pub async fn stop_all(&self) -> Result<String, Error> {
         let mut cmd = self.dbcmd();
@@ -1272,11 +1496,20 @@ impl Distrobox {
     // Package Management APIs
     // ============================================================================
 
-    /// List installed packages in a container
+    /// List installed packages in a container.
+    ///
+    /// Tolerant of *rows* like its peers (a malformed line lands in
+    /// `skipped`), but deliberately **not** of a missing prerequisite: an
+    /// unrecognized package manager is a typed `Err`, not an empty list.
+    /// Those are different failures — a manager we cannot identify produces no
+    /// rows at all, and returning `Ok(vec![])` for it would report "0 packages
+    /// installed" for a container that may have hundreds. Every peer draws the
+    /// line in the same place (a missing podman is an `Err` too); only
+    /// row-level refusal is tolerated. See D27.
     pub async fn list_installed_packages(
         &self,
         container: &str,
-    ) -> Result<Vec<PackageInfo>, Error> {
+    ) -> Result<TolerantList<PackageInfo>, Error> {
         use crate::models::PackageManager;
         let pkg_manager = self.detect_package_manager(container).await?;
 
@@ -1312,7 +1545,7 @@ impl Distrobox {
         };
 
         let output = self.run_in_container(container, script).await?;
-        let mut packages = Vec::new();
+        let mut out = TolerantList::default();
 
         for line in output.lines() {
             if line.trim().is_empty() {
@@ -1320,16 +1553,25 @@ impl Distrobox {
             }
             let parts: Vec<&str> = line.splitn(3, '\t').collect();
             if parts.len() >= 2 {
-                packages.push(PackageInfo {
+                out.items.push(PackageInfo {
                     name: parts[0].trim().to_string(),
                     version: parts[1].trim().to_string(),
                     description: parts.get(2).unwrap_or(&"").trim().to_string(),
                     installed: true,
                 });
+            } else {
+                // B3: every PM script above tab-separates name/version, so a
+                // tab-less row is usually a one-line error message the script
+                // leaked onto stdout — reported, not silently eaten.
+                warn!(line = %line, "Skipping package row with no tab separator");
+                out.skipped.push(ParseIssue {
+                    line: line.to_string(),
+                    error: "expected '<name>\\t<version>\\t<description>'".to_string(),
+                });
             }
         }
 
-        Ok(packages)
+        Ok(out)
     }
 
     /// Search for packages in a container
@@ -1479,9 +1721,84 @@ impl Distrobox {
     // Snapshot/Backup APIs (via podman/docker)
     // ============================================================================
 
+    /// Run `cmd` against podman, falling back to docker per `trigger`
+    /// (architecture.md §6.2, which names this helper, and §6.4 row B7). This
+    /// is the "one place" the row asks for: the
+    /// six hand-rolled pairs in this file disagreed on trigger, on argv, and
+    /// on whether the result was trimmed, and now share one loop.
+    ///
+    /// The command is built ONCE for podman and re-aimed with
+    /// `container_runtime::retarget`, which swaps only the program — so
+    /// arguments, order and stdio modes cannot drift between the two
+    /// attempts. The runner is always `self.cmd_runner` (the env-mapped one,
+    /// `env.rs`): routing through a `Podman`-constructed runner would rewrite
+    /// the docker retry straight back to podman, since `Podman::new` installs
+    /// `map_docker_to_podman`.
+    ///
+    /// The raw string is returned; trimming stays with each caller, because
+    /// the callers disagree about it (`create_snapshot` trims, `start` does
+    /// not) and unifying that here would be a silent behaviour change.
+    ///
+    /// `trigger` decides what a FAILURE means, and the two triggers are not
+    /// interchangeable — they reproduce what the six originals each did:
+    ///
+    /// * `OnError` (five sites): a failure means "wrong runtime", so the other
+    ///   one is tried, and the last runtime's failure is what surfaces.
+    /// * `OnEmpty` (`get_container_id` alone): a failure IS the answer. Its
+    ///   original podman branch ended in `?`, so an error propagated and
+    ///   docker was never consulted. Retrying there would swap a podman
+    ///   diagnostic for a misleading "container not found", or hand back a
+    ///   same-named container from a different runtime's store.
+    async fn runtime_output(&self, cmd: Command, trigger: Fallback) -> Result<String, Error> {
+        let mut last_error: Option<Error> = None;
+        let last_runtime = PODMAN_FIRST[PODMAN_FIRST.len() - 1];
+        for runtime in PODMAN_FIRST {
+            let attempt = retarget(&cmd, runtime);
+            match self.cmd_output_string(attempt).await {
+                Ok(out) => {
+                    // `OnEmpty` is the "this runtime is working, it just does
+                    // not know the name" case: an empty answer is worth
+                    // retrying only while another runtime remains to ask.
+                    if trigger == Fallback::OnEmpty
+                        && out.trim().is_empty()
+                        && runtime != last_runtime
+                    {
+                        debug!(
+                            runtime = runtime.program(),
+                            "runtime produced no output; trying the next one"
+                        );
+                        continue;
+                    }
+                    return Ok(out);
+                }
+                Err(e) => {
+                    if trigger == Fallback::OnEmpty {
+                        return Err(e);
+                    }
+                    if runtime == last_runtime {
+                        last_error = Some(e);
+                    } else {
+                        debug!(
+                            error = %e,
+                            runtime = runtime.program(),
+                            "runtime failed; trying the next one"
+                        );
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| Error::CommandFailed {
+            exit_code: None,
+            command: "runtime_output".into(),
+            stderr: "no container runtime available".into(),
+        }))
+    }
+
     /// Get the container ID for a distrobox container by name
     async fn get_container_id(&self, container_name: &str) -> Result<String, Error> {
-        // Use podman/docker to get the container ID
+        // `ps` BY NAME (podman/docker accept names, which avoids the
+        // ID-namespace mismatch between runtimes); retry on docker only when
+        // podman SUCCEEDED with nothing — see `Fallback::OnEmpty`.
         let mut cmd = Command::new("podman");
         cmd.args([
             "ps",
@@ -1492,34 +1809,20 @@ impl Distrobox {
             "{{.ID}}",
         ]);
 
-        let output = self.cmd_output_string(cmd).await?;
-        let id = output.trim().to_string();
+        let id = self
+            .runtime_output(cmd, Fallback::OnEmpty)
+            .await?
+            .trim()
+            .to_string();
 
         if id.is_empty() {
-            // Try docker if podman didn't find it
-            let mut cmd = Command::new("docker");
-            cmd.args([
-                "ps",
-                "-a",
-                "--filter",
-                &format!("name=^{}$", container_name),
-                "--format",
-                "{{.ID}}",
-            ]);
-            let output = self.cmd_output_string(cmd).await?;
-            let id = output.trim().to_string();
-
-            if id.is_empty() {
-                return Err(Error::CommandFailed {
-                    exit_code: Some(1),
-                    command: "get_container_id".into(),
-                    stderr: format!("Container not found: {}", container_name),
-                });
-            }
-            Ok(id)
-        } else {
-            Ok(id)
+            return Err(Error::CommandFailed {
+                exit_code: Some(1),
+                command: "get_container_id".into(),
+                stderr: format!("Container not found: {}", container_name),
+            });
         }
+        Ok(id)
     }
 
     /// Create a snapshot (image) of a container using podman/docker commit
@@ -1530,30 +1833,37 @@ impl Distrobox {
     ) -> Result<String, Error> {
         let container_id = self.get_container_id(container_name).await?;
 
-        // Try podman first, then docker
+        // By ID — resolved above, so both runtimes commit the same object.
+        //
+        // The one intentional behaviour change B7 makes: the original trimmed
+        // ONLY the podman branch and returned the docker retry's output raw.
+        // The unified helper trims whatever comes back, so a trailing newline
+        // from the docker path now goes away too. Recorded here rather than
+        // buried, because it is the single place the refactor is not exactly
+        // behaviour-preserving — and a stray newline in an image ID is not
+        // worth a second code path to reproduce.
         let mut cmd = Command::new("podman");
         cmd.args(["commit", &container_id, snapshot_name]);
-
-        match self.cmd_output_string(cmd).await {
-            Ok(output) => Ok(output.trim().to_string()),
-            Err(_) => {
-                let mut cmd = Command::new("docker");
-                cmd.args(["commit", &container_id, snapshot_name]);
-                self.cmd_output_string(cmd).await
-            }
-        }
+        Ok(self
+            .runtime_output(cmd, Fallback::OnError)
+            .await?
+            .trim()
+            .to_string())
     }
 
     /// List snapshots (images) created from containers
     pub async fn list_snapshots(
         &self,
         filter_prefix: Option<&str>,
-    ) -> Result<Vec<SnapshotInfo>, Error> {
+    ) -> Result<TolerantList<SnapshotInfo>, Error> {
         // List images with podman, filter by optional prefix
         let filter = filter_prefix
             .map(|p| format!("reference={}*", p))
             .unwrap_or_default();
 
+        // Built once, including the optional filter; the docker retry used to
+        // rebuild this argv from scratch and had to keep the filter clause in
+        // step by hand.
         let mut cmd = Command::new("podman");
         cmd.args([
             "images",
@@ -1564,52 +1874,41 @@ impl Distrobox {
             cmd.args(["--filter", &filter]);
         }
 
-        let output = match self.cmd_output_string(cmd).await {
-            Ok(out) => out,
-            Err(_) => {
-                // Try docker
-                let mut cmd = Command::new("docker");
-                cmd.args([
-                    "images",
-                    "--format",
-                    "{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Created}}\t{{.Size}}",
-                ]);
-                if !filter.is_empty() {
-                    cmd.args(["--filter", &filter]);
-                }
-                self.cmd_output_string(cmd).await?
-            }
-        };
+        let output = self.runtime_output(cmd, Fallback::OnError).await?;
 
-        let mut snapshots = Vec::new();
+        let mut out = TolerantList::default();
         for line in output.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
             let parts: Vec<&str> = line.split('\t').collect();
             if parts.len() >= 4 {
-                snapshots.push(SnapshotInfo {
+                out.items.push(SnapshotInfo {
                     id: parts[0].to_string(),
                     name: parts[1].to_string(),
                     created: parts[2].to_string(),
                     size: parts[3].to_string(),
                 });
+            } else {
+                // B3: `--format` above asks for exactly four tab-separated
+                // fields, so a shorter row means the format did not take —
+                // reported rather than silently dropped.
+                warn!(line = %line, "Skipping snapshot row with fewer than 4 fields");
+                out.skipped.push(ParseIssue {
+                    line: line.to_string(),
+                    error: "expected '<id>\\t<name>\\t<created>\\t<size>'".to_string(),
+                });
             }
         }
 
-        Ok(snapshots)
+        Ok(out)
     }
 
     /// Delete a snapshot (image)
     pub async fn delete_snapshot(&self, snapshot_name_or_id: &str) -> Result<String, Error> {
         let mut cmd = Command::new("podman");
         cmd.args(["rmi", snapshot_name_or_id]);
-
-        match self.cmd_output_string(cmd).await {
-            Ok(output) => Ok(output),
-            Err(_) => {
-                let mut cmd = Command::new("docker");
-                cmd.args(["rmi", snapshot_name_or_id]);
-                self.cmd_output_string(cmd).await
-            }
-        }
+        self.runtime_output(cmd, Fallback::OnError).await
     }
 
     /// Restore a container from a snapshot by creating a new container from the image
@@ -1632,6 +1931,18 @@ impl Distrobox {
     // ============================================================================
 
     /// Export a container to a tar archive (returns Child for streaming)
+    ///
+    /// B7 DECISION: this stays podman-literal (no docker fallback), like
+    /// `import_container` below and unlike the six sites that now route
+    /// through `runtime_output`.
+    ///
+    /// Both are STREAMING (`cmd_spawn` → a `Child` whose output the task
+    /// registry reads), and `runtime_output` is an OUTPUT helper — it returns
+    /// a `String` and has no way to hand back a live child, so it cannot serve
+    /// them at all. A streaming fallback would have to spawn, detect the
+    /// failure, and respawn, which is a task-runtime concern rather than an
+    /// argv one. Nothing in the row's scope requires it, and inventing it here
+    /// would be the kind of unrequested behaviour change B7 is trying to avoid.
     pub fn export_container(
         &self,
         container_name: &str,
@@ -1645,7 +1956,8 @@ impl Distrobox {
         self.cmd_spawn(cmd)
     }
 
-    /// Import a container from a tar archive (returns Child for streaming)
+    /// Import a container from a tar archive (returns Child for streaming).
+    /// Podman-literal — see `export_container` for the B7 reasoning.
     pub fn import_container(
         &self,
         archive_path: &str,
@@ -1674,21 +1986,7 @@ impl Distrobox {
             container_name,
         ]);
 
-        let output = match self.cmd_output_string(cmd).await {
-            Ok(out) => out,
-            Err(_) => {
-                // Try docker
-                let mut cmd = Command::new("docker");
-                cmd.args([
-                    "stats",
-                    "--no-stream",
-                    "--format",
-                    "{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}",
-                    container_name,
-                ]);
-                self.cmd_output_string(cmd).await?
-            }
-        };
+        let output = self.runtime_output(cmd, Fallback::OnError).await?;
 
         let line = output.lines().next().unwrap_or_default();
         let parts: Vec<&str> = line.split('\t').collect();
@@ -1730,6 +2028,7 @@ impl Default for Distrobox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fakers::{CommandRunnerEvent, OutputTracker};
     use smol::block_on;
 
     /// Helper to generate TOML output matching the shell script format
@@ -1764,18 +2063,17 @@ d24405b14180 | ubuntu               | Created            | ghcr.io/ublue-os/ubun
                     .build(),
                 default_cmd_factory(),
             );
+            let got = db.list().await?;
             assert_eq!(
-                db.list().await?,
-                BTreeMap::from_iter([(
-                    "ubuntu".into(),
-                    ContainerInfo {
-                        id: "d24405b14180".into(),
-                        name: "ubuntu".into(),
-                        status: Status::Created("".into()),
-                        image: "ghcr.io/ublue-os/ubuntu-toolbox:latest".into(),
-                    }
-                )])
+                got.containers,
+                vec![ContainerInfo {
+                    id: "d24405b14180".into(),
+                    name: "ubuntu".into(),
+                    status: Status::Created("".into()),
+                    image: "ghcr.io/ublue-os/ubuntu-toolbox:latest".into(),
+                }]
             );
+            assert!(got.skipped.is_empty(), "a clean fixture skips nothing");
             Ok(())
         })
     }
@@ -1965,15 +2263,147 @@ Categories=Utility;Security;";
     #[test]
     fn start_sends_podman_start_argv() -> Result<(), Error> {
         // B5: `podman start <name>` (there is no `distrobox start`
-        // subcommand); Docker fallback covered by the sibling path.
+        // subcommand); the docker fallback is covered by
+        // `start_falls_back_to_docker_when_podman_fails`.
         let db = Distrobox::new(CommandRunner::new_null(), default_cmd_factory());
         let output_tracker = db.cmd_runner.output_tracker();
         block_on(db.start("ubuntu"))?;
-        assert_eq!(
-            output_tracker.items()[0].command().unwrap().to_string(),
-            "podman start ubuntu"
-        );
+        // Positional AND exhaustive: reading `items()[0]` alone would still
+        // pass if a retry had fired behind it. A null runner answers every
+        // command with success, so a correct implementation stops after one.
+        let seen: Vec<_> = output_tracker
+            .items()
+            .iter()
+            .filter_map(|e| e.command().map(|c| c.to_string()))
+            .collect();
+        assert_eq!(seen, vec!["podman start ubuntu".to_string()]);
         Ok(())
+    }
+
+    /// B4: the argv a `launch_app` call actually hands the runner, as strings.
+    fn launch_argv(exec: &str) -> Vec<String> {
+        let db = Distrobox::new(CommandRunner::new_null(), default_cmd_factory());
+        let output_tracker = db.cmd_runner.output_tracker();
+        let app = ExportableApp {
+            entry: DesktopEntry {
+                name: "App".into(),
+                exec: exec.into(),
+                icon: "app".into(),
+            },
+            desktop_file_path: "/tmp/app.desktop".into(),
+            exported: false,
+        };
+        db.launch_app("ubuntu", &app).expect("spawn succeeds");
+        output_tracker.items()[0]
+            .command()
+            .expect("a command was spawned")
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect()
+    }
+
+    /// B4 regression: the Exec becomes real argv elements. Before this the
+    /// whole cleaned string was ONE argument, so `--title "My Document"`
+    /// reached distrobox fused as `--title "My Document"` in a single slot
+    /// and the declared boundary (and the quoted space) were at the mercy of
+    /// distrobox's own re-split.
+    #[test]
+    fn launch_app_splits_exec_into_argv_elements() {
+        assert_eq!(
+            launch_argv("/usr/bin/foo --title \"My Document\" %u"),
+            vec![
+                "enter",
+                "--name",
+                "ubuntu",
+                "--",
+                "/usr/bin/foo",
+                "--title",
+                "My Document"
+            ]
+        );
+    }
+
+    /// The security-shaped pin: shell metacharacters in a container-supplied
+    /// Exec are inert characters inside one element. Nothing here is a shell
+    /// word and no element is ever re-split.
+    #[test]
+    fn launch_app_keeps_metacharacters_inside_one_element() {
+        assert_eq!(
+            launch_argv("/usr/bin/foo \"bar; rm -rf /\" %u"),
+            vec![
+                "enter",
+                "--name",
+                "ubuntu",
+                "--",
+                "/usr/bin/foo",
+                "bar; rm -rf /"
+            ]
+        );
+    }
+
+    /// A code at offset 0 (which `parse_desktop_file`'s trim makes the normal
+    /// shape for `%U firefox`) used to survive into argv, because the old
+    /// needles all began with a space.
+    #[test]
+    fn launch_app_strips_a_leading_field_code() {
+        assert_eq!(
+            launch_argv("%U firefox"),
+            vec!["enter", "--name", "ubuntu", "--", "firefox"]
+        );
+    }
+
+    /// `%i` is dropped outright and introduces no phantom argument, and a
+    /// field-code-only Exec contributes no empty slot.
+    #[test]
+    fn launch_app_drops_field_codes_without_adding_arguments() {
+        assert_eq!(
+            launch_argv("/usr/bin/foo %i --evil"),
+            vec!["enter", "--name", "ubuntu", "--", "/usr/bin/foo", "--evil"]
+        );
+    }
+
+    /// An `Exec` with nothing left after field-code removal is a refusal, not
+    /// an interactive shell. Draining it to a bare `enter --name <box> --`
+    /// would silently hand the user a shell in the container where they asked
+    /// to launch an app — a wrong action taken without a word. The signature
+    /// can report this, so it does.
+    #[test]
+    fn launch_app_refuses_an_exec_with_no_command_left() {
+        let db = Distrobox::new(CommandRunner::new_null(), default_cmd_factory());
+        let tracker = db.cmd_runner.output_tracker();
+        let app = ExportableApp {
+            entry: DesktopEntry {
+                name: "Ghost".into(),
+                exec: "%u".into(),
+                icon: "ghost".into(),
+            },
+            desktop_file_path: "/tmp/ghost.desktop".into(),
+            exported: false,
+        };
+        // `.err()` rather than `.expect_err()`: the Ok type is `Box<dyn Child>`,
+        // which is not `Debug`.
+        let err = db
+            .launch_app("ubuntu", &app)
+            .err()
+            .expect("no command → Err");
+        assert!(
+            err.to_string().contains("Ghost"),
+            "the refusal names the entry: {err}"
+        );
+        assert!(
+            tracker.items().is_empty(),
+            "nothing may be spawned for a refused launch"
+        );
+        // The same for an Exec that is empty or only whitespace.
+        for exec in ["", "   "] {
+            let mut empty = app.clone();
+            empty.entry.exec = exec.into();
+            assert!(
+                db.launch_app("ubuntu", &empty).is_err(),
+                "{exec:?} must not spawn a shell"
+            );
+        }
     }
 
     #[test]
@@ -2191,6 +2621,359 @@ Categories=Utility;Security;";
         assert!(result.is_err());
     }
 
+    // ---- B3: tolerant list parsing --------------------------------------
+
+    const LS_HEADER: &str = "ID           | NAME                 | STATUS             | IMAGE";
+
+    fn list_db(output: &str) -> Distrobox {
+        Distrobox::new(
+            NullCommandRunnerBuilder::new()
+                .cmd(&["distrobox", "ls", "--no-color"], output)
+                .build(),
+            default_cmd_factory(),
+        )
+    }
+
+    /// The headline B3 fix: one malformed row must not discard the rows that
+    /// parsed. Before this, `list()` logged the parse error and returned
+    /// `Err`, so a single bad line turned a perfectly good container list
+    /// into an error screen.
+    #[test]
+    fn list_keeps_good_rows_and_collects_bad_ones() -> Result<(), Error> {
+        block_on(async {
+            let output = format!(
+                "{LS_HEADER}
+d24405b14180 | ubuntu               | Created            | ghcr.io/ublue-os/ubuntu-toolbox:latest
+garbage-line-with-no-separators
+aaa111bbb222 | fedora               | Up 2 hours         | registry.fedoraproject.org/fedora:40"
+            );
+            let got = list_db(&output).list().await?;
+            assert_eq!(got.containers.len(), 2, "both good rows survive");
+            // Name-sorted, matching what the old `BTreeMap` returned.
+            assert_eq!(got.containers[0].name, "fedora");
+            assert_eq!(got.containers[1].name, "ubuntu");
+            assert_eq!(got.skipped.len(), 1);
+            assert_eq!(got.skipped[0].line, "garbage-line-with-no-separators");
+            assert!(
+                !got.skipped[0].error.is_empty(),
+                "a skip must carry why it was skipped"
+            );
+            Ok(())
+        })
+    }
+
+    /// The other half: every row bad is still a success with an empty list,
+    /// not an `Err` — the UI distinguishes this from a real failure (and
+    /// from a genuinely empty account) to say "5 rows skipped".
+    #[test]
+    fn list_with_every_row_bad_is_empty_but_not_an_error() -> Result<(), Error> {
+        block_on(async {
+            let output = format!("{LS_HEADER}\nbad-one\nbad-two");
+            let got = list_db(&output).list().await?;
+            assert!(got.containers.is_empty());
+            assert_eq!(got.skipped.len(), 2);
+            assert!(!got.is_clean_empty(), "all-bad is not a clean empty");
+            Ok(())
+        })
+    }
+
+    /// A blank line is not a row, so it is neither parsed nor reported — a
+    /// trailing newline must not read as a skipped row.
+    #[test]
+    fn list_ignores_blank_rows_without_reporting_them() -> Result<(), Error> {
+        block_on(async {
+            let output = format!(
+                "{LS_HEADER}
+d24405b14180 | ubuntu | Created | img
+
+aaa111bbb222 | fedora | Up 2 hours | img2
+"
+            );
+            let got = list_db(&output).list().await?;
+            assert_eq!(got.containers.len(), 2);
+            assert!(got.skipped.is_empty(), "blank lines are not parse issues");
+            assert!(!got.is_clean_empty());
+            Ok(())
+        })
+    }
+
+    /// The header is skipped by identity, so a response WITHOUT one keeps its
+    /// first row. `.skip(1)` (the old behaviour) dropped whatever line was
+    /// first: here that is a real, perfectly parseable container, which
+    /// vanished without being logged, counted, or shown anywhere.
+    #[test]
+    fn list_without_a_header_keeps_its_first_row() -> Result<(), Error> {
+        block_on(async {
+            let output = "\
+d24405b14180 | ubuntu | Created | ghcr.io/ublue-os/ubuntu-toolbox:latest
+aaa111bbb222 | fedora | Up 2 hours | registry.fedoraproject.org/fedora:40";
+            let got = list_db(output).list().await?;
+            assert_eq!(got.containers.len(), 2, "no row may be dropped silently");
+            assert_eq!(got.containers[0].name, "fedora");
+            assert_eq!(got.containers[1].name, "ubuntu");
+            assert!(got.skipped.is_empty());
+            Ok(())
+        })
+    }
+
+    /// A header-shaped line is recognized wherever it appears, which also
+    /// means a leading line that is NOT the header no longer shadows the real
+    /// one (nor is it mistaken for the header and dropped).
+    #[test]
+    fn list_recognizes_the_header_at_any_position_and_keeps_a_leading_warning() -> Result<(), Error>
+    {
+        block_on(async {
+            let output = format!(
+                "WARN: some runtime notice
+{LS_HEADER}
+d24405b14180 | ubuntu | Created | ghcr.io/ublue-os/ubuntu-toolbox:latest"
+            );
+            let got = list_db(&output).list().await?;
+            assert_eq!(got.containers.len(), 1);
+            assert_eq!(got.containers[0].name, "ubuntu");
+            // The warning line is not a container row, so it is reported
+            // rather than discarded — B3's rule for anything unreadable.
+            assert_eq!(got.skipped.len(), 1);
+            assert_eq!(got.skipped[0].line, "WARN: some runtime notice");
+            Ok(())
+        })
+    }
+
+    /// The predicate matches the id field by equality, so a *data* row that
+    /// merely starts with `ID` is a container, not a header. Getting this wrong
+    /// would silently eat a real row — the failure mode this whole change
+    /// exists to remove.
+    #[test]
+    fn header_predicate_does_not_match_a_container_whose_id_starts_with_id() -> Result<(), Error> {
+        block_on(async {
+            let output = format!("{LS_HEADER}\nID42 | Identifier | Created | img");
+            assert!(!is_distrobox_header("ID42 | Identifier | Created | img"));
+            let got = list_db(&output).list().await?;
+            assert_eq!(got.containers.len(), 1);
+            assert_eq!(got.containers[0].name, "Identifier");
+            assert!(got.skipped.is_empty());
+            Ok(())
+        })
+    }
+
+    /// The header is recognized on the **six-column** form too, not just the
+    /// four-column one this fixture usually carries.
+    ///
+    /// The column count is a release detail, not a format constant: distrobox
+    /// 1.5.0.2 printed `ID | NAME | STATUS | MEM | CPU% | IMAGE` (line 192) and
+    /// 1.6.0.1 onward print the four we see today. An earlier version of the
+    /// predicate matched all four names, so on 1.5.x the header failed the test,
+    /// fell through to `ContainerInfo::from_str`, and was counted as a skipped
+    /// *container* — the caption then asserted an unreadable row that never
+    /// existed, and inflated the count by one.
+    #[test]
+    fn header_predicate_recognizes_the_six_column_1_5_header() -> Result<(), Error> {
+        block_on(async {
+            let old_header = "ID           | NAME                 | STATUS             | MEM              | CPU%  | IMAGE";
+            assert!(
+                is_distrobox_header(old_header),
+                "a 1.5.x header is a header, not a malformed container row"
+            );
+            let output = format!(
+                "{old_header}
+d24405b14180 | ubuntu | Created | ghcr.io/ublue-os/ubuntu-toolbox:latest"
+            );
+            let got = list_db(&output).list().await?;
+            assert_eq!(got.containers.len(), 1);
+            assert_eq!(got.containers[0].name, "ubuntu");
+            assert!(
+                got.skipped.is_empty(),
+                "the header must not be reported as an unreadable row"
+            );
+            // A short header-shaped line is still not a header (arity floor).
+            assert!(!is_distrobox_header("ID | NAME"));
+            Ok(())
+        })
+    }
+
+    /// A short row (fewer than four fields) and an empty-field row are both
+    /// reported with their raw text.
+    #[test]
+    fn list_reports_short_and_empty_field_rows() -> Result<(), Error> {
+        block_on(async {
+            let output = format!(
+                "{LS_HEADER}
+d24405b14180 | ubuntu | Created
+aaa111bbb222 |  | Up 2 hours | img2"
+            );
+            let got = list_db(&output).list().await?;
+            assert!(got.containers.is_empty());
+            assert_eq!(got.skipped.len(), 2);
+            assert_eq!(got.skipped[0].line, "d24405b14180 | ubuntu | Created");
+            assert_eq!(got.skipped[1].line, "aaa111bbb222 |  | Up 2 hours | img2");
+            assert!(got.skipped[1].error.contains("name"));
+            Ok(())
+        })
+    }
+
+    /// The peers' delimiter drops are reported too. This row has no `|` at
+    /// all, which used to be a bare `continue`.
+    #[test]
+    fn get_exported_binaries_collects_rows_without_a_separator() -> Result<(), Error> {
+        block_on(async {
+            let output = "'/usr/bin/vim'       | /home/user/.local/bin/vim\njust-a-bare-line";
+            let db = Distrobox::new(
+                NullCommandRunnerBuilder::new()
+                    .cmd(
+                        &[
+                            "distrobox",
+                            "enter",
+                            "test-box",
+                            "--",
+                            "distrobox-export",
+                            "--list-binaries",
+                        ],
+                        output,
+                    )
+                    .build(),
+                default_cmd_factory(),
+            );
+            let got = db.get_exported_binaries("test-box").await?;
+            assert_eq!(got.items.len(), 1);
+            assert_eq!(got.items[0].name, "vim");
+            assert_eq!(got.skipped.len(), 1);
+            assert_eq!(got.skipped[0].line, "just-a-bare-line");
+            Ok(())
+        })
+    }
+
+    /// `list_installed_packages` needs two canned commands (the PM probe,
+    /// then the list itself). The second script literal mirrors the
+    /// `PackageManager::Apt` arm in the function under test.
+    #[test]
+    fn list_installed_packages_collects_rows_without_a_tab() -> Result<(), Error> {
+        block_on(async {
+            let db = Distrobox::new(
+                NullCommandRunnerBuilder::new()
+                    .cmd(
+                        &[
+                            "distrobox",
+                            "enter",
+                            "--name",
+                            "test-box",
+                            "--",
+                            "sh",
+                            "-c",
+                            Distrobox::detect_script(),
+                        ],
+                        "apt",
+                    )
+                    .cmd(
+                        &[
+                            "distrobox",
+                            "enter",
+                            "--name",
+                            "test-box",
+                            "--",
+                            "sh",
+                            "-c",
+                            r#"dpkg-query -W -f='${Package}\t${Version}\t${Description}\n' 2>/dev/null | head -500"#,
+                        ],
+                        "vim\t9.0\thello\nthis-row-has-no-tab-at-all",
+                    )
+                    .build(),
+                default_cmd_factory(),
+            );
+            let got = db.list_installed_packages("test-box").await?;
+            assert_eq!(got.items.len(), 1);
+            assert_eq!(got.items[0].name, "vim");
+            assert_eq!(got.items[0].version, "9.0");
+            assert_eq!(got.skipped.len(), 1);
+            assert_eq!(got.skipped[0].line, "this-row-has-no-tab-at-all");
+            Ok(())
+        })
+    }
+
+    /// A row shorter than the four fields `--format` asks for.
+    #[test]
+    fn list_snapshots_collects_rows_with_fewer_than_four_fields() -> Result<(), Error> {
+        block_on(async {
+            let output = "a1b2c3\tgdm-mybox\tyesterday\t1.2 GB\nonly-two\tfields";
+            let db = Distrobox::new(
+                NullCommandRunnerBuilder::new()
+                    .cmd(
+                        &[
+                            "podman",
+                            "images",
+                            "--format",
+                            "{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Created}}\t{{.Size}}",
+                        ],
+                        output,
+                    )
+                    .build(),
+                default_cmd_factory(),
+            );
+            let got = db.list_snapshots(None).await?;
+            assert_eq!(got.items.len(), 1);
+            assert_eq!(got.items[0].name, "gdm-mybox");
+            assert_eq!(got.skipped.len(), 1);
+            assert_eq!(got.skipped[0].line, "only-two\tfields");
+            Ok(())
+        })
+    }
+
+    /// `list_apps` already warned-and-continued; B3 only routes that record
+    /// into `skipped`. The unparseable desktop file is identified by PATH,
+    /// since there is no source line.
+    #[test]
+    fn list_apps_collects_unparseable_desktop_files() -> Result<(), Error> {
+        block_on(async {
+            let toml = make_desktop_files_toml(
+                "/home/me",
+                &[
+                    (
+                        "/usr/share/applications/good.desktop",
+                        "[Desktop Entry]\nType=Application\nName=Good\nExec=/usr/bin/good\nIcon=good",
+                    ),
+                    (
+                        "/usr/share/applications/bad.desktop",
+                        "not a desktop file at all",
+                    ),
+                ],
+                &[],
+            );
+            let db = Distrobox::new(
+                NullCommandRunnerBuilder::new()
+                    .cmd(&["printenv", "HOME"], "/home/me")
+                    .cmd(&["printenv", "XDG_DATA_HOME"], "")
+                    .cmd(&["printenv", "HOME"], "/home/me")
+                    .cmd(
+                        &["ls", "/home/me/.local/share/applications"],
+                        "ubuntu-vim.desktop\n",
+                    )
+                    .cmd(
+                        &[
+                            "distrobox",
+                            "enter",
+                            "ubuntu",
+                            "--",
+                            "sh",
+                            "-c",
+                            POSIX_FIND_AND_CONCAT_DESKTOP_FILES,
+                        ],
+                        &toml,
+                    )
+                    .build(),
+                default_cmd_factory(),
+            );
+            let got = db.list_apps("ubuntu").await?;
+            assert_eq!(got.items.len(), 1, "the good entry survives");
+            assert_eq!(got.items[0].entry.name, "Good");
+            assert_eq!(got.skipped.len(), 1);
+            assert!(
+                got.skipped[0].line.ends_with("bad.desktop"),
+                "a desktop-file skip is identified by path, got: {}",
+                got.skipped[0].line
+            );
+            Ok(())
+        })
+    }
+
     #[test]
     fn get_exported_binaries_parses_normal_output() -> Result<(), Error> {
         block_on(async {
@@ -2296,5 +3079,215 @@ fi"#;
             assert_eq!(binaries[0].exported_path, "/home/user/.local/bin/my-tool");
             Ok(())
         })
+    }
+
+    // ---- B7: the single podman→docker fallback path ----------------------
+
+    /// Every command the runner was asked to start, in order, as
+    /// `(program, args)`. A retry appears here as the podman attempt followed
+    /// by the docker one — which is the only way the fallback is observable at
+    /// all, since both attempts return a `String`.
+    fn started_argv(tracker: &OutputTracker<CommandRunnerEvent>) -> Vec<(String, Vec<String>)> {
+        tracker
+            .items()
+            .iter()
+            .filter_map(|e| e.command())
+            .map(|c| {
+                (
+                    c.program.to_string_lossy().to_string(),
+                    c.args
+                        .iter()
+                        .map(|a| a.to_string_lossy().to_string())
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// The `ps` argv `get_container_id` builds, aimed at `program`. Spelled out
+    /// rather than built from the same code under test, so the fixture cannot
+    /// drift along with an implementation change.
+    fn ps_argv(program: &str, container: &str) -> Vec<String> {
+        vec![
+            program.to_string(),
+            "ps".to_string(),
+            "-a".to_string(),
+            "--filter".to_string(),
+            format!("name=^{}$", container),
+            "--format".to_string(),
+            "{{.ID}}".to_string(),
+        ]
+    }
+
+    /// The headline half of B7: podman failing is not fatal, because docker is
+    /// tried next — and the retry re-uses the caller's argv rather than being
+    /// rebuilt.
+    #[test]
+    fn start_falls_back_to_docker_when_podman_fails() -> Result<(), Error> {
+        let db = Distrobox::new(
+            NullCommandRunnerBuilder::new()
+                .cmd_fails(&["podman", "start", "ubuntu"], "podman is not installed")
+                .cmd(&["docker", "start", "ubuntu"], "ubuntu")
+                .build(),
+            default_cmd_factory(),
+        );
+        let tracker = db.cmd_runner.output_tracker();
+
+        assert_eq!(block_on(db.start("ubuntu"))?, "ubuntu");
+
+        let attempts = started_argv(&tracker);
+        assert_eq!(attempts.len(), 2, "podman was tried, then docker");
+        assert_eq!(attempts[0].0, "podman");
+        assert_eq!(attempts[1].0, "docker");
+        // Same arguments, only the program differs — that is `retarget`.
+        assert_eq!(attempts[0].1, attempts[1].1);
+        Ok(())
+    }
+
+    /// The other half, and the reason the two triggers stay distinct: `OnEmpty`
+    /// retries docker only when podman SUCCEEDED and said nothing. A podman
+    /// that ERRORED must propagate — otherwise a container that merely shares
+    /// the name in docker's store would be silently substituted for podman's
+    /// answer, and a broken podman install would look like a working one.
+    ///
+    /// This is the test that would fail if `get_container_id` used
+    /// `Fallback::OnError` like its five siblings.
+    #[test]
+    fn get_container_id_does_not_fall_back_when_podman_errors() {
+        let db = Distrobox::new(
+            NullCommandRunnerBuilder::new()
+                .cmd_fails(&ps_argv("podman", "ubuntu"), "podman is not installed")
+                .cmd(&ps_argv("docker", "ubuntu"), "deadbeef1234".to_string())
+                .build(),
+            default_cmd_factory(),
+        );
+        let tracker = db.cmd_runner.output_tracker();
+
+        let err = block_on(db.get_container_id("ubuntu"))
+            .expect_err("a podman error must not be papered over by docker");
+        assert!(
+            !err.to_string().contains("deadbeef1234"),
+            "docker's answer leaked into an error result: {err}"
+        );
+        // And docker was never even asked.
+        let attempts = started_argv(&tracker);
+        assert_eq!(
+            attempts.len(),
+            1,
+            "docker must not be tried after a podman error: {attempts:?}"
+        );
+        assert_eq!(attempts[0].0, "podman");
+    }
+
+    /// The `OnEmpty` case it *is* for: podman succeeds with no output (the
+    /// container lives in docker), so the ID comes from docker.
+    #[test]
+    fn get_container_id_falls_back_when_podman_is_empty() -> Result<(), Error> {
+        let db = Distrobox::new(
+            NullCommandRunnerBuilder::new()
+                .cmd(&ps_argv("podman", "ubuntu"), String::new())
+                .cmd(&ps_argv("docker", "ubuntu"), "deadbeef1234\n".to_string())
+                .build(),
+            default_cmd_factory(),
+        );
+
+        assert_eq!(block_on(db.get_container_id("ubuntu"))?, "deadbeef1234");
+        Ok(())
+    }
+
+    /// `get_container_id` reports a genuinely absent container — reached only
+    /// after BOTH runtimes answered empty — as a typed error, not an empty ID
+    /// string that would later be interpolated into a command line.
+    #[test]
+    fn get_container_id_errors_when_neither_runtime_knows_the_name() {
+        let db = Distrobox::new(
+            NullCommandRunnerBuilder::new()
+                .cmd(&ps_argv("podman", "ghost"), String::new())
+                .cmd(&ps_argv("docker", "ghost"), String::new())
+                .build(),
+            default_cmd_factory(),
+        );
+
+        let err = block_on(db.get_container_id("ghost")).expect_err("not found is an error");
+        assert!(err.to_string().contains("ghost"), "{err}");
+    }
+
+    /// `list_snapshots`' argv is byte-identical across the two runtimes,
+    /// including the optional `--filter`. Under the old hand-rolled pair the
+    /// docker retry rebuilt the argv from scratch and had to keep the filter
+    /// clause in step by hand — so this pins the property that replaced it.
+    #[test]
+    fn list_snapshots_reuses_the_same_argv_on_the_docker_retry() -> Result<(), Error> {
+        const FORMAT: &str = "{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Created}}\t{{.Size}}";
+        let db = Distrobox::new(
+            NullCommandRunnerBuilder::new()
+                .cmd_fails(
+                    &[
+                        "podman",
+                        "images",
+                        "--format",
+                        FORMAT,
+                        "--filter",
+                        "reference=gosh-*",
+                    ],
+                    "podman is not installed",
+                )
+                .cmd(
+                    &[
+                        "docker",
+                        "images",
+                        "--format",
+                        FORMAT,
+                        "--filter",
+                        "reference=gosh-*",
+                    ],
+                    "abc123\tgosh-1\t2 hours ago\t1.2 MB",
+                )
+                .build(),
+            default_cmd_factory(),
+        );
+        let tracker = db.cmd_runner.output_tracker();
+
+        let got = block_on(db.list_snapshots(Some("gosh-")))?;
+        assert_eq!(got.items.len(), 1);
+        assert_eq!(got.items[0].name, "gosh-1");
+        assert!(got.skipped.is_empty());
+
+        let attempts = started_argv(&tracker);
+        assert_eq!(attempts.len(), 2, "podman, then the docker retry");
+        assert_eq!(attempts[0].0, "podman");
+        assert_eq!(attempts[1].0, "docker");
+        assert_eq!(
+            attempts[0].1, attempts[1].1,
+            "the retry must not rebuild the argv"
+        );
+        assert!(
+            attempts[1].1.contains(&"--filter".to_string()),
+            "the filter clause has to survive the retry: {:?}",
+            attempts[1].1
+        );
+        Ok(())
+    }
+
+    /// The `OnError` sites report the LAST runtime's failure, so a machine
+    /// with neither runtime installed gets a real diagnostic rather than the
+    /// podman error that was actually expected. (`OnEmpty` sites differ by
+    /// design — `get_container_id` propagates the *podman* error instead of
+    /// retrying on it; see `runtime_output` and D27.)
+    #[test]
+    fn runtime_output_reports_the_docker_error_when_both_runtimes_fail() {
+        let db = Distrobox::new(
+            NullCommandRunnerBuilder::new()
+                .cmd_fails(&["podman", "start", "ubuntu"], "podman says no")
+                .cmd_fails(&["docker", "start", "ubuntu"], "docker says no")
+                .build(),
+            default_cmd_factory(),
+        );
+
+        let err = block_on(db.start("ubuntu")).expect_err("both runtimes failed");
+        assert!(
+            err.to_string().contains("docker says no"),
+            "the final error must be the last runtime's: {err}"
+        );
     }
 }

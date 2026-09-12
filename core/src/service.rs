@@ -11,12 +11,12 @@
 //! Every `spawn_*` method requires an entered tokio runtime — await from a
 //! `Task`/`Subscription` future, never synchronously (§0.2).
 
-use crate::backends::Distrobox;
 use crate::backends::distrobox::command::default_cmd_factory;
+use crate::backends::{ContainerList, Distrobox, ParseIssue};
 use crate::env::{EnvGuard, detect_host};
 use crate::error::{CoreError, CoreFailure};
 use crate::fakers::CommandRunner;
-use crate::models::{AppInfo, ContainerInfo, ContainerStats, CreateArgs, ExportedBinary};
+use crate::models::{AppInfo, ContainerStats, CreateArgs, ExportedBinary};
 use crate::tasks::{SpawnTask, TaskId, TaskRegistry, spawn_task};
 use std::sync::Arc;
 
@@ -108,17 +108,17 @@ impl Backend {
             .map_err(CoreFailure::from)
     }
 
-    /// Today's `get_containers` (`list()`), typed.
-    pub async fn containers(&self) -> Result<Vec<ContainerInfo>, CoreFailure> {
+    /// Today's `get_containers` (`list()`), typed. Returns the B3 wrapper
+    /// whole — `skipped` is what `show_skipped_lines` surfaces
+    /// (architecture.md §6.4, row B3).
+    pub async fn containers(&self) -> Result<ContainerList, CoreFailure> {
         self.guard_ok()?;
-        let map = self
-            .inner
+        self.inner
             .distrobox
             .list()
             .await
             .map_err(CoreError::from)
-            .map_err(CoreFailure::from)?;
-        Ok(map.into_values().collect())
+            .map_err(CoreFailure::from)
     }
 
     /// Today's `list_available_images`, typed.
@@ -142,7 +142,13 @@ impl Backend {
             .await
             .map_err(CoreError::from)
             .map_err(CoreFailure::from)?;
+        // B3: the per-container peers stay `Vec<T>` at this boundary — the
+        // DTO mapping below and `show_skipped_lines` (specified against
+        // `ContainerList.skipped`) both want the items only, so the skips are
+        // logged here rather than threaded to the app.
+        log_skipped(&apps.skipped, "container_apps");
         Ok(apps
+            .items
             .into_iter()
             .map(|app| AppInfo {
                 name: app.entry.name,
@@ -167,7 +173,9 @@ impl Backend {
             .await
             .map_err(CoreError::from)
             .map_err(CoreFailure::from)?;
+        log_skipped(&binaries.skipped, "exported_binaries");
         Ok(binaries
+            .items
             .into_iter()
             .map(|b| ExportedBinary {
                 name: b.name,
@@ -339,12 +347,15 @@ impl Backend {
     /// Snapshot list (typed).
     pub async fn list_snapshots(&self) -> Result<Vec<crate::models::SnapshotInfo>, CoreFailure> {
         self.guard_ok()?;
-        self.inner
+        let out = self
+            .inner
             .distrobox
             .list_snapshots(None)
             .await
             .map_err(CoreError::from)
-            .map_err(CoreFailure::from)
+            .map_err(CoreFailure::from)?;
+        log_skipped(&out.skipped, "list_snapshots");
+        Ok(out.items)
     }
 
     /// Snapshot create (typed, short — `podman/docker commit` returns promptly).
@@ -483,12 +494,15 @@ impl Backend {
         container: &str,
     ) -> Result<Vec<crate::models::PackageInfo>, CoreFailure> {
         self.guard_ok()?;
-        self.inner
+        let out = self
+            .inner
             .distrobox
             .list_installed_packages(container)
             .await
             .map_err(CoreError::from)
-            .map_err(CoreFailure::from)
+            .map_err(CoreFailure::from)?;
+        log_skipped(&out.skipped, "installed_packages");
+        Ok(out.items)
     }
 
     /// Today's `search_packages`, typed.
@@ -703,6 +717,29 @@ impl Backend {
             crate::env::EnvMode::Blocked => Err(CoreFailure::from(CoreError::BlockedEnvironment)),
             _ => Ok(()),
         }
+    }
+}
+
+/// B3 at the boundary: the four per-container peers hand back only their
+/// items (their callers map to DTOs and `show_skipped_lines` is specified
+/// against `ContainerList.skipped`), so a drop that used to be silent is
+/// recorded here at least once. The individual `warn!`s live at the parse
+/// site; this is the "how many" for the journal.
+///
+/// "At least once" is exact, not rhetorical: this is the *`Backend`* path.
+/// The FRB shim (`api.rs`) calls `Distrobox` directly and never gets here, so
+/// it calls this itself rather than dropping `skipped` on the floor — see
+/// `api::get_containers`. That module is an S7/T14 deletion target, but until
+/// it is gone it is still a live path, and a silent drop there would be the
+/// very thing B3 exists to remove.
+pub fn log_skipped(skipped: &[ParseIssue], source: &str) {
+    if !skipped.is_empty() {
+        tracing::warn!(
+            target: "gosh_distrobox",
+            count = skipped.len(),
+            source,
+            "rows skipped while parsing"
+        );
     }
 }
 

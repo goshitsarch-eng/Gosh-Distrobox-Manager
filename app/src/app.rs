@@ -22,7 +22,7 @@ use cosmic::widget::toaster::Toasts;
 use cosmic::widget::{self, nav_bar};
 use gosh_distrobox_core::models::{AppInfo, ContainerInfo, ContainerStats, ExportedBinary};
 use gosh_distrobox_core::{
-    Backend, CoreError, CoreFailure, MAX_TASK_OUTPUT_LINES, TaskEvent, TaskId,
+    Backend, ContainerList, CoreError, CoreFailure, MAX_TASK_OUTPUT_LINES, TaskEvent, TaskId,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -60,7 +60,11 @@ pub struct App {
     /// `Err` message text for the current error banner, if any.
     error: Option<String>,
 
-    containers: Vec<ContainerInfo>,
+    /// B3 wrapper: the parsed container list PLUS the rows distrobox
+    /// emitted that did not parse. Read-through to `containers` via `Deref`,
+    /// so the existing reads below are unchanged; `skipped` is what
+    /// `show_skipped_lines` surfaces (architecture.md §6.4, row B3).
+    containers: ContainerList,
     selected_container: Option<String>,
     images: Vec<String>,
     /// Images page's OWN load error (O3): the global `error` banner already
@@ -403,7 +407,7 @@ impl cosmic::Application for App {
             nav_model,
             backend: Arc::clone(&backend),
             error: None,
-            containers: Vec::new(),
+            containers: ContainerList::default(),
             selected_container: None,
             images: Vec::new(),
             images_error: None,
@@ -1721,12 +1725,14 @@ impl App {
     fn view_backups(&self) -> cosmic::Element<'_, Message> {
         use crate::backups as bk;
         if self.containers.is_empty() {
-            return crate::views::empty_state(
-                "document-open-symbolic",
-                "No containers found.".to_string(),
-                "Create a container before managing backups.".to_string(),
-                None,
+            // B3: an all-rows-failed list is not an empty account — see
+            // `view_containers_page`. This page has no skipped caption of its
+            // own, so the shared copy is the only place the reason appears.
+            let (icon, title, body) = crate::views::container_list_copy(
+                &self.containers,
+                "Create a container before managing backups.",
             );
+            return crate::views::empty_state(icon, title, body, None);
         }
         let st = &self.backups;
         let mut col = widget::Column::new().spacing(12);
@@ -2095,7 +2101,7 @@ impl App {
                 })
             }
             BackupsMsg::CloneDialogRequested => {
-                // Row #145: unified with the details clone (§4.5) — opens
+                // Row #145: unified with the details clone (ux.md §4.5) — opens
                 // the SHARED `ActiveDialog::Clone` (same `-clone` default,
                 // same `.trim()` validation #148, same confirm path).
                 if let Some(container) = self.backups.container.clone() {
@@ -2123,12 +2129,13 @@ impl App {
         // Without it an empty tree renders "Container Not Running" for a
         // container that does not exist — actively misleading.
         if self.containers.is_empty() {
-            return crate::views::empty_state(
-                "document-open-symbolic",
-                "No containers found.".to_string(),
-                "Create a container before managing packages.".to_string(),
-                None,
+            // B3: see `view_containers_page` — the create-prompt body is only
+            // truthful when the list is *cleanly* empty.
+            let (icon, title, body) = crate::views::container_list_copy(
+                &self.containers,
+                "Create a container before managing packages.",
             );
+            return crate::views::empty_state(icon, title, body, None);
         }
         let st = &self.packages;
         let running = st
@@ -2454,6 +2461,9 @@ impl App {
             }
             SettingsMsg::ConfirmToggled(v) => {
                 return self.write_config(|c| c.confirm_destructive_actions = v);
+            }
+            SettingsMsg::ShowSkippedLinesToggled(v) => {
+                return self.write_config(|c| c.show_skipped_lines = v);
             }
             SettingsMsg::SnapshotPrefixChanged(p) => {
                 return self.write_config(|c| c.snapshot_prefix = p);
@@ -3380,9 +3390,6 @@ impl App {
 
     /// Dashboard page: counts + task rows from the T5 mirror.
     fn view_dashboard(&self) -> cosmic::Element<'_, Message> {
-        let running = running_count(&self.containers);
-        let stopped = stopped_count(&self.containers);
-        let total = self.containers.len();
         let task_rows: Vec<cosmic::Element<'_, Message>> = self
             .tasks
             .iter()
@@ -3393,9 +3400,19 @@ impl App {
         let n_tasks = task_rows.len();
         views::view_dashboard(
             &self.containers,
-            running,
-            stopped,
-            total,
+            views::DashboardCounts {
+                running: running_count(&self.containers),
+                stopped: stopped_count(&self.containers),
+                total: self.containers.len(),
+                // B3: the count of rows `list()` could not parse, with the
+                // setting that decides whether the Dashboard mentions it.
+                skipped: self.containers.skipped.len(),
+                show_skipped: self
+                    .config
+                    .as_ref()
+                    .map(|c| c.show_skipped_lines)
+                    .unwrap_or(false),
+            },
             n_tasks,
             task_rows,
             self.error.clone(),
@@ -3430,16 +3447,34 @@ impl App {
                 .spacing(12)
                 .into();
         }
+        // B3: "empty" now has two meanings, and conflating them is a lie. A
+        // genuinely empty list means "create your first container"; a list
+        // where every row failed to parse means rows WERE returned and we
+        // could not read them — telling that user to create a container they
+        // already have, and hiding the reason, is worse than the old hard
+        // error this task set out to fix. All three copy parts come from one
+        // helper so they cannot disagree; the page supplies only its own
+        // phrasing for the clean case.
         if self.containers.is_empty() {
-            return views::empty_state(
-                "document-open-symbolic",
-                "No containers found.".to_string(),
-                "Create your first container to get started.".to_string(),
-                None,
+            let (icon, title, body) = views::container_list_copy(
+                &self.containers,
+                "Create your first container to get started.",
             );
+            // Only the unreadable case offers a retry: refreshing will not
+            // conjure a first container, but a transient bad read might.
+            let action = (!self.containers.is_clean_empty()).then(|| {
+                let refresh: cosmic::Element<'static, Message> =
+                    widget::button::standard("Refresh")
+                        .on_press(Message::Containers(ContainerMsg::RefreshRequested))
+                        .into();
+                refresh
+            });
+            return views::empty_state(icon, title, body, action);
         }
         let mut col = widget::Column::new().spacing(8);
-        for c in &self.containers {
+        // `.iter()` rather than `&self.containers`: `Deref` gives the slice
+        // for field/method access but not `IntoIterator for &ContainerList`.
+        for c in self.containers.iter() {
             let selected = self.selected_container.as_deref() == Some(c.name.as_str());
             col = col.push(views::container_row(c, selected));
         }
