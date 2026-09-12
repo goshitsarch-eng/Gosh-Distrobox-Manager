@@ -19,6 +19,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# EXPECTED_STAGES is the single source of the stage count (T21). The workflow
+# header comments, packaging.md §2.1 and tests/test_packaging.py assert against
+# this value; a stage added or removed here must update all of them together.
+EXPECTED_STAGES=11
+
 FAST_ONLY=0
 if [ "${1:-}" = "--fast" ]; then
     FAST_ONLY=1
@@ -28,13 +33,22 @@ stage() {
     echo "===== verify.sh stage $1: $2 ====="
 }
 
-# --- preflight (flatpak stages only) ------------------------------------------
+# --- preflight -----------------------------------------------------------------
+# The stage-6 validators run in --fast too, so their preflight is unconditional;
+# without it a missing validator fails stage 6 with the tool's own usage error
+# instead of a named cause. The flatpak half stays behind FAST_ONLY.
+command -v desktop-file-validate >/dev/null || {
+    echo "verify.sh: FATAL — desktop-file-validate not found (stage 6)" >&2; exit 1; }
+command -v appstreamcli >/dev/null || {
+    echo "verify.sh: FATAL — appstreamcli not found (stage 6)" >&2; exit 1; }
 if [ "$FAST_ONLY" -eq 0 ]; then
     command -v flatpak-builder >/dev/null || { echo "flatpak-builder not found" >&2; exit 1; }
     flatpak remotes --user 2>/dev/null | grep -q '^flathub' || {
         echo "verify.sh: FATAL — flathub remote missing (user)" >&2; exit 1; }
     flatpak info --user org.freedesktop.Sdk//25.08 >/dev/null 2>&1 || {
         echo "verify.sh: FATAL — org.freedesktop.Sdk 25.08 not installed" >&2; exit 1; }
+    flatpak info --user com.system76.Cosmic.BaseApp//stable >/dev/null 2>&1 || {
+        echo "verify.sh: FATAL — com.system76.Cosmic.BaseApp stable not installed" >&2; exit 1; }
 fi
 
 # ---- 1. Formatting ------------------------------------------------------------
@@ -80,9 +94,13 @@ fi
 # installs, and the smoke test's `flatpak run` needs an installed app.
 # --state-dir pins the tool's working files where its own .gitignore covers
 # them; --repo likewise stays out of the tree (D26b).
+# --repo (T21/I20): the OSTree repo is retained so `flatpak build-bundle`
+# has something to bundle from — the tag job exports the release bundle
+# from .flatpak-builder/repo after this script passes.
 stage 9 "flatpak-builder offline build + install"
 flatpak-builder --user --install --force-clean --disable-rofiles-fuse \
     --state-dir=.flatpak-builder/state \
+    --repo=.flatpak-builder/repo \
     .flatpak-builder/build \
     flatpak/io.github.gosh_distrobox_manager.json
 
@@ -97,4 +115,4 @@ stage 10 "smoke-test.sh (positive)"
 stage 11 "smoke-test.sh (negative: no flatpak-spawn grant)"
 ./scripts/smoke-test.sh --negative-flatpak-spawn
 
-echo "verify.sh: ALL STAGES PASSED"
+echo "verify.sh: ALL $EXPECTED_STAGES STAGES PASSED"

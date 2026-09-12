@@ -20,9 +20,10 @@ name: Rust
 #
 # `.github/workflows/flatpak.yml` was the old meson/ninja workflow and used to
 # be dead as written (it built a root manifest that does not exist). T14 has
-# since rewritten it to drive the full `./scripts/verify.sh` (stages 1-10) with
-# the runtimes pre-installed, so all three jobs now share one definition of
-# green rather than three drifting re-spellings of it.
+# since rewritten it to drive the full `./scripts/verify.sh` (stages 1-11) with
+# the runtimes pre-installed, and T21 moved this job onto `verify.sh --fast`,
+# so all three jobs now share one definition of green rather than three
+# drifting re-spellings of it (AGENTS.md: CI runs the same script).
 
 on:
   # Shape ported from the sibling's ci.yml (D24a). Note what the branch filter
@@ -53,7 +54,7 @@ env:
 
 jobs:
   rust:
-    name: fmt + build + clippy + test
+    name: fast gate (verify.sh --fast, stages 1-8)
     runs-on: ubuntu-24.04
 
     steps:
@@ -70,17 +71,15 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Formatting (rustfmt)
-        run: cargo fmt --all -- --check
+      # Stage 6's validators: verify.sh --fast preflights them, so install
+      # them here the same way packaging-metadata.yml does.
+      - name: Install metadata validators
+        run: sudo apt-get update && sudo apt-get install -y appstream desktop-file-utils
 
-      # `--locked` in CI only, never in the developer loop (D13/PKG-11): CI
-      # must fail when Cargo.lock is stale rather than quietly resolving a
-      # different graph than the one that gets vendored for the Flatpak.
-      - name: Build
-        run: cargo build --workspace --locked
-
-      - name: Lint (clippy, warnings are errors)
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      - name: Test
-        run: cargo test --workspace --locked
+      # The whole fast gate (stages 1-8: fmt, release build, clippy, tests,
+      # versions, metadata, --check, packaging tests) via the one script, not
+      # a re-spelled fmt/build/clippy/test — T21. `--locked` lives inside
+      # verify.sh (D13/PKG-11: CI fails on a stale lockfile; the local loop
+      # uses plain cargo commands without it).
+      - name: Fast gate (verify.sh --fast, stages 1-8)
+        run: ./scripts/verify.sh --fast

@@ -1,18 +1,20 @@
 name: Flatpak
 
-# CI job 3 (packaging.md §2.5.1): full verify.sh (stages 1-10: the Rust gates
-# re-run plus the offline flatpak-builder build + install + smoke test).
+# CI job 3 (packaging.md §2.5.1): full verify.sh (stages 1-11: the Rust gates
+# re-run plus the offline flatpak-builder build + install + both smoke runs).
 # Tags + workflow_dispatch ONLY — the full COSMIC build takes tens of minutes
 # cold (§5.1) and does not belong on the per-push path. Per-push coverage is
 # jobs 1-2 (rust.yml, packaging-metadata.yml). Redundant with them by design:
 # a release artifact whose own tree fails fmt is not shippable, so the tag
 # build certifies the whole gate independently.
 #
-# T4 wired this job; T14 checked it and deliberately left it as-is. Two things
-# T14 did NOT do, so this file must not be read as claiming them:
-#   * no artifact upload and no release notes — there is no `actions/upload-*`
-#     step here. Publishing a `.flatpak` bundle is still unwired, and this
-#     comment used to say "then artifact publish on tags" as though it were.
+# T4 wired this job; T14 checked it and deliberately left the artifact half
+# unwired (filed as I20); T21 wired it, arm (a): on tags the job exports a
+# `.flatpak` bundle from the OSTree repo verify.sh retains
+# (`.flatpak-builder/repo`) and attaches it to the GitHub Release. Run storage
+# (`actions/upload-artifact`) is deliberately NOT used — it is not release
+# assets (packaging.md:964/:1227). One thing still not done, so this file must
+# not be read as claiming it:
 #   * the Flathub git-source switch (packaging.md §4.2) has not happened; the
 #     manifest still consumes the vendored `flatpak/cargo-sources.json`.
 # What it does guarantee: the job runs the whole gate via `./scripts/verify.sh`
@@ -35,6 +37,10 @@ jobs:
   flatpak:
     name: offline build + install + smoke test
     runs-on: ubuntu-24.04
+    # Attaching the bundle to the Release needs write; the top-level read
+    # stays for every other job. Scoped to this job, not the workflow.
+    permissions:
+      contents: write
 
     steps:
       - name: Check out repository
@@ -68,7 +74,7 @@ jobs:
           path: .flatpak-builder
           key: flatpak-${{ runner.os }}-${{ hashFiles('flatpak/cargo-sources.json', 'flatpak/io.github.gosh_distrobox_manager.json', 'Cargo.lock') }}
 
-      # Full verify.sh (stages 1-10), not just 9-10: the tag build must
+      # Full verify.sh (stages 1-11), not just 9-11: the tag build must
       # certify the whole gate on the exact tree being released, independent
       # of what jobs 1-2 did on the branch head. Redundant with them by
       # design — a release artifact whose own tree fails fmt is not shippable.
@@ -76,3 +82,26 @@ jobs:
         run: |
           xvfb-run -a --server-args="-screen 0 1280x800x24" \
             env LIBGL_ALWAYS_SOFTWARE=1 ./scripts/verify.sh
+
+      # Tags only: export the release bundle from the OSTree repo stage 9
+      # retained. The branch is read out of the repo rather than assumed, so
+      # this step cannot drift from flatpak-builder's default. Skipped on
+      # workflow_dispatch — a dispatch certifies the gate without publishing.
+      - name: Export release bundle from the retained repo (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          REF=$(ostree refs --repo=.flatpak-builder/repo \
+            | grep '^app/io\.github\.gosh_distrobox_manager/' | head -1)
+          BRANCH="${REF##*/}"
+          test -n "$BRANCH"
+          flatpak build-bundle .flatpak-builder/repo \
+            "gosh-distrobox-manager-${{ github.ref_name }}.flatpak" \
+            io.github.gosh_distrobox_manager "$BRANCH"
+
+      # Tags only: attach the bundle to the GitHub Release for this tag
+      # (created if missing). Release assets, not run storage — I20 arm (a).
+      - name: Attach bundle to the GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: gosh-distrobox-manager-*.flatpak

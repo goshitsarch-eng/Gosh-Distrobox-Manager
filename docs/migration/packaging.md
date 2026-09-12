@@ -159,7 +159,7 @@ Notes:
   them with a single `git` source pinned to the release commit.** `<TAG_COMMIT_SHA>` in
   the pre-T1 draft of this block was an unfilled placeholder and could never have built:
   a local manifest cannot reference a commit that is not pushed. The local form is what
-  `verify.sh` §2.1 stage 6 builds and what T2's gate was run against; the switch is a
+  `verify.sh` §2.1 stage 9 builds and what T2's gate was run against; the switch is a
   release-checklist item (§4.2), not a design change.
 - Source installs are flat `.desktop`/`.metainfo.xml` files, **not** `.in` templates.
   The `.in` files currently in `core/data/` require `@bindir@`-style substitution that
@@ -608,9 +608,12 @@ plan (§2.2) targets cosmic-config, not GSettings.
 Read `scripts/verify.sh` itself rather than transcribing from here. The divergences,
 all of which landed during T4 and were exercised by T14:
 
-- It grew from 7 stages to **10**, and now wraps each command in a `stage N "<label>"`
+- It grew from 7 stages to **11**, and now wraps each command in a `stage N "<label>"`
   helper that prints a banner, so a failure is attributable without reading the whole
-  log. `--fast` runs stages 1–8 and skips the two slow ones.
+  log. `--fast` runs stages 1–8 and skips stages 9–11 (the flatpak build and both
+  smoke runs). `EXPECTED_STAGES` in the script is the single source of the count —
+  this number, the workflow comments and `tests/test_packaging.py` assert against
+  it (T21).
 - **`--manifest-path rust/Cargo.toml` → `--workspace`** at the repository root. T1
   hoisted `Cargo.lock` and a virtual manifest to the root and renamed the crate to
   `core/`, so `rust/Cargo.toml` has not existed since S2. The sketch's `--locked`
@@ -621,10 +624,13 @@ all of which landed during T4 and were exercised by T14:
   sketch's stage numbering in prose below is off by one from the script's), 7 the
   offline vendoring staleness gate `generate-cargo-sources.py --check` (T2/D26), and 8
   `tests/test_packaging.py` (T4/D26, stdlib only, no pytest).
-- **Stage 9 uses `--user --install`, not `--repo` alone** (D26d): the sketched
-  `--repo=repo` form never installed anything for stage 10 to smoke-test. Stage 10
-  runs the smoke test twice — a positive run and a negative one asserting the app
-  fails cleanly *without* the `flatpak-spawn` grant.
+- **Stage 9 uses `--user --install` plus `--repo`, not `--repo` alone** (D26d):
+  the sketched `--repo=repo` form never installed anything for the smoke stages to
+  test. The repo (`.flatpak-builder/repo`) is retained so the tag job can
+  `flatpak build-bundle` the release from it (T21/I20). Stages 10 and 11 run the
+  smoke test twice — a positive run and a negative one asserting the app fails
+  cleanly *without* the `flatpak-spawn` grant (two stages since T16, not one that
+  prints twice).
 
 The original sketch follows, unedited, as the record of what was intended.
 
@@ -918,9 +924,20 @@ The three jobs are now: `rust.yml` (fmt + build + clippy + test), and
 `packaging-metadata.yml` + `flatpak.yml` (both drive `./scripts/verify.sh`, `--fast`
 and full respectively, so CI and the local gate cannot drift apart). T14 dropped the
 `cosmic-migration` branch entry from the two `push` triggers, since the migration
-branch is merged; `main` plus the nightly schedule is what remains. One item below is
-still open: **there is no artifact upload**, so "publish artifacts on tags only" is
-unimplemented.
+branch is merged; `main` plus the nightly schedule is what remains.
+
+**Outcome (T21 — I20 closed, arm (a)).** The tag job now exports a `.flatpak`
+bundle from the OSTree repo `verify.sh` stage 9 retains and attaches it to the
+GitHub Release for the tag (`flatpak.yml`, job-scoped `contents: write`).
+`actions/upload-artifact` was deliberately not used — run storage is not
+release assets. Arm (b) (drop the tags trigger) was rejected: job 3 is
+specified "tags + `workflow_dispatch` only" and D19 requires T3 to gate the
+release, so deleting the trigger would remove the only shippable-artifact
+certifier. `rust.yml` now calls `verify.sh --fast` instead of re-spelling
+fmt/build/clippy/test, so all three jobs share the one script. Unverified from
+here: the `workflow_dispatch` dry run and a fork tag showing the bundle
+attached — both need a GitHub remote, so they are release-checklist items
+(§4.2), not claims.
 
 The original diagnosis follows, unedited. `.github/workflows/flatpak.yml` is **dead as written** (verified): it invokes
 `flatpak-builder … io.github.gosh_distrobox_manager.json` — a manifest that does not exist
@@ -955,13 +972,15 @@ these steps into `scripts/verify.sh` (D13). What T2 fixes here is *what the jobs
 what order*, so T4 has an unambiguous target and so the `--check` gate below has a named
 home.
 
-Three jobs, cheapest first. Stages 1–5 are the per-push gate; 6–7 are tag/dispatch only.
+Three jobs, cheapest first. Stages 1–8 are the per-push gate; 9–11 are tag/dispatch
+only. (Written as 1–5 / 6–7 when the gate had 7 stages; re-numbered in T21 — the
+sketch's prose below keeps its original numbers as the record of what was intended.)
 
 | # | Job | Runs on | Steps |
 |---|---|---|---|
 | 1 | `rust` | every push + PR | `cargo fmt --all -- --check`; `cargo build --workspace --release --locked`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo test --workspace --locked` |
 | 2 | `packaging-metadata` | every push + PR | the block below |
-| 3 | `flatpak` | tags + `workflow_dispatch` only | `./scripts/verify.sh` stages 6–7 (flatpak-builder offline build, then the smoke test); publish artifacts on tags |
+| 3 | `flatpak` | tags + `workflow_dispatch` only | full `./scripts/verify.sh` (stages 1–11 — the tag build certifies the whole gate, not just 9–11); on tags, export a `.flatpak` bundle from the retained repo and attach it to the GitHub Release (T21/I20 arm (a)) |
 
 Job 3 needs two build-directory decisions that §2.1's draft does not settle, both of
 which leave untracked files in the tree if taken literally (T2, measured):
@@ -1215,7 +1234,7 @@ Every release, in order:
 - [ ] **On Flathub submission only: switch the module's local `file`/`dir` sources to a
       single `git` source pinned to the release commit** (§1.2 notes). The repository
       manifest keeps local sources, because a local manifest cannot reference a commit
-      that is not pushed; `verify.sh` stage 6 builds the local form. Reverting to local
+      that is not pushed; `verify.sh` stage 9 builds the local form. Reverting to local
       sources for local builds is expected and fine.
 - [ ] Run `./scripts/verify.sh` — must pass end to end on a clean tree.
 - [ ] Confirm `--locked` passes (proves Cargo.toml ↔ Cargo.lock agreement).
@@ -1249,7 +1268,7 @@ into an automated failure instead of a review comment.
   normal for COSMIC flatpaks, but it makes CI-on-every-push unattractive and makes
   aggressive caching important (§2.5).
 - **Mitigations:** cache the flatpak build dir in CI keyed on `cargo-sources.json`; keep
-  the fast stages (1–5) as the per-push gate; reserve the full build for tags and manual
+  the fast stages (1–8) as the per-push gate; reserve the full build for tags and manual
   dispatch; consider `mold` (shipped by the extension) via `RUSTFLAGS="-C link-arg=-fuse-ld=mold"`
   to cut link time, which dominates large Rust builds.
 - **Disk:** 372 GB free locally, so no local constraint. CI runners are far tighter —

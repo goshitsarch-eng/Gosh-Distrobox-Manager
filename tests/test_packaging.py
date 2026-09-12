@@ -335,6 +335,132 @@ def test_the_flatpak_builds_the_only_binary_there_is() -> None:
     assert "--locked" in build, f"offline reproducibility needs --locked: {build.strip()}"
 
 
+# --- CI workflows: release artifact + single-sourced gate (T21/I20) ---------------
+#
+# stdlib text parsing, not a YAML library (this file runs on stdlib only):
+# each assertion matches a distinctive literal the workflow must contain, and
+# names the failure after the guarantee that broke. No ad-hoc grep as evidence
+# (review O3) — these tests ARE the evidence, and they run in stage 8.
+
+WORKFLOWS = ROOT / ".github" / "workflows"
+FLATPAK_YML = WORKFLOWS / "flatpak.yml"
+RUST_YML = WORKFLOWS / "rust.yml"
+VERIFY_SH = ROOT / "scripts" / "verify.sh"
+PACKAGING_MD = ROOT / "docs" / "migration" / "packaging.md"
+
+APP_ID = "io.github.gosh_distrobox_manager"
+TAG_GATE = "startsWith(github.ref, 'refs/tags/')"
+
+
+def _expected_stages() -> int:
+    """The single source of the stage count: EXPECTED_STAGES in verify.sh."""
+    for line in VERIFY_SH.read_text().splitlines():
+        if line.startswith("EXPECTED_STAGES="):
+            return int(line.split("=", 1)[1])
+    raise AssertionError("verify.sh defines no EXPECTED_STAGES")
+
+
+def test_ci_flatpak_job_still_triggers_on_tags() -> None:
+    """I20 arm (b) was rejected: the tags trigger must stay. Deleting it would
+    remove the only shippable-artifact certifier (D19 gates the release on T3)."""
+    text = FLATPAK_YML.read_text()
+    assert "tags: [ v*.*.* ]" in text, "tags trigger missing from flatpak.yml"
+    assert "workflow_dispatch:" in text, "workflow_dispatch trigger missing"
+
+
+def test_ci_flatpak_job_exports_a_bundle_from_the_retained_repo() -> None:
+    """I20 arm (a), first half: a tag-gated step bundles from the OSTree repo
+    that verify.sh stage 9 retains."""
+    text = FLATPAK_YML.read_text()
+    assert "build-bundle .flatpak-builder/repo" in text, (
+        "no build-bundle step exporting from the retained repo"
+    )
+    assert APP_ID in text, "bundle step names no app id"
+    assert TAG_GATE in text, "bundle step is not gated on tags"
+
+
+def test_ci_flatpak_job_attaches_the_bundle_to_the_release() -> None:
+    """I20 arm (a), second half: the bundle lands on the GitHub Release as an
+    asset. Run storage is explicitly NOT the mechanism (review O1)."""
+    text = FLATPAK_YML.read_text()
+    assert "action-gh-release" in text or "gh release upload" in text, (
+        "no release-asset attach step in flatpak.yml"
+    )
+    assert ".flatpak" in text, "no .flatpak bundle file is attached"
+    code = "\n".join(
+        line for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
+    assert "actions/upload-artifact" not in code, (
+        "run storage is not release assets — must not be the publish path"
+    )
+
+
+def test_ci_flatpak_job_can_write_release_contents() -> None:
+    """Attaching to a Release needs `contents: write`, scoped to the job —
+    the workflow default must stay read."""
+    text = FLATPAK_YML.read_text()
+    assert "contents: write" in text, "flatpak job cannot write the release"
+    assert "contents: read" in text, "workflow default permission must stay read"
+
+
+def test_ci_rust_job_calls_verify_sh() -> None:
+    """rust.yml must call the one script, not re-spell fmt/build/clippy/test
+    (AGENTS.md: CI runs the same script)."""
+    text = RUST_YML.read_text()
+    assert "./scripts/verify.sh --fast" in text, "rust.yml does not call verify.sh"
+    for respelled in ("run: cargo fmt", "run: cargo build",
+                      "run: cargo clippy", "run: cargo test"):
+        assert respelled not in text, f"rust.yml re-spells the gate: {respelled}"
+
+
+def test_stage_count_is_single_sourced() -> None:
+    """EXPECTED_STAGES agrees with the script's own `stage N` call sites (which
+    must cover exactly 1..N), the workflow comments, and packaging.md §2.1 —
+    and nowhere still says the old count."""
+    expected = _expected_stages()
+    numbers = sorted(
+        int(line.split()[1])
+        for line in VERIFY_SH.read_text().splitlines()
+        if line.startswith("stage ") and line.split()[1].rstrip().isdigit()
+    )
+    assert numbers == list(range(1, expected + 1)), (
+        f"verify.sh stages {numbers} do not cover exactly 1..{expected}"
+    )
+    assert f"ALL $EXPECTED_STAGES STAGES PASSED" in VERIFY_SH.read_text(), (
+        "final banner must be built from EXPECTED_STAGES"
+    )
+    for workflow in (FLATPAK_YML, RUST_YML):
+        assert f"1-{expected}" in workflow.read_text(), (
+            f"{workflow.name} comment disagrees with EXPECTED_STAGES={expected}"
+        )
+    for workflow in WORKFLOWS.glob("*.yml"):
+        assert "1-10" not in workflow.read_text(), (
+            f"stale stage count in {workflow.name}"
+        )
+    assert f"grew from 7 stages to **{expected}**" in PACKAGING_MD.read_text(), (
+        "packaging.md §2.1 disagrees with EXPECTED_STAGES"
+    )
+
+
+def test_verify_stage9_retains_an_ostree_repo() -> None:
+    """Without --repo there is nothing for `flatpak build-bundle` to bundle
+    from; the repo must live under .flatpak-builder/ (self-ignored)."""
+    text = VERIFY_SH.read_text()
+    assert "--repo=.flatpak-builder/repo" in text, (
+        "stage 9 retains no OSTree repo for the tag job to bundle"
+    )
+
+
+def test_verify_preflights_validators_and_baseapp() -> None:
+    """Stage-6 tools and the BaseApp must fail with a named cause in the
+    preflight, not with a confusing mid-gate error."""
+    text = VERIFY_SH.read_text()
+    for tool in ("desktop-file-validate", "appstreamcli"):
+        assert f"command -v {tool}" in text, f"no preflight for {tool}"
+    assert "com.system76.Cosmic.BaseApp" in text, "no preflight for the BaseApp"
+
+
 def main() -> int:
     tests = sorted(
         (name, fn) for name, fn in globals().items()

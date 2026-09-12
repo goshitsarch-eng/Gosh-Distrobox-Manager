@@ -147,12 +147,19 @@ records the highest one actually reached:
 
 | Tier | Meaning | Count (of 193) |
 |---|---|---|
-| **T1** | a unit test asserts this row's behaviour | 26 |
-| **T2** | an integration test drives this row's backend action by name | 12 |
-| **source** | the call path was read and traced in the code; nothing executed it | 148 |
-| **none** | deliberately absent, or absent and unestablished | 7 |
+| **T1** | a unit test asserts this row's behaviour | 34 |
+| **T2** | an integration test drives this row's backend action by name | 13 |
+| **T1+T2** | both tiers reached with per-tier evidence | 2 |
+| **source** | the call path was read and traced in the code; nothing executed it | 143 |
+| **none** | deliberately absent, or absent and unestablished | 1 |
 
-**148 of 193 rows rest on `source`.** That is the honest headline of this walk and it needs
+*T21 recount: the T16 walk's distribution was 26 / 12 / 148 / 7. T17–T20 moved
+13 rows (verified by diffing the appendix against the T16 text): eight to T1
+(#5, #20, #40, #41, #97, #185, #189, #190), one to T2 (#161), two to both
+(#13, #134 — counted on the T1+T2 line, not double-counted), and #34 from
+`rescoped` to `live` with its tier unchanged. 34 + 13 + 2 + 143 + 1 = 193.*
+
+**143 of 193 rows rest on `source`** (148 at the T16 walk). That is the honest headline of this walk and it needs
 its cause stated plainly, because it is structural rather than a shortage of effort:
 
 > **`app/` is a binary-only crate.** `app/Cargo.toml` declares `[[bin]]` and there is no
@@ -257,11 +264,16 @@ Full per-row results are in the appendix. Summary:
 
 | Verdict | Count | Meaning |
 |---|---|---|
-| `live` | 131 | the frozen behaviour is present and reachable |
-| `rescoped` | 41 | present in a different form, traceable to a written ux.md decision |
+| `live` | 144 | the frozen behaviour is present and reachable |
+| `rescoped` | 40 | present in a different form, traceable to a written ux.md decision |
 | `dropped` | 9 | deliberately absent, each with a cited decision |
-| `missing` | 7 | absent, not rescoped, needs a wire-or-drop ruling (**I30**) |
-| `bug` | 5 | a live half plus a named affordance that is absent or inert (**I29**) |
+| `missing` | 0 | absent, not rescoped, needs a wire-or-drop ruling (**I30** — closed by T18–T20) |
+| `bug` | 0 | a live half plus a named affordance that is absent or inert (**I29** — closed by T17–T18) |
+
+*T21 reconciliation: the T16 walk's counts were 131 / 41 / 9 / 7 / 5. All five
+`bug` rows and all seven `missing` rows are now `live` with per-row evidence in
+the appendix, and #34 moved `rescoped` → `live` when T18 retired its rescope
+reason (tier unchanged). 144 + 40 + 9 = 193.*
 
 ### 5.1 The 15 `dead` rows
 
@@ -289,11 +301,12 @@ explicitly dropped, never silently ported. All 15 are accounted for:
 #95 is worth calling out as the cleanest result: the Flutter argument was dead, and it is
 now live with two real callers rather than deleted to make the count look good.
 
-### 5.2 The five `bug` rows → I29
+### 5.2 The five `bug` rows → I29 (closed)
 
-`#13`, `#20`, `#97`, `#134`, `#186`. Each is a frozen row whose live half works while the
-affordance the row *names* is absent or inert, with no ux.md decision authorising the
-omission. The two structurally interesting ones:
+`#13`, `#20`, `#97`, `#134`, `#186`. Each was a frozen row whose live half worked while the
+affordance the row *named* was absent or inert, with no ux.md decision authorising the
+omission. All five are `live` now — #13/#97 in T17, #20/#134/#186 in T18 — with
+per-row evidence in the appendix. What the walk found, kept as the record:
 
 - **#13 — "Check Again" cannot work.** The button sends `ContainerMsg::RefreshRequested`,
   which re-runs `backend.containers()`. It never re-probes the environment, because
@@ -308,17 +321,18 @@ omission. The two structurally interesting ones:
   test on a function nothing calls is the exact shape of confidence this walk existed to
   catch.
 
-### 5.3 The seven `missing` rows → I30
+### 5.3 The seven `missing` rows → I30 (closed)
 
-`#5`, `#40`, `#41`, `#161`, `#185`, `#189`, `#190`. These are genuine port gaps, not
-re-scopes, and each needs a ruling rather than a quiet pass. Two are worth a release
-decision rather than a routine one:
+`#5`, `#40`, `#41`, `#161`, `#185`, `#189`, `#190`. These were genuine port gaps, not
+re-scopes. All seven are `live` now — #185 in T18, #5/#40/#41/#189/#190 in T19,
+#161 in T20 — with per-row evidence in the appendix. Two were worth a release
+decision rather than a routine one, and one still is:
 
-- **#189 keyboard shortcuts** and **#190 a11y semantics.** Both have their framework half
-  verified present at the pinned rev, so both are small concrete gaps rather than blocked
-  ones — but #190 carries §5.3's Orca acceptance gate, which has *never been run*. Every
-  widget that would be announced has not been announced to anything. Given §4.4's
-  constraint, running it needs a human at a real session; it cannot be closed by a test.
+- **#189 keyboard shortcuts** and **#190 a11y semantics.** Both had their framework half
+  verified present at the pinned rev. T19 wired both (shortcuts bound, §5.3 priority-1
+  labels live) — but #190's Orca acceptance gate is recorded as a finding, not a pass:
+  no Orca on the build host and no display to run it under (§4.4 class). R13 stays open
+  as the release-gate owner; running it needs a human at a real session.
 - **#161 persistence.** ux.md:266 classes persistent task history as P1. The Activity page
   shows the live session only, exactly as Flutter did.
 
@@ -334,12 +348,12 @@ Beyond that table, the walk surfaced deviations the plan did not anticipate:
 
 | Deviation | Status |
 |---|---|
-| **10 nav destinations, not 8** | `ux.md` §4.2 authorises 8. `Apps` (a pushed route in Flutter) and `Stats` (reachable in neither Flutter nor any parity row) became destinations. Filed **I26**. |
-| **No per-destination nav icons** | The frozen row says "same order **and icons**"; the single `insert()` never chains `.icon()`. Filed as **#5 / I30**. |
-| **Two progress consoles, not one** | §3.1 asked for one shared `TaskProgress` used by both the modal and the wizard console. The four Flutter dialogs collapsed to one shared row, but the console half still exists twice (`wizard_view.rs:290-303`, `activity.rs:229-238`) with the severity predicate copy-pasted. |
-| **No keyboard accelerators anywhere** | Not just Ctrl+R: `grep keyboard_nav|shortcut|set_keyboard_nav` over `app/src` returns nothing. §5.1 item 5 is unimplemented. |
-| **The 300px console anti-pattern survived** | §5.4 names it explicitly as a fixed height that clips at large scale; it was carried over unchanged (`wizard_view.rs:301`). |
-| **`Images` refresh is the global containers refresh** | The tree special-cases `Apps` for this exact mis-wiring and did not for `Images`. Filed as **#97 / I29**. |
+| **10 nav destinations, not 8** | `ux.md` §4.2 authorises 8. Ruled by **D28**, applied by T19: Apps demoted to a details-pushed route (as in Flutter), Stats kept as the single deliberate addition — the rail is 9 now, pinned with an Apps-absent guard. Filed **I26**. |
+| **No per-destination nav icons** | The frozen row says "same order **and icons**". Fixed by T19: `Page::icon()` + nav `.icon()` chain. Was **#5 / I30**. |
+| **Two progress consoles, not one** | §3.1 asked for one shared `TaskProgress` used by both the modal and the wizard console. The four Flutter dialogs collapsed to one shared row, but the console half still exists twice (`wizard_view.rs:290-303`, `activity.rs:229-238`) with the severity predicate copy-pasted. Still open — no task owned it. |
+| **No keyboard accelerators anywhere** | Fixed by T19: Ctrl+R / Ctrl+N bound, Escape closes transient surfaces, Ctrl+F focuses search. Was **#189 / I30**. |
+| **The 300px console anti-pattern survived** | §5.4 names it explicitly as a fixed height that clips at large scale; it was carried over unchanged (`wizard_view.rs:301`). Still open — no task owned it. |
+| **`Images` refresh is the global containers refresh** | Fixed by T17: page-aware `views::header_refresh` routes Images to `backend.images()`. Was **#97 / I29**. |
 | **A stale in-code justification** | `views.rs:556-559` justifies omitting Start from the details page on the grounds that "NO start op exists in the backend". `Backend::start_container` exists (`core/src/service.rs:253`) and is wired as a CTA on two other pages. The comment is now factually false. |
 
 ---
@@ -349,15 +363,21 @@ Beyond that table, the walk surfaced deviations the plan did not anticipate:
 1. **Interactive break-every-flow was not performed.** §4.4. No user flow was driven; the
    running app was observed on one page. This is the report's largest limitation and it
    bounds every confidence claim in §5.
-2. **148 of 193 rows rest on `source` tier.** §4.1. Caused by `app/`'s missing lib target,
-   which puts a structural ceiling on what any test can reach. Filed **I31**.
+2. **143 of 193 rows rest on `source` tier** (148 at the T16 walk; T21 recount in
+   §4.1). I31 is closed — lib target plus the T20 headless harness — but the harness
+   pins state + headless render, not pixels, and each remaining row still needs its
+   own test; no tier moves without one.
 3. **No `T3` evidence beyond one Dashboard capture.** Consequences: dialog behaviour, wizard
    progression, destructive-confirm flows, error rendering and the toaster are all
    unobserved in a running app.
 4. **The RPM never builds.** §3.2, filed **I19**. The spec and script are reviewed only.
-5. **CI publishes no artifact.** `flatpak.yml` triggers on tags but uploads nothing, and the
-   tag build is the only thing that would produce a shippable bundle. Filed **I20**.
-6. **The Orca a11y acceptance gate has never been run.** §5.3, filed **#190 / I30**.
+5. **CI publishes no artifact.** Closed by T21 (was **I20**): the tag job exports a
+   `.flatpak` bundle from the retained OSTree repo and attaches it to the Release.
+   Unverified from the build host: the `workflow_dispatch` dry run and a fork tag
+   showing the bundle attached — release-checklist items, not claims.
+6. **The Orca a11y acceptance gate has never been run.** §5.3. T19 shipped the
+   priority-1 labels and #190 is `live`, but the gate itself is a recorded finding,
+   not a pass. R13 stays open as the release-gate owner.
 7. **`show_skipped: true` is pinned only through `from_list`, not through a rendered frame.**
    T16 closed I23 by adding `dashboard_counts_do_not_prettify_the_skip_count` (§9), which
    pins both mutations I23 named by hand — but the app crate cannot be reached from an
@@ -365,11 +385,11 @@ Beyond that table, the walk surfaced deviations the plan did not anticipate:
    T16 closed I23 by adding `dashboard_counts_do_not_prettify_the_skip_count` (§8), which
    pins both mutations I23 named by hand — but the app crate cannot be reached from an
    integration test, so the caption as rendered is still unverified.
-8. **Colour is structurally unavailable in this iced rev.** Several rows (`#34`, `#58`,
-   `#159`, `#185`, `#186`) are narrower than their Flutter source because coloured
-   `Text`/`SelectableText` cannot be constructed — `<Theme as Catalog>::Class: From<StyleFn>`
-   is unsatisfied. This is verified against the vendored source rather than assumed, and it
-   is why `status_color` is callerless rather than merely unwired.
+8. **Colour is structurally unavailable in this iced rev.** Retired by T18 — the claim
+   was wrong: `.class(color)` compiles where `.color()` cannot (cosmic's `Copy` text
+   class has `From<Color>` but not `From<StyleFn>`), `status_color` lost its
+   `#[allow(dead_code)]` and reaches real widgets, and `distro_colour` is written
+   (#34, #185, #186 all `live`). Kept here so the retraction is on the record.
 9. **`ux.md`'s per-row provenance is uneven.** Some §6 subsections cite Flutter by
    `lib/…:NNN`; §6.6 and §6.14/§6.15 cite by bare filename. The walk recovered the missing
    line numbers from `pre-t14-flutter-parity` and recorded them in the appendix, but the
@@ -396,7 +416,7 @@ or an accepted disposition. All thirteen do:
 | R10 | Registry duality | lead | **Accepted**, recorded in D20. |
 | R11 | Tarball history | lead | **Accepted**, recorded in D20. |
 | R12 | GSettings import | lead | **Accepted**; the one-time DistroShelf import is implemented (T12). |
-| R13 | Orca manual step | lead | **Open, and escalated.** D20 recorded it as a manual step. The walk could not run it (§4.4) and it remains a release-gate item, not a checkbox — see §5.3/#190. |
+| R13 | Orca manual step | lead | **Open, and escalated.** D20 recorded it as a manual step. T19 shipped the §5.3 priority-1 labels but recorded the Orca gate itself as a finding (no Orca or display on the build host); it remains a release-gate item, not a checkbox — see §5.3/#190. |
 
 R6 and R13 are the two that are *not* closed by acceptance. R6 is unverifiable without
 `rpmbuild`; R13 needs a human at a real session with a screen reader.
@@ -450,7 +470,7 @@ being kept. Filed as **I28**.
 |---|---|
 | Every one of the 193 parity rows ticked with a verification tier (D19) | **Met.** Appendix A; every row carries a verdict and a tier. Tiers corrected downward for 14 rows after adversarial re-examination. |
 | `scripts/verify.sh` passes from a clean checkout (D13) | **Met.** All 11 stages. Stage 10 passed only after I27 was fixed. |
-| Phase 3 pass clean, no remaining failures (T16) | **Met with findings.** No crash or data-loss path. Five `bug` rows (I29) and seven `missing` rows (I30) filed with evidence. |
+| Phase 3 pass clean, no remaining failures (T16) | **Met; findings since closed.** No crash or data-loss path. The five `bug` rows (I29) and seven `missing` rows (I30) filed with evidence were all closed by T17–T20 (I29 in T17–T18, I30 in T18–T20) with per-row appendix evidence; counts reconciled in T21. |
 | `docs/migration/REPORT.md` written | **Met.** This document. |
 | Residual risks R1–R7 each have a named owner or accepted disposition | **Met.** §8, extended to R1–R13. R6 and R13 are open with owners rather than accepted. |
 
@@ -466,9 +486,11 @@ being kept. Filed as **I28**.
 | I30 | Seven parity rows are `missing` (#5, #40, #41, #161, #185, #189, #190) | **Fixed** — #185 in T18, #5/#40/#41/#189/#190 in T19, #161 in T20 |
 | I31 | `app/`'s missing lib target is a systemic verification ceiling (148/193 rows at `source`) | **Fixed** — lib target added (§11.2); headless harness landed in T20 (§11.3: `Core::default()` + `init` + driven `update` + headless `view` over a `HarnessSnapshot` seam, with `into_stream` draining for done-shaped tasks; `Element` stays opaque, so pixels still need T3 and no `source` row moves without its own test) |
 
-Carried forward from earlier tasks, unchanged by this one: **I19** (RPM never executed),
-**I20** (CI publishes no artifact), **I21** (dead screenshots), **I22** (dead distro SVGs),
-**I24** (seven callerless core helpers), **I26** (10 nav destinations vs 8).
+Carried forward from earlier tasks: **I19** (RPM never executed), **I21** (dead
+screenshots), **I22** (dead distro SVGs), **I24** (seven callerless core helpers).
+Closed since T16: **I20** (CI publishes no artifact — fixed by T21, arm (a):
+bundle exported from the retained repo and attached to the Release on tags) and
+**I26** (ruled by D28, applied by T19: rail 10→9).
 
 ---
 
@@ -584,9 +606,10 @@ scalars seam on `App` — the same precedent as `DashboardCounts` and `task_affo
 `Debug` and no introspection API at the pinned rev (verified: `element.rs` has no `fmt`
 impl at all), so no assertion here inspects a widget tree and no pixel claim is made —
 the five "T3-observed" caveats T18/T19 left now read "after T20's harness landed (it
-pins state + headless render, not pixels)". The 148 `source` rows each still need their
-own test; row #161 is re-tiered with its evidence above, and the aggregate counts and
-tier distribution reconcile in T21 (same as T17–T19).
+pins state + headless render, not pixels)". The 143 `source` rows each still need their
+own test (148 at the T16 walk; T21 recount in §4.1); row #161 is re-tiered with its
+evidence above, and the aggregate counts and tier distribution are reconciled in T21
+(same as T17–T19).
 
 ## Appendix A — the 193 parity rows, walked
 
@@ -595,6 +618,13 @@ actually attained. The verdicts here are **post-adversarial-correction**: 14 row
 re-examined and nine tiers were corrected downward (§4.1). "Basis" is the evidence itself —
 a call path, a citation, or the reason for an absence. Rows whose status in `ux.md` was
 `dead` are the deliverable named in `PLAN.md` §2; all 15 are accounted for in §5.1.
+
+*T21: the 13 rows T17–T20 touched carry per-task evidence inline (five `bug` and
+seven `missing` rows re-tiered to `live`, plus #34 `rescoped` → `live` with its
+tier unchanged). Verdicts now read live 144 / rescoped 40 / dropped 9 (§5);
+tiers T1 34 / T2 13 / T1+T2 2 / source 143 / none 1 (§4.1). No other row moved —
+in particular the T20 harness seed rows (#21, #152–#154) keep the tiers their
+owners left them; the harness pins state + headless render for them, not pixels.*
 
 | # | Item | Verdict | Tier | Basis |
 |---|---|---|---|---|
@@ -609,7 +639,7 @@ a call path, a citation, or the reason for an absence. Rows whose status in `ux.
 | 9 | Header title + icon | rescoped | source | Rescoped: the header carries the APP name, not the page name, and the page icon is gone. The per-page name now lives only in the nav rail (`Page::t… |
 | 10 | Refresh action | live | source | No `Ctrl+R` accelerator: `grep -rn "keyboard_nav\|shortcut\|set_keyboard_nav" app/src` returns zero hits — §5.1 item 5 (ux.md:317) is unimplemented… T19 update: the accelerator half is fixed — Ctrl+R (page-aware refresh) + Ctrl+N (create wizard) are bound, Escape closes transient surfaces, Ctrl+F focuses search; see #189. |
 | 11 | Full-page loading spinner | rescoped | source | Deliberately not ported — §3.4 (ux.md:185): the full-page spinner 'is a regression to avoid; COSMIC convention is to keep content and show progress… |
-| 12 | Environment-blocked view (icon, title, message, "Check Again") | live | source | Implemented once at the SHELL level (all 10 pages inherit it) exactly as §3.4/§6.1.8 decided (ux.md:187). 'Check Again' re-runs refresh only — ther… |
+| 12 | Environment-blocked view (icon, title, message, "Check Again") | live | source | Implemented once at the SHELL level (all 10 pages inherit it) exactly as §3.4/§6.1.8 decided (ux.md:187). 'Check Again' re-runs refresh only — ther… T21: superseded — both gate buttons now send `EnvMsg::ReprobeRequested`, re-running `env::detect` (T17, `views.rs:248-258`; see #13). Verdict and tier unchanged. |
 | 13 | Distrobox-not-found view (title, copy, "Check Again") | live | T1+T2 | Fixed by T17 (was `bug` in the T16 walk): "Check Again" sends `EnvMsg::ReprobeRequested`, the `Task` future runs `Backend::reprobe()` (fresh `env::detect` + swap of runner/`Distrobox`/guard/terminals), and the live `Probed` arm reloads containers + version on recovery. T2: `reprobe_recovers_a_mid_session_distrobox_install` (guard flips false→true, post-reprobe `containers()` answers on the new runner); T1: `reprobe_outcome` truth table in `parity_rows.rs` (Blocked/message precedence included). |
 | 14 | System status card (SYSTEM STATUS, healthy/degraded headline, running-of-total) | live | T1 | Live. Two deltas: (a) Flutter's right-side check_circle/warning icon badge (dashboard_page.dart:302-324) is not ported; (b) `healthy` no longer con… |
 | 15 | Inline error strip inside status card | live | source | Live (icon+message strip → `widget::warning`, which carries `.on_close`). Flagged duplication: the shell ALREADY renders the same `self.error` stri… |
@@ -750,7 +780,7 @@ a call path, a citation, or the reason for an absence. Rows whose status in `ux.
 | 150 | Task progress dialog [dup row] | rescoped | source | The duplication is gone and no modal progress dialog replaces it - so the row lands as re-scoped rather than live-as-described. The five Flutter co… |
 | 151 | Undisposed TextEditingControllers in 5 dialogs [bug row] | live | source | BUG ROW MOOT, as the row itself predicted ('Moot - widgets are stateless in the new model'). Rust has no undisposed-controller failure mode at all:… |
 | 152 | Header + refresh + clear-completed | rescoped | source | The clear-completed half is live and reachable; the Refresh half is a deliberate omission (documented in the module header, not silently dropped).… |
-| 153 | Search over description + output | live | T1 | Live. The `+ Ctrl+F` in ux.md's approach column is NOT wired — a grep for keyboard/Hotkey in app/src returns nothing; ux.md §4.5 scopes keyboard sh… |
+| 153 | Search over description + output | live | T1 | Live. The `+ Ctrl+F` in ux.md's approach column is NOT wired — a grep for keyboard/Hotkey in app/src returns nothing; ux.md §4.5 scopes keyboard sh… T21: the `+ Ctrl+F` half is superseded — T19 bound Ctrl+F to `on_search`, which focuses the page's search field (see #189). Verdict and tier unchanged. |
 | 154 | Filter chips All / Running / Success / Errors | live | T1 | Live. Implementation deviates from ux.md's proposed `segmented_control`: it is a `button::suggested`/`button::standard` pair with selected state (a… |
 | 155 | Stats bar Total / Running / Completed / Failed | live | T1 | Live, and a strict improvement on the row's Flutter source, which recomputed each count with `_getTaskStatus(t) == '...'` string sniffing (dart:199… |
 | 156 | Empty states (no activity / no match) | live | source | Live, both branches present. Tier is source only: no test asserts either empty branch renders. |
