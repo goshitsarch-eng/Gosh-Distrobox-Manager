@@ -13,6 +13,7 @@
 //! clone `.trim()` consistency (#148), portal pickers not free text (#149),
 //! shared task progress (#150 — mirror rows, no sixth dialog copy).
 
+use crate::fl;
 use crate::message::{BackupsMsg, Message};
 use crate::views::empty_state;
 use cosmic::iced::Length;
@@ -109,21 +110,24 @@ pub fn snapshot_row(snapshot: &SnapshotInfo) -> cosmic::Element<'static, Message
         .push(
             widget::Column::new()
                 .push(widget::text::body(snapshot.name.clone()))
-                .push(widget::text::caption(format!(
-                    "{} · {}",
-                    snapshot.created, snapshot.size
+                .push(widget::text::caption(fl!(
+                    "backup-snapshot-meta",
+                    created = snapshot.created.clone(),
+                    size = snapshot.size.clone()
                 )))
                 .width(Length::Fill)
                 .spacing(2),
         )
         .push(
-            widget::button::standard("Restore").on_press(Message::Backups(
+            widget::button::standard(fl!("app-restore")).on_press(Message::Backups(
                 BackupsMsg::RestoreDialogRequested(snapshot.name.clone()),
             )),
         )
-        .push(widget::button::text("Delete").on_press(Message::Backups(
-            BackupsMsg::DeleteRequested(snapshot.id.clone()),
-        )))
+        .push(
+            widget::button::text(fl!("app-delete")).on_press(Message::Backups(
+                BackupsMsg::DeleteRequested(snapshot.id.clone()),
+            )),
+        )
         .spacing(8)
         .align_y(cosmic::iced::Alignment::Center)
         .into()
@@ -137,7 +141,7 @@ pub fn snapshots_tab(
     container: Option<&str>,
 ) -> cosmic::Element<'static, Message> {
     if loading {
-        return widget::container(widget::text::body("Loading snapshots…"))
+        return widget::container(widget::text::body(fl!("backup-loading-snapshots")))
             .width(Length::Fill)
             .center_x(Length::Fill)
             .into();
@@ -145,10 +149,10 @@ pub fn snapshots_tab(
     if let Some(err) = error {
         return empty_state(
             "dialog-error-symbolic",
-            "Could not load snapshots".to_string(),
+            fl!("backup-could-not-load"),
             err.to_string(),
             Some(
-                widget::button::standard("Retry")
+                widget::button::standard(fl!("action-retry"))
                     .on_press(Message::Backups(BackupsMsg::ReloadRequested))
                     .into(),
             ),
@@ -157,11 +161,11 @@ pub fn snapshots_tab(
     if snapshots.is_empty() {
         return empty_state(
             "document-open-symbolic",
-            "No snapshots yet".to_string(),
-            "Create your first snapshot to get started.".to_string(),
+            fl!("backup-empty-no-snapshots"),
+            fl!("backup-empty-no-snapshots-body"),
             container.map(|_| {
                 let action: cosmic::Element<'static, Message> =
-                    widget::button::suggested("Create First Snapshot")
+                    widget::button::suggested(fl!("backup-create-first"))
                         .on_press(Message::Backups(BackupsMsg::CreateDialogRequested))
                         .into();
                 action
@@ -169,10 +173,9 @@ pub fn snapshots_tab(
         );
     }
     let mut col = widget::Column::new()
-        .push(widget::text::caption(format!(
-            "{} snapshot{}",
-            snapshots.len(),
-            if snapshots.len() != 1 { "s" } else { "" }
+        .push(widget::text::caption(fl!(
+            "backup-n-snapshots",
+            count = snapshots.len()
         )))
         .spacing(8);
     for snap in snapshots {
@@ -190,33 +193,27 @@ pub fn transfer_tab(
 ) -> cosmic::Element<'static, Message> {
     let mut col = widget::Column::new().spacing(12);
     // Export card (#143).
-    col = col.push(widget::text::caption_heading("EXPORT CONTAINER"));
-    col = col.push(widget::text::caption(
-        "Save a container to a tar archive (portal file chooser).",
-    ));
+    col = col.push(widget::text::caption_heading(fl!("backup-export-heading")));
+    col = col.push(widget::text::caption(fl!("backup-export-description")));
     col = col.push(
-        widget::button::standard("Export…").on_press_maybe(if has_container {
+        widget::button::standard(fl!("backup-export-action")).on_press_maybe(if has_container {
             Some(Message::Backups(BackupsMsg::ExportDialogRequested))
         } else {
             None
         }),
     );
     // Import card (#144).
-    col = col.push(widget::text::caption_heading("IMPORT CONTAINER"));
-    col = col.push(widget::text::caption(
-        "Restore a container from a tar archive (portal file chooser).",
-    ));
+    col = col.push(widget::text::caption_heading(fl!("backup-import-heading")));
+    col = col.push(widget::text::caption(fl!("backup-import-description")));
     col = col.push(
-        widget::button::standard("Import…")
+        widget::button::standard(fl!("backup-import-action"))
             .on_press(Message::Backups(BackupsMsg::ImportDialogRequested)),
     );
     // Clone card (#145 — disabled without a container, unified dialog).
-    col = col.push(widget::text::caption_heading("CLONE CONTAINER"));
-    col = col.push(widget::text::caption(
-        "Create a copy of the selected container.",
-    ));
+    col = col.push(widget::text::caption_heading(fl!("backup-clone-heading")));
+    col = col.push(widget::text::caption(fl!("backup-clone-description")));
     col = col.push(
-        widget::button::standard("Clone…").on_press_maybe(if has_container {
+        widget::button::standard(fl!("backup-clone-action")).on_press_maybe(if has_container {
             Some(Message::Backups(BackupsMsg::CloneDialogRequested))
         } else {
             None

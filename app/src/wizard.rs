@@ -21,6 +21,7 @@
 //! images (row #104 — headline says so); local management (#105) is P1
 //! backend work, out of scope.
 
+use crate::fl;
 use crate::icons::distro_icon;
 use crate::message::Message;
 use cosmic::widget;
@@ -192,8 +193,12 @@ pub fn wizard_card(
     widget::Column::new()
         .push(image_card_body(image))
         .push(
-            widget::button::standard(if selected { "✓ Selected" } else { "Select" })
-                .on_press(on_select),
+            widget::button::standard(if selected {
+                fl!("wizard-image-card-selected")
+            } else {
+                fl!("wizard-image-card-select")
+            })
+            .on_press(on_select),
         )
         .spacing(8)
         .align_x(cosmic::iced::Alignment::Center)
@@ -210,10 +215,14 @@ pub fn image_card(
     widget::Column::new()
         .push(image_card_body(image))
         .push(
-            widget::button::standard(if selected { "✓ Selected" } else { "Select" })
-                .on_press(on_select),
+            widget::button::standard(if selected {
+                fl!("wizard-image-card-selected")
+            } else {
+                fl!("wizard-image-card-select")
+            })
+            .on_press(on_select),
         )
-        .push(widget::button::text("Details").on_press(on_details))
+        .push(widget::button::text(fl!("wizard-image-details")).on_press(on_details))
         .spacing(8)
         .align_x(cosmic::iced::Alignment::Center)
         .into()

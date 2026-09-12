@@ -18,6 +18,7 @@
 //! page offers a Run-command box (T9 owns real execution; T8 records the
 //! intent as a toast pointing there).
 
+use crate::fl;
 use crate::icons::is_running;
 use crate::message::{Message, PackagesMsg};
 use crate::views::empty_state;
@@ -50,7 +51,7 @@ impl PackagesState {
     pub fn badge(manager: Option<PackageManager>) -> String {
         match manager {
             Some(pm) => pm.badge().to_string(),
-            None => "Detecting…".to_string(),
+            None => fl!("packages-detecting"),
         }
     }
 }
@@ -81,11 +82,13 @@ pub fn container_picker_mapped(
         .and_then(|s| containers.iter().find(|c| c.name == s))
         .map(|c| is_running(&c.status))
     {
-        Some(true) => widget::text::caption("Running"),
-        _ => widget::text::caption("Stopped"),
+        Some(true) => widget::text::caption(fl!("packages-status-running")),
+        _ => widget::text::caption(fl!("packages-status-stopped")),
     };
     widget::Column::new()
-        .push(widget::text::caption_heading("CONTAINER"))
+        .push(widget::text::caption_heading(fl!(
+            "packages-container-heading"
+        )))
         .push(picker)
         .push(pill)
         .spacing(4)
@@ -97,14 +100,14 @@ pub fn container_picker_mapped(
 pub fn tab_bar(searching: bool) -> cosmic::Element<'static, Message> {
     widget::Row::new()
         .push(
-            widget::button::standard("Installed")
+            widget::button::standard(fl!("packages-tab-installed"))
                 .on_press(Message::Packages(PackagesMsg::TabSelected(false))),
         )
         .push(
             widget::button::standard(if searching {
-                "Search Results"
+                fl!("packages-tab-search-results")
             } else {
-                "Search"
+                fl!("packages-tab-search")
             })
             .on_press(Message::Packages(PackagesMsg::TabSelected(true))),
         )
@@ -115,14 +118,22 @@ pub fn tab_bar(searching: bool) -> cosmic::Element<'static, Message> {
 /// Package row (row #119): name, version chip, description, Install/Remove
 /// action with confirm upstream (row #120 owns the dialog).
 pub fn package_row(pkg: &PackageInfo, action: Message) -> cosmic::Element<'static, Message> {
-    let label = if pkg.installed { "Remove" } else { "Install" };
+    let label = if pkg.installed {
+        // Both are existing chrome ids: `action-remove` (shared actions) and
+        // `app-install` (the install verb app.rs already uses) — same wording,
+        // same imperative role, so no duplicate id is invented.
+        fl!("action-remove")
+    } else {
+        fl!("app-install")
+    };
     widget::Row::new()
         .push(
             widget::Column::new()
                 .push(widget::text::body(pkg.name.clone()))
-                .push(widget::text::caption(format!(
-                    "{} — {}",
-                    pkg.version, pkg.description
+                .push(widget::text::caption(fl!(
+                    "packages-version-description",
+                    version = pkg.version.clone(),
+                    description = pkg.description.clone()
                 )))
                 .width(Length::Fill)
                 .spacing(2),
@@ -136,25 +147,23 @@ pub fn package_row(pkg: &PackageInfo, action: Message) -> cosmic::Element<'stati
 /// Not-running banner (row #111): warning + copy (NO dead Start button —
 /// §4.1's `start` op does not exist; a button that cannot work is worse).
 pub fn not_running_banner() -> cosmic::Element<'static, Message> {
-    widget::warning("Container is not running. Start it to manage packages.").into()
+    widget::warning(fl!("packages-not-running-warning")).into()
 }
 
 /// Manual-command box for `Unknown` PM (B1): no error toast — the page
 /// offers entry instead.
 pub fn manual_cmd_box(cmd: &str) -> cosmic::Element<'static, Message> {
     widget::Column::new()
-        .push(widget::text::body(
-            "No supported package manager detected. Run a command manually:",
-        ))
+        .push(widget::text::body(fl!("packages-manual-prompt")))
         .push({
             let input: cosmic::Element<'static, Message> =
-                widget::text_input::text_input("e.g. apt-get install foo", cmd.to_string())
+                widget::text_input::text_input(fl!("packages-manual-placeholder"), cmd.to_string())
                     .on_input(|s| Message::Packages(PackagesMsg::ManualCmdChanged(s)))
                     .into();
             input
         })
         .push(
-            widget::button::standard("Run (lands in T9)")
+            widget::button::standard(fl!("packages-manual-run"))
                 .on_press(Message::Packages(PackagesMsg::ManualRunRequested)),
         )
         .spacing(8)
@@ -172,13 +181,13 @@ pub fn installed_list(
     if !running {
         return empty_state(
             "system-shutdown-symbolic",
-            "Container Not Running".to_string(),
-            "Start the container to view installed packages".to_string(),
+            fl!("packages-empty-not-running-title"),
+            fl!("packages-empty-not-running-body"),
             None,
         );
     }
     if loading {
-        return widget::container(widget::text::body("Loading packages…"))
+        return widget::container(widget::text::body(fl!("packages-loading")))
             .width(Length::Fill)
             .center_x(Length::Fill)
             .into();
@@ -186,10 +195,10 @@ pub fn installed_list(
     if let Some(err) = error {
         return empty_state(
             "dialog-error-symbolic",
-            "Could not load packages".to_string(),
+            fl!("packages-error-title"),
             err.to_string(),
             Some(
-                widget::button::standard("Retry")
+                widget::button::standard(fl!("action-retry"))
                     .on_press(Message::Packages(PackagesMsg::ReloadRequested(
                         container.to_string(),
                     )))
@@ -200,15 +209,15 @@ pub fn installed_list(
     if packages.is_empty() {
         return empty_state(
             "document-open-symbolic",
-            "No packages found".to_string(),
+            fl!("packages-empty-none-title"),
             String::new(),
             None,
         );
     }
     let mut col = widget::Column::new()
-        .push(widget::text::caption(format!(
-            "{} packages installed",
-            packages.len()
+        .push(widget::text::caption(fl!(
+            "packages-count-installed",
+            count = packages.len()
         )))
         .spacing(8);
     for pkg in packages {
@@ -230,13 +239,13 @@ pub fn search_list(
     if !searching {
         return empty_state(
             "system-search-symbolic",
-            "Search for packages".to_string(),
-            "Enter a package name and press Enter".to_string(),
+            fl!("packages-empty-search-title"),
+            fl!("packages-empty-search-body"),
             None,
         );
     }
     if loading {
-        return widget::container(widget::text::body("Searching…"))
+        return widget::container(widget::text::body(fl!("packages-searching")))
             .width(Length::Fill)
             .center_x(Length::Fill)
             .into();
@@ -244,15 +253,15 @@ pub fn search_list(
     if results.is_empty() {
         return empty_state(
             "system-search-symbolic",
-            "No packages found".to_string(),
-            "Try a different search term".to_string(),
+            fl!("packages-empty-none-title"),
+            fl!("packages-empty-no-match-body"),
             None,
         );
     }
     let mut col = widget::Column::new()
-        .push(widget::text::caption(format!(
-            "{} packages found",
-            results.len()
+        .push(widget::text::caption(fl!(
+            "packages-count-found",
+            count = results.len()
         )))
         .spacing(8);
     for pkg in results {

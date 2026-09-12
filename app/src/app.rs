@@ -10,6 +10,7 @@
 //! [`Backend`] is held behind `Arc` (cheap to clone into task futures). T3 has
 //! no task-output subscriptions yet — those land with T5's `spawn_task`.
 
+use crate::fl;
 use crate::icons;
 use crate::message::{
     AppMsg, ConfirmAction, ConfirmSpec, ContainerMsg, DetailsMsg, DialogMsg, EnvMsg, ImageMsg,
@@ -135,8 +136,26 @@ pub struct App {
 /// The UI-side mirror of a core task (§3.1). `label` renders in task rows
 /// (dashboard) and the Activity page (T11); `started_at` gets its reader
 /// in T11.
+/// What a task *is*, for routing and matching.
+///
+/// Distinct from [`TaskView::label`], which is user-visible and therefore
+/// translated. Three sites used to match on the rendered label
+/// (`label.starts_with("Upgrade ")` in the Updates page, `"Create "` twice in
+/// the wizard); that worked only because the label happened to be an English
+/// literal. Once `fl!` produces it, the prefix is English only in the fallback
+/// locale, so every upgrade task would vanish from the Updates page and the
+/// wizard would lose its progress task the moment a translation landed. Match
+/// on this instead; never on `label`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TaskKind {
+    Upgrade,
+    Create,
+    Other,
+}
+
 pub struct TaskView {
     pub label: String,
+    pub kind: TaskKind,
     pub output: Vec<String>,
     pub completed: bool,
     pub success: bool,
@@ -219,14 +238,14 @@ impl App {
 
     fn error_text(err: &CoreFailure) -> String {
         match &*err.0 {
+            // `command`/`stderr` are command output → placeables, never part
+            // of the message body (Q17).
             CoreError::BlockedEnvironment => {
-                "Running inside a Distrobox container without distrobox-host-exec. \
-                 Install distrobox-host-exec on the host or run on the host system."
-                    .to_string()
+                fl!("app-blocked-environment")
             }
             CoreError::CommandFailed {
                 command, stderr, ..
-            } => format!("`{command}` failed: {stderr}"),
+            } => fl!("app-command-failed", command = command, stderr = stderr),
             other => other.to_string(),
         }
     }
@@ -257,29 +276,35 @@ impl App {
             self.backend.is_distrobox_installed(),
         ));
         // Quick actions (rows #165–#168).
-        col = col.push(widget::text::caption_heading("QUICK ACTIONS"));
-        col =
-            col.push({
-                let row: cosmic::Element<'_, Message> =
-                    widget::Row::new()
-                        .push(widget::button::standard("Refresh All Data").on_press(
-                            Message::Settings(crate::message::SettingsMsg::RefreshAllRequested),
-                        ))
-                        .push(widget::button::standard("Stop All Containers").on_press(
-                            Message::Settings(crate::message::SettingsMsg::StopAllRequested),
-                        ))
-                        .spacing(12)
-                        .into();
-                row
-            });
+        col = col.push(widget::text::caption_heading(fl!("app-quick-actions")));
         col = col.push({
             let row: cosmic::Element<'_, Message> = widget::Row::new()
-                .push(widget::button::standard("Upgrade All Containers").on_press(
-                    Message::Settings(crate::message::SettingsMsg::UpgradeAllRequested),
-                ))
-                .push(widget::button::standard("Clear Completed Tasks").on_press(
-                    Message::Settings(crate::message::SettingsMsg::ClearCompleted),
-                ))
+                .push(
+                    widget::button::standard(fl!("app-refresh-all-data")).on_press(
+                        Message::Settings(crate::message::SettingsMsg::RefreshAllRequested),
+                    ),
+                )
+                .push(
+                    widget::button::standard(fl!("app-stop-all-containers")).on_press(
+                        Message::Settings(crate::message::SettingsMsg::StopAllRequested),
+                    ),
+                )
+                .spacing(12)
+                .into();
+            row
+        });
+        col = col.push({
+            let row: cosmic::Element<'_, Message> = widget::Row::new()
+                .push(
+                    widget::button::standard(fl!("app-upgrade-all-containers")).on_press(
+                        Message::Settings(crate::message::SettingsMsg::UpgradeAllRequested),
+                    ),
+                )
+                .push(
+                    widget::button::standard(fl!("app-clear-completed-tasks")).on_press(
+                        Message::Settings(crate::message::SettingsMsg::ClearCompleted),
+                    ),
+                )
                 .spacing(12)
                 .into();
             row
@@ -296,7 +321,7 @@ impl App {
         // Danger zone (row #170).
         col = col.push(crate::settings::danger_zone(!self.containers.is_empty()));
         // About (row #169, I5): `widget::about()` owns the card.
-        col = col.push(widget::text::caption_heading("ABOUT"));
+        col = col.push(widget::text::caption_heading(fl!("app-about-heading")));
         col = col.push(st::about());
         widget::scrollable(col).into()
     }
@@ -318,7 +343,7 @@ impl App {
 
     fn view_stats(&self) -> cosmic::Element<'_, Message> {
         let Some(selected) = self.selected_container.clone() else {
-            return widget::container(widget::text::body("Select a container to show its stats."))
+            return widget::container(widget::text::body(fl!("app-stats-select")))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x(Length::Fill)
@@ -326,15 +351,18 @@ impl App {
                 .into();
         };
         if self.loading.stats {
-            return widget::container(widget::text::body(format!("Loading stats for {selected}…")))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .into();
+            return widget::container(widget::text::body(fl!(
+                "app-stats-loading",
+                name = selected
+            )))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into();
         }
         let Some(stats) = &self.stats else {
-            return widget::container(widget::text::body(format!("No stats for {selected} yet.")))
+            return widget::container(widget::text::body(fl!("app-stats-none", name = selected)))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x(Length::Fill)
@@ -342,20 +370,30 @@ impl App {
                 .into();
         };
         widget::Column::new()
-            .push(widget::text::title3(format!("Stats: {selected}")))
-            .push(widget::text::body(format!(
-                "CPU: {:.1}%",
-                stats.cpu_percent
+            .push(widget::text::title3(fl!(
+                "app-stats-title",
+                name = selected
             )))
-            .push(widget::text::body(format!(
-                "Memory: {} / {} ({:.1}%)",
-                stats.memory_usage, stats.memory_limit, stats.memory_percent
+            // The measured values are formatted HERE and passed as placeables;
+            // no `{:.1}` lives inside a translatable body.
+            .push(widget::text::body(fl!(
+                "app-stat-cpu",
+                percent = format!("{:.1}", stats.cpu_percent)
             )))
-            .push(widget::text::body(format!(
-                "Network I/O: {}",
-                stats.network_io
+            .push(widget::text::body(fl!(
+                "app-stat-memory",
+                used = stats.memory_usage.as_str(),
+                limit = stats.memory_limit.as_str(),
+                percent = format!("{:.1}", stats.memory_percent)
             )))
-            .push(widget::text::body(format!("Block I/O: {}", stats.block_io)))
+            .push(widget::text::body(fl!(
+                "app-stat-network",
+                value = stats.network_io.as_str()
+            )))
+            .push(widget::text::body(fl!(
+                "app-stat-block",
+                value = stats.block_io.as_str()
+            )))
             .spacing(4)
             .into()
     }
@@ -422,7 +460,7 @@ impl cosmic::Application for App {
             terminal: crate::terminal::TerminalState::default(),
             config,
             legacy_import_pending,
-            distrobox_version: "Unknown".to_string(),
+            distrobox_version: fl!("app-version-unknown"),
             loading_version: true,
             images_search: String::new(),
             images_custom: String::new(),
@@ -665,7 +703,7 @@ impl cosmic::Application for App {
                             return Task::batch(vec![toast, refresh]);
                         }
                         Err(e) => {
-                            let toast = self.toast(format!("Failed: {}", Self::error_text(&e)));
+                            let toast = self.toast(fl!("app-failed", error = Self::error_text(&e)));
                             return toast;
                         }
                     }
@@ -683,7 +721,7 @@ impl cosmic::Application for App {
                         let result = backend
                             .stop_container(&name)
                             .await
-                            .map(|_| format!("{name} stopped"));
+                            .map(|_| fl!("app-container-stopped", name = name.as_str()));
                         Message::Containers(ContainerMsg::ActionFinished(result))
                     });
                 }
@@ -704,18 +742,16 @@ impl cosmic::Application for App {
                         let result = backend
                             .start_container(&name)
                             .await
-                            .map(|_| format!("{name} started"));
+                            .map(|_| fl!("app-container-started", name = name.as_str()));
                         Message::Containers(ContainerMsg::ActionFinished(result))
                     });
                 }
                 ContainerMsg::RemoveRequested(name) => {
                     // Destructive → shared confirm (§3.3), not a direct run.
                     return self.confirm_or_run(ConfirmSpec {
-                        title: "Delete Container".to_string(),
-                        body: format!(
-                            "Are you sure you want to delete \"{name}\"?\n\nThis action cannot be undone and all container data will be lost."
-                        ),
-                        confirm_label: "Delete".to_string(),
+                        title: fl!("app-delete-container"),
+                        body: fl!("app-confirm-delete-container", name = name.as_str()),
+                        confirm_label: fl!("app-delete"),
                         destructive: true,
                         action: ConfirmAction::RemoveContainer(name),
                     });
@@ -727,7 +763,7 @@ impl cosmic::Application for App {
                         // that produce this (Containers, Settings) are always
                         // enabled, so a silent return reads as a dead
                         // control.
-                        let toast = self.toast("No running containers to stop.".to_string());
+                        let toast = self.toast(fl!("app-no-running-to-stop"));
                         return toast;
                     }
                     // No guard here: `dispatch_confirm_action` owns the
@@ -738,9 +774,9 @@ impl cosmic::Application for App {
                     // no-confirm path alike, bailed before spawning and left
                     // the key stuck, muting the button for the session.
                     return self.confirm_or_run(ConfirmSpec {
-                        title: "Stop All Containers".to_string(),
-                        body: format!("Stop all {count} running containers?"),
-                        confirm_label: "Stop All".to_string(),
+                        title: fl!("app-stop-all-containers"),
+                        body: fl!("app-confirm-stop-all", count = count),
+                        confirm_label: fl!("app-stop-all"),
                         destructive: true,
                         action: ConfirmAction::StopAll,
                     });
@@ -759,11 +795,18 @@ impl cosmic::Application for App {
                         return Self::none();
                     }
                     let backend = Arc::clone(&self.backend);
-                    let label = format!("Upgrade {name}");
-                    let toast = self.toast(format!("Upgrading {name}…"));
+                    // Routing goes by `TaskKind::Upgrade`, not by the label:
+                    // the label is translated, so nothing may key off its text
+                    // (T15 — the old `updates.rs` prefix filter did).
+                    let label = fl!("app-label-upgrade", name = name.as_str());
+                    let toast = self.toast(fl!("app-upgrading-container", name = name.as_str()));
                     let spawn = Self::run(async move {
                         let result = backend.upgrade_container(&name).await;
-                        Message::Tasks(TaskMsg::Started { label, result })
+                        Message::Tasks(TaskMsg::Started {
+                            label,
+                            kind: TaskKind::Upgrade,
+                            result,
+                        })
                     });
                     return Task::batch(vec![toast, spawn]);
                 }
@@ -802,13 +845,13 @@ impl cosmic::Application for App {
                         // Row #131: Flutter toasted 'No running containers
                         // to upgrade' — silent none would strand the header
                         // button with no feedback.
-                        let toast = self.toast("No running containers to upgrade.".to_string());
+                        let toast = self.toast(fl!("app-no-running-to-upgrade"));
                         return toast;
                     }
                     return self.confirm_or_run(ConfirmSpec {
-                        title: "Upgrade All Containers".to_string(),
-                        body: format!("Upgrade packages in {} running containers?", running.len()),
-                        confirm_label: "Upgrade All".to_string(),
+                        title: fl!("app-upgrade-all-containers"),
+                        body: fl!("app-confirm-upgrade-all", count = running.len()),
+                        confirm_label: fl!("app-upgrade-all"),
                         destructive: false,
                         action: ConfirmAction::UpgradeAll,
                     });
@@ -863,15 +906,15 @@ impl cosmic::Application for App {
                     }
                     match gosh_distrobox_core::models::CreateArgName::new(&name) {
                         Err(_) => {
-                            let toast = self.toast(format!(
-                                "Invalid container name {name:?}: must match [a-zA-Z0-9][a-zA-Z0-9_.-]* (row #96)."
-                            ));
+                            // `{name:?}` used to add surrounding quotes — the
+                            // message body now owns the quotes.
+                            let toast = self.toast(fl!("app-clone-name-invalid", name = name));
                             return toast;
                         }
                         Ok(arg_name) => {
                             use gosh_distrobox_core::models::CreateArgs;
                             let backend = Arc::clone(&self.backend);
-                            let label = format!("Clone to {name}");
+                            let label = fl!("app-label-clone", name = name.as_str());
                             let args = CreateArgs {
                                 init: false,
                                 nvidia: false,
@@ -881,10 +924,18 @@ impl cosmic::Application for App {
                                 volumes: vec![],
                             };
                             self.dialog = None;
-                            let toast = self.toast(format!("Cloning {source} to {name}…"));
+                            let toast = self.toast(fl!(
+                                "app-cloning-container",
+                                source = source.as_str(),
+                                name = name.as_str()
+                            ));
                             let spawn = Self::run(async move {
                                 let result = backend.clone_container(&source, args).await;
-                                Message::Tasks(TaskMsg::Started { label, result })
+                                Message::Tasks(TaskMsg::Started {
+                                    label,
+                                    kind: TaskKind::Other,
+                                    result,
+                                })
                             });
                             return Task::batch(vec![toast, spawn]);
                         }
@@ -998,7 +1049,7 @@ impl cosmic::Application for App {
                     ) {
                         (Some(c), p) if !p.is_empty() => (c, p),
                         _ => {
-                            self.apps_binary_error = Some("Binary path is required.".to_string());
+                            self.apps_binary_error = Some(fl!("app-binary-path-required"));
                             return Self::none();
                         }
                     };
@@ -1013,7 +1064,7 @@ impl cosmic::Application for App {
                         let result = backend
                             .export_binary(&container, &path)
                             .await
-                            .map(|_| format!("Binary exported: {path}"));
+                            .map(|_| fl!("app-binary-exported", path = path));
                         Message::Apps(AppMsg::ActionFinished(c, result))
                     });
                 }
@@ -1060,7 +1111,7 @@ impl cosmic::Application for App {
                         let result = backend
                             .export_app(&container, &desktop)
                             .await
-                            .map(|_| "Application exported".to_string());
+                            .map(|_| fl!("app-application-exported"));
                         Message::Apps(AppMsg::ActionFinished(c, result))
                     });
                 }
@@ -1078,7 +1129,7 @@ impl cosmic::Application for App {
                         let result = backend
                             .unexport_app(&container, &desktop)
                             .await
-                            .map(|_| "Application unexported".to_string());
+                            .map(|_| fl!("app-application-unexported"));
                         Message::Apps(AppMsg::ActionFinished(c, result))
                     });
                 }
@@ -1093,7 +1144,7 @@ impl cosmic::Application for App {
                     self.busy.clear();
                     let toast = match result {
                         Ok(msg) => self.toast(msg),
-                        Err(e) => self.toast(format!("Failed: {}", Self::error_text(&e))),
+                        Err(e) => self.toast(fl!("app-failed", error = Self::error_text(&e))),
                     };
                     let reload = self.update(Message::Apps(AppMsg::ReloadRequested(container)));
                     return Task::batch(vec![toast, reload]);
@@ -1130,7 +1181,7 @@ impl cosmic::Application for App {
                     // silent snackbar-to-nowhere.
                     let url = self.images_custom.trim().to_string();
                     if url.is_empty() {
-                        let toast = self.toast("Enter a custom image URL first.".to_string());
+                        let toast = self.toast(fl!("app-custom-image-url-first"));
                         return toast;
                     }
                     self.wizard = Some(crate::wizard::WizardState::with_preselected(url));
@@ -1172,14 +1223,18 @@ impl cosmic::Application for App {
                 }
             },
             Message::Tasks(msg) => match msg {
-                TaskMsg::Started { label, result } => match result {
+                TaskMsg::Started {
+                    label,
+                    kind,
+                    result,
+                } => match result {
                     Err(e) => {
                         // Row #122 (ux.md:504 "Route to toaster"): spawn
                         // failures toast AND banner — Flutter showed nothing.
-                        let toast = self.toast(format!(
-                            "Could not start {}: {}",
-                            label,
-                            Self::error_text(&e)
+                        let toast = self.toast(fl!(
+                            "app-could-not-start",
+                            label = label.as_str(),
+                            error = Self::error_text(&e)
                         ));
                         // O2 second leg: a spawn failure must not strand the
                         // wizard on Progress (no task exists to drive it).
@@ -1187,12 +1242,12 @@ impl cosmic::Application for App {
                         // toast above already fired — no silent failure).
                         if let Some(w) = self.wizard.as_mut()
                             && w.step == crate::wizard::WizardStep::Progress
-                            && label.starts_with("Create ")
+                            && kind == TaskKind::Create
                         {
                             w.step = crate::wizard::WizardStep::Config;
-                            w.inline_error = Some(format!(
-                                "Could not start creation: {}",
-                                Self::error_text(&e)
+                            w.inline_error = Some(fl!(
+                                "app-could-not-start-creation",
+                                error = Self::error_text(&e)
                             ));
                             w.task_id = None;
                         } else {
@@ -1207,7 +1262,7 @@ impl cosmic::Application for App {
                         if let Some(w) = self.wizard.as_mut()
                             && w.step == crate::wizard::WizardStep::Progress
                             && w.task_id.is_none()
-                            && label.starts_with("Create ")
+                            && kind == TaskKind::Create
                         {
                             w.task_id = Some(id);
                         }
@@ -1215,6 +1270,7 @@ impl cosmic::Application for App {
                             id,
                             TaskView {
                                 label,
+                                kind,
                                 output: Vec::new(),
                                 completed: false,
                                 success: false,
@@ -1248,8 +1304,8 @@ impl cosmic::Application for App {
                             .tasks
                             .get(&id)
                             .map(|v| v.label.clone())
-                            .unwrap_or_else(|| "Task".to_string());
-                        let toast = self.toast(format!("{label} failed — see output for details"));
+                            .unwrap_or_else(|| fl!("app-task"));
+                        let toast = self.toast(fl!("app-task-failed", label = label.as_str()));
                         return toast;
                     }
                 }
@@ -1330,7 +1386,7 @@ impl cosmic::Application for App {
                     self.toasts.remove(id);
                 }
                 UiMsg::CopiedToClipboard(what) => {
-                    let toast = self.toast(format!("Copied {what} to clipboard"));
+                    let toast = self.toast(fl!("app-copied-to-clipboard", what = what));
                     return toast;
                 }
             },
@@ -1443,7 +1499,7 @@ impl cosmic::Application for App {
                     widget::Row::new()
                         .push(widget::text::body(err).width(Length::Fill))
                         .push(
-                            widget::button::standard("Dismiss")
+                            widget::button::standard(fl!("app-dismiss"))
                                 .on_press(Message::Ui(UiMsg::DismissError)),
                         )
                         .spacing(8),
@@ -1471,7 +1527,11 @@ impl cosmic::Application for App {
             } else {
                 Message::Details(DetailsMsg::Closed)
             };
-            return vec![widget::button::standard("Back").on_press(msg).into()];
+            return vec![
+                widget::button::standard(fl!("action-back"))
+                    .on_press(msg)
+                    .into(),
+            ];
         }
         // O6: Updates owns Refresh+Upgrade All in `header_end` (row #123) —
         // the generic Refresh here would render it twice. Same for Apps
@@ -1482,7 +1542,7 @@ impl cosmic::Application for App {
             return vec![];
         }
         vec![
-            widget::button::standard("Refresh")
+            widget::button::standard(fl!("action-refresh"))
                 .on_press(Message::Containers(ContainerMsg::RefreshRequested))
                 .into(),
         ]
@@ -1499,28 +1559,28 @@ impl cosmic::Application for App {
         match self.active_page() {
             Page::Containers if self.details_for.is_none() && self.wizard.is_none() => {
                 vec![
-                    widget::button::suggested("New Container")
+                    widget::button::suggested(fl!("app-new-container"))
                         .on_press(Message::Containers(ContainerMsg::NewContainerRequested))
                         .into(),
                 ]
             }
             Page::Updates => vec![
-                widget::button::standard("Refresh")
+                widget::button::standard(fl!("action-refresh"))
                     .on_press(Message::Containers(ContainerMsg::RefreshRequested))
                     .into(),
-                widget::button::suggested("Upgrade All")
+                widget::button::suggested(fl!("app-upgrade-all"))
                     .on_press(Message::Containers(ContainerMsg::UpgradeAllRequested))
                     .into(),
             ],
             // Row #134: the FAB's all-states bug disappears with the move —
             // header-only affordance (no empty-list dependence).
             Page::Activity => vec![
-                widget::button::standard("Clear completed")
+                widget::button::standard(fl!("app-clear-completed"))
                     .on_press(Message::Tasks(TaskMsg::ClearCompleted))
                     .into(),
             ],
             Page::Backups => vec![
-                widget::button::suggested("New Snapshot")
+                widget::button::suggested(fl!("app-new-snapshot"))
                     .on_press(Message::Backups(
                         crate::message::BackupsMsg::CreateDialogRequested,
                     ))
@@ -1530,7 +1590,7 @@ impl cosmic::Application for App {
             // reload (the page itself renders "Select a container" without
             // one, so a press would have nothing to act on).
             Page::Apps => vec![
-                widget::button::standard("Refresh")
+                widget::button::standard(fl!("action-refresh"))
                     .on_press_maybe(
                         self.selected_container
                             .clone()
@@ -1557,21 +1617,21 @@ impl cosmic::Application for App {
         if self.apps_binary_dialog {
             return Some(
                 widget::dialog()
-                    .title("Export Binary")
+                    .title(fl!("app-export-binary"))
                     .control(crate::apps_view::binary_dialog_body(
                         &self.apps_binary_path,
                         self.apps_binary_error.as_deref(),
                     ))
                     .primary_action({
                         let export: cosmic::Element<'_, Message> =
-                            widget::button::suggested("Export")
+                            widget::button::suggested(fl!("app-export"))
                                 .on_press(Message::Apps(AppMsg::BinaryExportConfirmed))
                                 .into();
                         export
                     })
                     .secondary_action({
                         let cancel: cosmic::Element<'_, Message> =
-                            widget::button::standard("Cancel")
+                            widget::button::standard(fl!("action-cancel"))
                                 .on_press(Message::Apps(AppMsg::BinaryDialogClosed))
                                 .into();
                         cancel
@@ -1587,19 +1647,20 @@ impl cosmic::Application for App {
         {
             return Some(
                 widget::dialog()
-                    .title("Add Volume")
+                    .title(fl!("app-add-volume"))
                     .control(crate::wizard_view::volume_dialog_body(volume))
                     .primary_action({
-                        let add: cosmic::Element<'_, Message> = widget::button::suggested("Add")
-                            .on_press(Message::Wizard(
-                                crate::message::WizardMsg::VolumeDialogConfirmed,
-                            ))
-                            .into();
+                        let add: cosmic::Element<'_, Message> =
+                            widget::button::suggested(fl!("app-add"))
+                                .on_press(Message::Wizard(
+                                    crate::message::WizardMsg::VolumeDialogConfirmed,
+                                ))
+                                .into();
                         add
                     })
                     .secondary_action({
                         let cancel: cosmic::Element<'_, Message> =
-                            widget::button::standard("Cancel")
+                            widget::button::standard(fl!("action-cancel"))
                                 .on_press(Message::Wizard(
                                     crate::message::WizardMsg::VolumeDialogCancelled,
                                 ))
@@ -1730,7 +1791,7 @@ impl App {
             // own, so the shared copy is the only place the reason appears.
             let (icon, title, body) = crate::views::container_list_copy(
                 &self.containers,
-                "Create a container before managing backups.",
+                &fl!("app-backups-no-containers"),
             );
             return crate::views::empty_state(icon, title, body, None);
         }
@@ -1742,20 +1803,17 @@ impl App {
             |i| Message::Backups(crate::message::BackupsMsg::ContainerSelected(i)),
         ));
         // Tabs (row #133): Snapshots vs Export/Import.
-        col = col.push(
-            widget::Row::new()
-                .push(
-                    widget::button::standard("Snapshots").on_press(Message::Backups(
-                        crate::message::BackupsMsg::TabSelected(false),
-                    )),
-                )
-                .push(
-                    widget::button::standard("Export / Import").on_press(Message::Backups(
-                        crate::message::BackupsMsg::TabSelected(true),
-                    )),
-                )
-                .spacing(12),
-        );
+        col =
+            col.push(
+                widget::Row::new()
+                    .push(widget::button::standard(fl!("app-snapshots")).on_press(
+                        Message::Backups(crate::message::BackupsMsg::TabSelected(false)),
+                    ))
+                    .push(widget::button::standard(fl!("app-export-import")).on_press(
+                        Message::Backups(crate::message::BackupsMsg::TabSelected(true)),
+                    ))
+                    .spacing(12),
+            );
         if st.transfer_tab {
             col = col.push(bk::transfer_tab(
                 st.container.as_deref(),
@@ -1810,10 +1868,10 @@ impl App {
             BackupsMsg::DeleteFinished(result) => {
                 // Row #141 green/red result toasts + list reload.
                 let toast = match &result {
-                    Ok(_) => self.toast("Snapshot deleted".to_string()),
-                    Err(e) => self.toast(format!(
-                        "Could not delete snapshot: {}",
-                        Self::error_text(e)
+                    Ok(_) => self.toast(fl!("app-snapshot-deleted")),
+                    Err(e) => self.toast(fl!(
+                        "app-could-not-delete-snapshot",
+                        error = Self::error_text(e)
                     )),
                 };
                 self.backups.loading = true;
@@ -1860,7 +1918,7 @@ impl App {
                 let container = match self.backups.container.clone() {
                     Some(c) => c,
                     None => {
-                        let toast = self.toast("Select a container first.".to_string());
+                        let toast = self.toast(fl!("app-select-container-first"));
                         return toast;
                     }
                 };
@@ -1889,7 +1947,7 @@ impl App {
                 ) {
                     (Some(c), n) if !n.is_empty() => (c, n),
                     _ => {
-                        self.backups.create_error = Some("Snapshot name is required.".to_string());
+                        self.backups.create_error = Some(fl!("app-snapshot-name-required"));
                         return Self::none();
                     }
                 };
@@ -1909,10 +1967,10 @@ impl App {
                 // did — an omitted reload strands "No snapshots yet"
                 // inviting a duplicate).
                 let toast = match &result {
-                    Ok(_) => self.toast("Snapshot created".to_string()),
-                    Err(e) => self.toast(format!(
-                        "Could not create snapshot: {}",
-                        Self::error_text(e)
+                    Ok(_) => self.toast(fl!("app-snapshot-created")),
+                    Err(e) => self.toast(fl!(
+                        "app-could-not-create-snapshot",
+                        error = Self::error_text(e)
                     )),
                 };
                 self.backups.loading = true;
@@ -1934,11 +1992,9 @@ impl App {
                     .map(|s| s.name.clone())
                     .unwrap_or(id.clone());
                 self.confirm_or_run(ConfirmSpec {
-                    title: "Delete Snapshot".to_string(),
-                    body: format!(
-                        "Are you sure you want to delete \"{name}\"?\n\nThis action cannot be undone."
-                    ),
-                    confirm_label: "Delete".to_string(),
+                    title: fl!("app-delete-snapshot"),
+                    body: fl!("app-confirm-delete-snapshot", name = name),
+                    confirm_label: fl!("app-delete"),
                     destructive: true,
                     action: ConfirmAction::DeleteSnapshot(id),
                 })
@@ -1963,8 +2019,7 @@ impl App {
                 let (snapshot, name) = match self.backups.restore.clone() {
                     Some((s, n)) if !n.trim().is_empty() => (s, n.trim().to_string()),
                     _ => {
-                        self.backups.restore_error =
-                            Some("New container name is required.".to_string());
+                        self.backups.restore_error = Some(fl!("app-new-container-name-required"));
                         return Self::none();
                     }
                 };
@@ -1976,10 +2031,18 @@ impl App {
                 }
                 self.backups.dialog = None;
                 let backend = Arc::clone(&self.backend);
-                let label = format!("Restore {snapshot} to {name}");
+                let label = fl!(
+                    "app-label-restore",
+                    snapshot = snapshot.as_str(),
+                    name = name.as_str()
+                );
                 Self::run(async move {
                     let result = backend.restore_from_snapshot(&snapshot, &name).await;
-                    Message::Tasks(TaskMsg::Started { label, result })
+                    Message::Tasks(TaskMsg::Started {
+                        label,
+                        kind: TaskKind::Other,
+                        result,
+                    })
                 })
             }
             BackupsMsg::ExportDialogRequested => {
@@ -1997,7 +2060,7 @@ impl App {
                     self.backups.export_error = None;
                     self.backups.dialog = Some(BackupsDialog::Export);
                 } else {
-                    let toast = self.toast("Select a container first.".to_string());
+                    let toast = self.toast(fl!("app-select-container-first"));
                     return toast;
                 }
                 Self::none()
@@ -2031,7 +2094,7 @@ impl App {
                 ) {
                     (Some(c), p) if !p.is_empty() => (c, p),
                     _ => {
-                        self.backups.export_error = Some("Output path is required.".to_string());
+                        self.backups.export_error = Some(fl!("app-output-path-required"));
                         return Self::none();
                     }
                 };
@@ -2041,10 +2104,18 @@ impl App {
                 }
                 self.backups.dialog = None;
                 let backend = Arc::clone(&self.backend);
-                let label = format!("Export {container} to {path}");
+                let label = fl!(
+                    "app-label-export",
+                    container = container.as_str(),
+                    path = path.as_str()
+                );
                 Self::run(async move {
                     let result = backend.export_container(&container, &path).await;
-                    Message::Tasks(TaskMsg::Started { label, result })
+                    Message::Tasks(TaskMsg::Started {
+                        label,
+                        kind: TaskKind::Other,
+                        result,
+                    })
                 })
             }
             BackupsMsg::ImportDialogRequested => {
@@ -2083,8 +2154,7 @@ impl App {
                 ) {
                     (p, i) if !p.is_empty() && !i.is_empty() => (p, i),
                     _ => {
-                        self.backups.import_error =
-                            Some("Archive path and image name are required.".to_string());
+                        self.backups.import_error = Some(fl!("app-archive-and-image-required"));
                         return Self::none();
                     }
                 };
@@ -2094,10 +2164,18 @@ impl App {
                 }
                 self.backups.dialog = None;
                 let backend = Arc::clone(&self.backend);
-                let label = format!("Import {path} as {image}");
+                let label = fl!(
+                    "app-label-import",
+                    path = path.as_str(),
+                    image = image.as_str()
+                );
                 Self::run(async move {
                     let result = backend.import_container(&path, &image).await;
-                    Message::Tasks(TaskMsg::Started { label, result })
+                    Message::Tasks(TaskMsg::Started {
+                        label,
+                        kind: TaskKind::Other,
+                        result,
+                    })
                 })
             }
             BackupsMsg::CloneDialogRequested => {
@@ -2110,7 +2188,7 @@ impl App {
                         name: format!("{container}-clone"),
                     });
                 } else {
-                    let toast = self.toast("Select a container first.".to_string());
+                    let toast = self.toast(fl!("app-select-container-first"));
                     return toast;
                 }
                 Self::none()
@@ -2133,7 +2211,7 @@ impl App {
             // truthful when the list is *cleanly* empty.
             let (icon, title, body) = crate::views::container_list_copy(
                 &self.containers,
-                "Create a container before managing packages.",
+                &fl!("app-packages-no-containers"),
             );
             return crate::views::empty_state(icon, title, body, None);
         }
@@ -2155,7 +2233,7 @@ impl App {
         // Search bar (#112): Enter-triggered, disabled when stopped.
         col = col.push({
             let search: cosmic::Element<'_, Message> =
-                widget::text_input::search_input("Search for packages...", st.query.clone())
+                widget::text_input::search_input(fl!("app-search-packages"), st.query.clone())
                     .on_input(|s| Message::Packages(crate::message::PackagesMsg::QueryChanged(s)))
                     .on_submit(|_| Message::Packages(crate::message::PackagesMsg::SearchSubmitted))
                     .into();
@@ -2163,18 +2241,17 @@ impl App {
         });
         // PM badge (#114) + clear-search (#113).
         col = col.push({
-            let row: cosmic::Element<'_, Message> = widget::Row::new()
-                .push(widget::text::caption(format!(
-                    "Package manager: {}",
-                    pkg::PackagesState::badge(st.manager)
-                )))
-                .push(
-                    widget::button::text("Clear search").on_press(Message::Packages(
-                        crate::message::PackagesMsg::SearchCleared,
-                    )),
-                )
-                .spacing(8)
-                .into();
+            let row: cosmic::Element<'_, Message> =
+                widget::Row::new()
+                    .push(widget::text::caption(fl!(
+                        "app-package-manager",
+                        manager = pkg::PackagesState::badge(st.manager)
+                    )))
+                    .push(widget::button::text(fl!("app-clear-search")).on_press(
+                        Message::Packages(crate::message::PackagesMsg::SearchCleared),
+                    ))
+                    .spacing(8)
+                    .into();
             row
         });
         // Quick actions: Install-from-box (#115, disabled when empty) +
@@ -2182,7 +2259,7 @@ impl App {
         col = col.push({
             let install_empty = st.query.trim().is_empty();
             let row: cosmic::Element<'_, Message> = widget::Row::new()
-                .push(widget::button::standard("Install").on_press_maybe(
+                .push(widget::button::standard(fl!("app-install")).on_press_maybe(
                     if running && !install_empty {
                         Some(Message::Packages(
                             crate::message::PackagesMsg::InstallFromBox,
@@ -2192,7 +2269,7 @@ impl App {
                     },
                 ))
                 .push(
-                    widget::button::standard("Upgrade All").on_press_maybe(if running {
+                    widget::button::standard(fl!("app-upgrade-all")).on_press_maybe(if running {
                         Some(Message::Packages(
                             crate::message::PackagesMsg::UpgradeAllRequested,
                         ))
@@ -2301,20 +2378,23 @@ impl App {
                 let terminal = match self.terminal.selected(&terminals) {
                     Some(t) => t.clone(),
                     None => {
-                        let toast = self.toast("No terminal available to launch.".to_string());
+                        let toast = self.toast(fl!("app-no-terminal-available"));
                         return toast;
                     }
                 };
                 match self.backend.launch_terminal(&container, &terminal) {
                     Ok(()) => {
-                        let toast =
-                            self.toast(format!("Launched {} for {container}", terminal.name));
+                        let toast = self.toast(fl!(
+                            "app-launched-terminal",
+                            terminal = terminal.name.as_str(),
+                            container = container.as_str()
+                        ));
                         return toast;
                     }
                     Err(e) => {
-                        let toast = self.toast(format!(
-                            "Could not launch terminal: {}",
-                            Self::error_text(&e)
+                        let toast = self.toast(fl!(
+                            "app-could-not-launch-terminal",
+                            error = Self::error_text(&e)
                         ));
                         return toast;
                     }
@@ -2326,7 +2406,7 @@ impl App {
                     return toast;
                 }
                 Err(e) => {
-                    let toast = self.toast(format!("Launch failed: {}", Self::error_text(&e)));
+                    let toast = self.toast(fl!("app-launch-failed", error = Self::error_text(&e)));
                     return toast;
                 }
             },
@@ -2394,10 +2474,10 @@ impl App {
                         // distrobox that answered with nothing — the toast
                         // says which, so the Refresh button is not a dead
                         // end the user keeps pressing.
-                        self.distrobox_version = "Unknown".to_string();
-                        let toast = self.toast(format!(
-                            "Could not read distrobox version: {}",
-                            Self::error_text(&e)
+                        self.distrobox_version = fl!("app-version-unknown");
+                        let toast = self.toast(fl!(
+                            "app-could-not-read-version",
+                            error = Self::error_text(&e)
                         ));
                         return toast;
                     }
@@ -2409,7 +2489,7 @@ impl App {
                 self.loading_version = true;
                 let b1 = Arc::clone(&self.backend);
                 let b2 = Arc::clone(&self.backend);
-                let toast = self.toast("Data refreshed".to_string());
+                let toast = self.toast(fl!("app-data-refreshed"));
                 let refresh = Task::batch(vec![
                     Self::refresh_containers(&b1),
                     Self::run(async move {
@@ -2430,16 +2510,16 @@ impl App {
             SettingsMsg::ClearCompleted => {
                 // Row #168 + toast (Flutter toasted; the header path shares
                 // the Tasks arm — route through it so behaviour is one path).
-                let toast = self.toast("Completed tasks cleared".to_string());
+                let toast = self.toast(fl!("app-completed-tasks-cleared"));
                 let clear = Self::done(Message::Tasks(TaskMsg::ClearCompleted));
                 return Task::batch(vec![toast, clear]);
             }
             SettingsMsg::DeleteAllRequested => {
                 // Row #170: shared destructive confirm with warning box copy.
                 return self.confirm_or_run(ConfirmSpec {
-                    title: "Delete All Containers".to_string(),
-                    body: "Are you sure you want to delete ALL containers?\n\nThis action cannot be undone and all container data will be lost.".to_string(),
-                    confirm_label: "Delete All".to_string(),
+                    title: fl!("app-delete-all-containers"),
+                    body: fl!("app-confirm-delete-all-containers"),
+                    confirm_label: fl!("app-delete-all"),
                     destructive: true,
                     action: ConfirmAction::DeleteAllContainers,
                 });
@@ -2478,8 +2558,11 @@ impl App {
                 // (`Backend::open_url`), so a link that opens nothing on a
                 // host with no browser stays silent — as in Flutter.
                 if let Err(e) = self.backend.open_url(&url) {
-                    let toast =
-                        self.toast(format!("Could not open {url}: {}", Self::error_text(&e)));
+                    let toast = self.toast(fl!(
+                        "app-could-not-open",
+                        url = url,
+                        error = Self::error_text(&e)
+                    ));
                     return toast;
                 }
             }
@@ -2518,7 +2601,7 @@ impl App {
                 };
                 gosh_distrobox_core::apply_legacy(cfg, &legacy, &builtins);
                 self.sync_terminals();
-                let toast = self.toast("Imported settings from DistroShelf".to_string());
+                let toast = self.toast(fl!("app-imported-settings"));
                 let persist = self.write_config(|_| {});
                 return Task::batch(vec![toast, persist]);
             }
@@ -2547,7 +2630,7 @@ impl App {
             fail = true;
         }
         if fail {
-            self.toast("Settings will not persist this session.".to_string())
+            self.toast(fl!("app-settings-no-persist"))
         } else {
             Self::none()
         }
@@ -2638,7 +2721,7 @@ impl App {
                         self.packages.results = list;
                         Self::none()
                     }
-                    Err(e) => self.toast(format!("Search failed: {}", Self::error_text(&e))),
+                    Err(e) => self.toast(fl!("app-search-failed", error = Self::error_text(&e))),
                 }
             }
             PackagesMsg::InstallFromBox => {
@@ -2662,11 +2745,13 @@ impl App {
             PackagesMsg::RemoveRequested(name) => {
                 if let Some(container) = self.packages.container.clone() {
                     return self.confirm_or_run(ConfirmSpec {
-                        title: "Remove Package".to_string(),
-                        body: format!(
-                            "Remove \"{name}\" from \"{container}\"?\n\nThis may also remove dependent packages."
+                        title: fl!("app-remove-package"),
+                        body: fl!(
+                            "app-confirm-remove-package",
+                            package = name.as_str(),
+                            container = container.as_str()
                         ),
-                        confirm_label: "Remove".to_string(),
+                        confirm_label: fl!("action-remove"),
                         destructive: true,
                         action: ConfirmAction::RemovePackage {
                             container,
@@ -2679,9 +2764,12 @@ impl App {
             PackagesMsg::UpgradeAllRequested => {
                 if let Some(container) = self.packages.container.clone() {
                     return self.confirm_or_run(ConfirmSpec {
-                        title: "Upgrade All Packages".to_string(),
-                        body: format!("Upgrade all packages in \"{container}\"?"),
-                        confirm_label: "Upgrade All".to_string(),
+                        title: fl!("app-upgrade-all-packages"),
+                        body: fl!(
+                            "app-confirm-upgrade-packages",
+                            container = container.as_str()
+                        ),
+                        confirm_label: fl!("app-upgrade-all"),
                         destructive: false,
                         action: ConfirmAction::UpgradeContainer(container),
                     });
@@ -2694,7 +2782,7 @@ impl App {
             }
             PackagesMsg::ManualRunRequested => {
                 // B1 Unknown: T9 owns real execution — record the intent.
-                self.toast("Manual commands run in T9 — container must be running.".to_string())
+                self.toast(fl!("app-manual-commands-t9"))
             }
         }
     }
@@ -2702,9 +2790,13 @@ impl App {
     /// Install confirm helper (row #120): shared spec, non-destructive.
     fn confirm_install(&mut self, container: String, package: String) -> Task<Message> {
         self.confirm_or_run(ConfirmSpec {
-            title: "Install Package".to_string(),
-            body: format!("Install \"{package}\" in \"{container}\"?"),
-            confirm_label: "Install".to_string(),
+            title: fl!("app-install-package"),
+            body: fl!(
+                "app-confirm-install-package",
+                package = package.as_str(),
+                container = container.as_str()
+            ),
+            confirm_label: fl!("app-install"),
             destructive: false,
             action: ConfirmAction::InstallPackage { container, package },
         })
@@ -2730,22 +2822,20 @@ impl App {
         match st.dialog.as_ref()? {
             BackupsDialog::Create => {
                 let body: cosmic::Element<'_, Message> = widget::Column::new()
-                    .push(widget::text::body(format!(
-                        "Create a snapshot of \"{}\"",
-                        st.container.as_deref().unwrap_or("")
+                    .push(widget::text::body(fl!(
+                        "app-create-snapshot-of",
+                        name = st.container.as_deref().unwrap_or("")
                     )))
                     .push({
                         let input: cosmic::Element<'_, Message> = widget::text_input::text_input(
-                            "e.g. mybox-snapshot",
+                            fl!("app-snapshot-name-placeholder"),
                             st.create_name.clone(),
                         )
                         .on_input(|s| Message::Backups(BackupsMsg::CreateNameChanged(s)))
                         .into();
                         input
                     })
-                    .push(widget::text::caption(
-                        "Snapshots are saved as container images using podman/docker commit.",
-                    ))
+                    .push(widget::text::caption(fl!("app-snapshot-commit-helper")))
                     .spacing(8)
                     .into();
                 let body = match st.create_error.clone() {
@@ -2758,18 +2848,18 @@ impl App {
                 };
                 Some(
                     widget::dialog()
-                        .title("Create Snapshot")
+                        .title(fl!("app-create-snapshot"))
                         .control(body)
                         .primary_action({
                             let create: cosmic::Element<'_, Message> =
-                                widget::button::suggested("Create")
+                                widget::button::suggested(fl!("action-create"))
                                     .on_press(Message::Backups(BackupsMsg::CreateConfirmed))
                                     .into();
                             create
                         })
                         .secondary_action({
                             let cancel: cosmic::Element<'_, Message> =
-                                widget::button::standard("Cancel")
+                                widget::button::standard(fl!("action-cancel"))
                                     .on_press(Message::Backups(BackupsMsg::DialogCancelled))
                                     .into();
                             cancel
@@ -2784,14 +2874,17 @@ impl App {
                     .map(|(_, n)| n.clone())
                     .unwrap_or_default();
                 let body: cosmic::Element<'_, Message> = widget::Column::new()
-                    .push(widget::text::body(format!(
-                        "Create a new container from \"{snapshot}\""
+                    .push(widget::text::body(fl!(
+                        "app-restore-create-container",
+                        snapshot = snapshot
                     )))
                     .push({
-                        let input: cosmic::Element<'_, Message> =
-                            widget::text_input::text_input("New container name", name)
-                                .on_input(|s| Message::Backups(BackupsMsg::RestoreNameChanged(s)))
-                                .into();
+                        let input: cosmic::Element<'_, Message> = widget::text_input::text_input(
+                            fl!("app-new-container-name-placeholder"),
+                            name,
+                        )
+                        .on_input(|s| Message::Backups(BackupsMsg::RestoreNameChanged(s)))
+                        .into();
                         input
                     })
                     .spacing(8)
@@ -2806,18 +2899,18 @@ impl App {
                 };
                 Some(
                     widget::dialog()
-                        .title("Restore from Snapshot")
+                        .title(fl!("app-restore-from-snapshot"))
                         .control(body)
                         .primary_action({
                             let restore: cosmic::Element<'_, Message> =
-                                widget::button::suggested("Restore")
+                                widget::button::suggested(fl!("app-restore"))
                                     .on_press(Message::Backups(BackupsMsg::RestoreConfirmed))
                                     .into();
                             restore
                         })
                         .secondary_action({
                             let cancel: cosmic::Element<'_, Message> =
-                                widget::button::standard("Cancel")
+                                widget::button::standard(fl!("action-cancel"))
                                     .on_press(Message::Backups(BackupsMsg::DialogCancelled))
                                     .into();
                             cancel
@@ -2827,13 +2920,13 @@ impl App {
             }
             BackupsDialog::Export => {
                 let body: cosmic::Element<'_, Message> = widget::Column::new()
-                    .push(widget::text::body(format!(
-                        "Export \"{}\" as a tar archive",
-                        st.container.as_deref().unwrap_or("")
+                    .push(widget::text::body(fl!(
+                        "app-export-as-tar",
+                        name = st.container.as_deref().unwrap_or("")
                     )))
                     .push({
                         let input: cosmic::Element<'_, Message> = widget::text_input::text_input(
-                            "/tmp/mybox-export.tar",
+                            fl!("app-export-path-placeholder"),
                             st.export_path.clone(),
                         )
                         .on_input(|s| Message::Backups(BackupsMsg::ExportPathChanged(s)))
@@ -2841,12 +2934,10 @@ impl App {
                         input
                     })
                     .push(
-                        widget::button::standard("Browse…")
+                        widget::button::standard(fl!("app-browse"))
                             .on_press(Message::Backups(BackupsMsg::ExportBrowseRequested)),
                     )
-                    .push(widget::warning(
-                        "The archive may be several gigabytes. Ensure the destination has space.",
-                    ))
+                    .push(widget::warning(fl!("app-export-size-warning")))
                     .spacing(8)
                     .into();
                 let body = match st.export_error.clone() {
@@ -2859,18 +2950,18 @@ impl App {
                 };
                 Some(
                     widget::dialog()
-                        .title("Export Container")
+                        .title(fl!("app-export-container"))
                         .control(body)
                         .primary_action({
                             let export: cosmic::Element<'_, Message> =
-                                widget::button::suggested("Export")
+                                widget::button::suggested(fl!("app-export"))
                                     .on_press(Message::Backups(BackupsMsg::ExportConfirmed))
                                     .into();
                             export
                         })
                         .secondary_action({
                             let cancel: cosmic::Element<'_, Message> =
-                                widget::button::standard("Cancel")
+                                widget::button::standard(fl!("action-cancel"))
                                     .on_press(Message::Backups(BackupsMsg::DialogCancelled))
                                     .into();
                             cancel
@@ -2880,10 +2971,10 @@ impl App {
             }
             BackupsDialog::Import => {
                 let body: cosmic::Element<'_, Message> = widget::Column::new()
-                    .push(widget::text::body("Archive path"))
+                    .push(widget::text::body(fl!("app-archive-path")))
                     .push({
                         let input: cosmic::Element<'_, Message> = widget::text_input::text_input(
-                            "/tmp/mybox-export.tar",
+                            fl!("app-export-path-placeholder"),
                             st.import_path.clone(),
                         )
                         .on_input(|s| Message::Backups(BackupsMsg::ImportPathChanged(s)))
@@ -2891,13 +2982,13 @@ impl App {
                         input
                     })
                     .push(
-                        widget::button::standard("Browse…")
+                        widget::button::standard(fl!("app-browse"))
                             .on_press(Message::Backups(BackupsMsg::ImportBrowseRequested)),
                     )
-                    .push(widget::text::body("Image name"))
+                    .push(widget::text::body(fl!("app-image-name")))
                     .push({
                         let input: cosmic::Element<'_, Message> = widget::text_input::text_input(
-                            "mybox-imported",
+                            fl!("app-import-image-placeholder"),
                             st.import_image.clone(),
                         )
                         .on_input(|s| Message::Backups(BackupsMsg::ImportImageChanged(s)))
@@ -2916,18 +3007,18 @@ impl App {
                 };
                 Some(
                     widget::dialog()
-                        .title("Import Container")
+                        .title(fl!("app-import-container"))
                         .control(body)
                         .primary_action({
                             let import: cosmic::Element<'_, Message> =
-                                widget::button::suggested("Import")
+                                widget::button::suggested(fl!("app-import"))
                                     .on_press(Message::Backups(BackupsMsg::ImportConfirmed))
                                     .into();
                             import
                         })
                         .secondary_action({
                             let cancel: cosmic::Element<'_, Message> =
-                                widget::button::standard("Cancel")
+                                widget::button::standard(fl!("action-cancel"))
                                     .on_press(Message::Backups(BackupsMsg::DialogCancelled))
                                     .into();
                             cancel
@@ -2955,7 +3046,7 @@ impl App {
                     let result = backend
                         .remove_container(&name)
                         .await
-                        .map(|_| format!("{name} deleted"));
+                        .map(|_| fl!("app-container-deleted", name = name.as_str()));
                     Message::Containers(ContainerMsg::ActionFinished(result))
                 })
             }
@@ -2972,7 +3063,7 @@ impl App {
                     let result = backend
                         .stop_all_containers()
                         .await
-                        .map(|_| "All containers stopped".to_string());
+                        .map(|_| fl!("app-all-containers-stopped"));
                     Message::Containers(ContainerMsg::ActionFinished(result))
                 })
             }
@@ -2998,13 +3089,16 @@ impl App {
                         }
                     }
                     let done = names.len() - failures.len();
+                    // `failures` is built from container names + command
+                    // errors, so it is user data → placeable (Q17).
                     let result = if failures.is_empty() {
-                        Ok(format!("All {} containers deleted", names.len()))
+                        Ok(fl!("app-all-containers-deleted", count = names.len()))
                     } else {
-                        Ok(format!(
-                            "Deleted {done} of {} containers — failed: {}",
-                            names.len(),
-                            failures.join(", ")
+                        Ok(fl!(
+                            "app-containers-deleted-partial",
+                            done = done,
+                            total = names.len(),
+                            failures = failures.join(", ")
                         ))
                     };
                     Message::Containers(ContainerMsg::ActionFinished(result))
@@ -3026,10 +3120,14 @@ impl App {
                     .into_iter()
                     .map(|name| {
                         let backend = Arc::clone(&backend);
-                        let label = format!("Upgrade {name}");
+                        let label = fl!("app-label-upgrade", name = name.as_str());
                         Self::run(async move {
                             let result = backend.upgrade_container(&name).await;
-                            Message::Tasks(TaskMsg::Started { label, result })
+                            Message::Tasks(TaskMsg::Started {
+                                label,
+                                kind: TaskKind::Upgrade,
+                                result,
+                            })
                         })
                     })
                     .collect();
@@ -3048,10 +3146,18 @@ impl App {
                     return Self::none();
                 }
                 let backend = Arc::clone(&self.backend);
-                let label = format!("Install {package} in {container}");
+                let label = fl!(
+                    "app-label-install",
+                    package = package.as_str(),
+                    container = container.as_str()
+                );
                 Self::run(async move {
                     let result = backend.install_package(&container, &package).await;
-                    Message::Tasks(TaskMsg::Started { label, result })
+                    Message::Tasks(TaskMsg::Started {
+                        label,
+                        kind: TaskKind::Other,
+                        result,
+                    })
                 })
             }
             ConfirmAction::RemovePackage { container, package } => {
@@ -3060,10 +3166,18 @@ impl App {
                     return Self::none();
                 }
                 let backend = Arc::clone(&self.backend);
-                let label = format!("Remove {package} from {container}");
+                let label = fl!(
+                    "app-label-remove-package",
+                    package = package.as_str(),
+                    container = container.as_str()
+                );
                 Self::run(async move {
                     let result = backend.remove_package(&container, &package).await;
-                    Message::Tasks(TaskMsg::Started { label, result })
+                    Message::Tasks(TaskMsg::Started {
+                        label,
+                        kind: TaskKind::Other,
+                        result,
+                    })
                 })
             }
             ConfirmAction::DeleteSnapshot(id) => {
@@ -3086,10 +3200,14 @@ impl App {
                     return Self::none();
                 }
                 let backend = Arc::clone(&self.backend);
-                let label = format!("Upgrade {container}");
+                let label = fl!("app-label-upgrade", name = container.as_str());
                 Self::run(async move {
                     let result = backend.upgrade_container(&container).await;
-                    Message::Tasks(TaskMsg::Started { label, result })
+                    Message::Tasks(TaskMsg::Started {
+                        label,
+                        kind: TaskKind::Upgrade,
+                        result,
+                    })
                 })
             }
         }
@@ -3142,7 +3260,7 @@ impl App {
                 match next {
                     None => {
                         if let Some(w) = self.wizard.as_mut() {
-                            w.inline_error = Some("Please select an image".to_string());
+                            w.inline_error = Some(fl!("app-please-select-an-image"));
                         }
                     }
                     Some((image, fill_name)) => {
@@ -3216,9 +3334,9 @@ impl App {
                 let verdict = if let Some(w) = self.wizard.as_ref() {
                     if let Some(d) = w.volume_dialog.as_ref() {
                         if d.host.trim().is_empty() {
-                            Err("Host path is required.".to_string())
+                            Err(fl!("app-host-path-required"))
                         } else if d.container.trim().is_empty() {
-                            Err("Container path is required.".to_string())
+                            Err(fl!("app-container-path-required"))
                         } else {
                             Ok((
                                 d.host.trim().to_string(),
@@ -3279,10 +3397,15 @@ impl App {
                 }
                 let verdict = if let Some(w) = self.wizard.as_ref() {
                     if w.name.trim().is_empty() {
-                        Err("Please enter a container name".to_string())
+                        Err(fl!("app-please-enter-container-name"))
                     } else {
                         match gosh_distrobox_core::models::CreateArgName::new(w.name.trim()) {
-                            Err(e) => Err(format!("Invalid container name: {e}")),
+                            // Flutter had no client-side name validation at all
+                            // (`CreateArgName` was a bare freezed constructor),
+                            // so the *backend's* diagnostic is what its snackbar
+                            // showed. `to_string()` keeps that: the port added
+                            // the early check, and the text stays the core one.
+                            Err(e) => Err(fl!("app-invalid-container-name", error = e.to_string())),
                             Ok(arg_name) => {
                                 use gosh_distrobox_core::models::{CreateArgs, Volume, VolumeMode};
                                 let volumes: Vec<Volume> = w
@@ -3324,14 +3447,18 @@ impl App {
                     }
                     Ok(args) => {
                         let backend = Arc::clone(&self.backend);
-                        let label = format!("Create {}", args.name);
+                        let label = fl!("app-label-create", name = args.name.0.as_str());
                         if let Some(w) = self.wizard.as_mut() {
                             w.step = WizardStep::Progress;
                             w.inline_error = None;
                         }
                         return Self::run(async move {
                             let result = backend.create_container(args).await;
-                            Message::Tasks(TaskMsg::Started { label, result })
+                            Message::Tasks(TaskMsg::Started {
+                                label,
+                                kind: TaskKind::Create,
+                                result,
+                            })
                         });
                     }
                 }
@@ -3369,7 +3496,7 @@ impl App {
     /// already stores, so the button disables while its task runs (and N
     /// presses cannot spawn N upgrades).
     fn upgrading(&self, container: &ContainerInfo) -> bool {
-        let want = format!("Upgrade {}", container.name);
+        let want = fl!("app-label-upgrade", name = container.name.as_str());
         self.tasks.values().any(|v| !v.completed && v.label == want)
     }
 
@@ -3426,7 +3553,7 @@ impl App {
     fn view_containers_page(&self) -> cosmic::Element<'_, Message> {
         if self.loading.containers && self.containers.is_empty() {
             // First load only: keep content during refresh (row #11).
-            return widget::container(widget::text::body("Loading containers…"))
+            return widget::container(widget::text::body(fl!("app-loading-containers")))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x(Length::Fill)
@@ -3439,9 +3566,10 @@ impl App {
             // page adds ONLY the retry affordance, not a second copy.
             return widget::Column::new()
                 .push({
-                    let retry: cosmic::Element<'_, Message> = widget::button::standard("Retry")
-                        .on_press(Message::Containers(ContainerMsg::RefreshRequested))
-                        .into();
+                    let retry: cosmic::Element<'_, Message> =
+                        widget::button::standard(fl!("action-retry"))
+                            .on_press(Message::Containers(ContainerMsg::RefreshRequested))
+                            .into();
                     retry
                 })
                 .spacing(12)
@@ -3456,15 +3584,13 @@ impl App {
         // helper so they cannot disagree; the page supplies only its own
         // phrasing for the clean case.
         if self.containers.is_empty() {
-            let (icon, title, body) = views::container_list_copy(
-                &self.containers,
-                "Create your first container to get started.",
-            );
+            let (icon, title, body) =
+                views::container_list_copy(&self.containers, &fl!("app-create-first-container"));
             // Only the unreadable case offers a retry: refreshing will not
             // conjure a first container, but a transient bad read might.
             let action = (!self.containers.is_clean_empty()).then(|| {
                 let refresh: cosmic::Element<'static, Message> =
-                    widget::button::standard("Refresh")
+                    widget::button::standard(fl!("action-refresh"))
                         .on_press(Message::Containers(ContainerMsg::RefreshRequested))
                         .into();
                 refresh
@@ -3488,7 +3614,7 @@ impl App {
 async fn portal_save_suggested(suggested: &str) -> Result<String, String> {
     use cosmic::dialog::file_chooser;
     let dialog = file_chooser::save::Dialog::new()
-        .title("Export container".to_string())
+        .title(fl!("app-file-chooser-export-title"))
         .file_name(suggested.to_string());
     match dialog.save_file().await {
         Ok(response) => response
@@ -3504,7 +3630,7 @@ async fn portal_save_suggested(suggested: &str) -> Result<String, String> {
 /// Portal open picker for archives (P0 §4.3).
 async fn portal_open_archive() -> Result<String, String> {
     use cosmic::dialog::file_chooser;
-    let dialog = file_chooser::open::Dialog::new().title("Import container archive".to_string());
+    let dialog = file_chooser::open::Dialog::new().title(fl!("app-file-chooser-import-title"));
     match dialog.open_file().await {
         Ok(response) => response
             .url()

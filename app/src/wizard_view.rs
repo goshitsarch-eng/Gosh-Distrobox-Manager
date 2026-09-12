@@ -11,6 +11,7 @@
 //! omitted: no `scroll_to` hook without fighting user scroll, §3.1 note),
 //! Cancel/Done/Close (#94). Add-volume dialog (#90) with LOUD errors.
 
+use crate::fl;
 use crate::message::{Message, WizardMsg};
 use crate::views::empty_state;
 use crate::wizard::{VolumeDialog, WizardState, WizardStep, step_indicator, wizard_card};
@@ -48,25 +49,25 @@ fn view_step_image(
     loading: bool,
 ) -> cosmic::Element<'static, Message> {
     let mut col = widget::Column::new().spacing(12);
-    col = col.push(widget::text::title3("Select Image"));
-    col = col.push(widget::text::body(
-        "Choose a Linux distribution for your container.",
-    ));
+    col = col.push(widget::text::title3(fl!("wizard-select-image-title")));
+    col = col.push(widget::text::body(fl!("wizard-select-image-body")));
     col = col.push({
-        let search: cosmic::Element<'static, Message> =
-            widget::text_input::search_input("Search distributions...", state.search.clone())
-                .on_input(|s| Message::Wizard(WizardMsg::SearchChanged(s)))
-                .into();
+        let search: cosmic::Element<'static, Message> = widget::text_input::search_input(
+            fl!("wizard-search-placeholder"),
+            state.search.clone(),
+        )
+        .on_input(|s| Message::Wizard(WizardMsg::SearchChanged(s)))
+        .into();
         search
     });
     if loading && images.is_empty() {
-        col = col.push(widget::text::body("Loading images…"));
+        col = col.push(widget::text::body(fl!("state-loading")));
     } else {
         let filtered = WizardState::filter_images(images, &state.search);
         if filtered.is_empty() {
             col = col.push(empty_state(
                 "document-open-symbolic",
-                "No images available".to_string(),
+                fl!("wizard-no-images"),
                 String::new(),
                 None,
             ));
@@ -91,10 +92,12 @@ fn view_step_image(
         }
     }
     // Custom URL (#81).
-    col = col.push(widget::text::caption_heading("CUSTOM IMAGE URL"));
+    col = col.push(widget::text::caption_heading(fl!(
+        "wizard-custom-url-heading"
+    )));
     col = col.push({
         let input: cosmic::Element<'static, Message> = widget::text_input::text_input(
-            "e.g. docker.io/library/ubuntu:22.04",
+            fl!("wizard-custom-url-placeholder"),
             state.custom_image.clone(),
         )
         .on_input(|s| Message::Wizard(WizardMsg::CustomChanged(s)))
@@ -107,9 +110,12 @@ fn view_step_image(
     }
     col = col.push({
         let buttons: cosmic::Element<'static, Message> = widget::Row::new()
-            .push(widget::button::standard("Cancel").on_press(Message::Wizard(WizardMsg::Closed)))
             .push(
-                widget::button::suggested("Next")
+                widget::button::standard(fl!("action-cancel"))
+                    .on_press(Message::Wizard(WizardMsg::Closed)),
+            )
+            .push(
+                widget::button::suggested(fl!("wizard-next"))
                     .on_press(Message::Wizard(WizardMsg::NextFromImage)),
             )
             .spacing(12)
@@ -121,22 +127,22 @@ fn view_step_image(
 
 fn view_step_config(state: &WizardState) -> cosmic::Element<'static, Message> {
     let mut col = widget::Column::new().spacing(12);
-    col = col.push(widget::text::title3("Configuration"));
-    col = col.push(widget::text::caption("Step 2 of 3: System settings"));
+    col = col.push(widget::text::title3(fl!("wizard-config-title")));
+    col = col.push(widget::text::caption(fl!("wizard-config-subtitle")));
     // Preview card (#83).
     col = col.push({
         let preview: cosmic::Element<'static, Message> = widget::Column::new()
-            .push(widget::text::caption("SELECTED IMAGE"))
+            .push(widget::text::caption(fl!("wizard-selected-image-heading")))
             .push(widget::text::body(state.effective_image()))
             .spacing(4)
             .into();
         preview
     });
     // Name (#84).
-    col = col.push(widget::text::body("Container Name"));
+    col = col.push(widget::text::body(fl!("wizard-container-name-label")));
     col = col.push({
         let input: cosmic::Element<'static, Message> =
-            widget::text_input::text_input("e.g. arch-dev-box", state.name.clone())
+            widget::text_input::text_input(fl!("wizard-name-placeholder"), state.name.clone())
                 .on_input(|s| Message::Wizard(WizardMsg::NameChanged(s)))
                 .into();
         input
@@ -147,15 +153,15 @@ fn view_step_config(state: &WizardState) -> cosmic::Element<'static, Message> {
     col = col.push({
         let mut toggles = widget::list_column::list_column();
         toggles = toggles.add(
-            widget::settings::item::builder("Init System")
-                .description("Run an init system inside the container")
+            widget::settings::item::builder(fl!("wizard-init-system"))
+                .description(fl!("wizard-init-system-desc"))
                 .toggler(state.init_system, |v| {
                     Message::Wizard(WizardMsg::InitToggled(v))
                 }),
         );
         toggles = toggles.add(
-            widget::settings::item::builder("NVIDIA GPU Support")
-                .description("Enable NVIDIA GPU passthrough")
+            widget::settings::item::builder(fl!("wizard-nvidia"))
+                .description(fl!("wizard-nvidia-desc"))
                 .toggler(state.nvidia, |v| {
                     Message::Wizard(WizardMsg::NvidiaToggled(v))
                 }),
@@ -167,14 +173,14 @@ fn view_step_config(state: &WizardState) -> cosmic::Element<'static, Message> {
     // `ExpansionTile(initiallyExpanded: false)`).
     if state.advanced_open {
         col = col.push(
-            widget::button::text("Advanced Options ▾")
+            widget::button::text(fl!("wizard-advanced-expanded"))
                 .on_press(Message::Wizard(WizardMsg::AdvancedToggled)),
         );
         // Home dir (#88 — plain input; D16: no directory picker).
-        col = col.push(widget::text::body("Home Directory"));
+        col = col.push(widget::text::body(fl!("wizard-home-dir-label")));
         col = col.push({
             let input: cosmic::Element<'static, Message> = widget::text_input::text_input(
-                "/home/user/containers/my-box",
+                fl!("wizard-home-dir-placeholder"),
                 state.home_dir.clone(),
             )
             .on_input(|s| Message::Wizard(WizardMsg::HomeChanged(s)))
@@ -182,20 +188,31 @@ fn view_step_config(state: &WizardState) -> cosmic::Element<'static, Message> {
             input
         });
         // Volumes (#89).
-        col = col.push(widget::text::body("Volume Mounts"));
+        col = col.push(widget::text::body(fl!("wizard-volumes-label")));
         if state.volumes.is_empty() {
-            col = col.push(widget::text::caption("No volumes configured"));
+            col = col.push(widget::text::caption(fl!("wizard-no-volumes")));
         } else {
             for (i, v) in state.volumes.iter().enumerate() {
-                let ro = if v.read_only { " (Read-only)" } else { "" };
+                // Host/container paths are user data — placeables, never
+                // concatenated into the message body.
+                let mount = if v.read_only {
+                    fl!(
+                        "wizard-volume-mount-read-only",
+                        host = v.host.clone(),
+                        container = v.container.clone()
+                    )
+                } else {
+                    fl!(
+                        "wizard-volume-mount",
+                        host = v.host.clone(),
+                        container = v.container.clone()
+                    )
+                };
                 col = col.push({
                     let row: cosmic::Element<'static, Message> = widget::Row::new()
+                        .push(widget::text::body(mount).width(Length::Fill))
                         .push(
-                            widget::text::body(format!("{} -> {}{}", v.host, v.container, ro))
-                                .width(Length::Fill),
-                        )
-                        .push(
-                            widget::button::text("Remove")
+                            widget::button::text(fl!("action-remove"))
                                 .on_press(Message::Wizard(WizardMsg::VolumeRemoved(i))),
                         )
                         .spacing(8)
@@ -206,12 +223,12 @@ fn view_step_config(state: &WizardState) -> cosmic::Element<'static, Message> {
             }
         }
         col = col.push(
-            widget::button::standard("Add Volume")
+            widget::button::standard(fl!("wizard-volume-add"))
                 .on_press(Message::Wizard(WizardMsg::VolumeAddRequested)),
         );
     } else {
         col = col.push(
-            widget::button::text("Advanced Options ▸")
+            widget::button::text(fl!("wizard-advanced-collapsed"))
                 .on_press(Message::Wizard(WizardMsg::AdvancedToggled)),
         );
     }
@@ -222,10 +239,11 @@ fn view_step_config(state: &WizardState) -> cosmic::Element<'static, Message> {
     col = col.push({
         let buttons: cosmic::Element<'static, Message> = widget::Row::new()
             .push(
-                widget::button::standard("Back").on_press(Message::Wizard(WizardMsg::BackToImage)),
+                widget::button::standard(fl!("action-back"))
+                    .on_press(Message::Wizard(WizardMsg::BackToImage)),
             )
             .push(
-                widget::button::suggested("Create")
+                widget::button::suggested(fl!("action-create"))
                     .on_press(Message::Wizard(WizardMsg::CreateRequested)),
             )
             .spacing(12)
@@ -243,12 +261,12 @@ fn view_step_progress(
     let mut col = widget::Column::new().spacing(12);
     col = col.push(widget::text::title3(if task_completed {
         if task_success {
-            "Container Created!"
+            fl!("wizard-created-title")
         } else {
-            "Creation Failed"
+            fl!("wizard-create-failed-title")
         }
     } else {
-        "Creating Container..."
+        fl!("wizard-creating-title")
     }));
     // Determinate indicator (#92): 1.0 when done, indeterminate while
     // running (progress None pattern mirrors the determinate_circular API:
@@ -266,7 +284,7 @@ fn view_step_progress(
     // auto-scroll (deliberate: scroll_to would fight user scroll, §3.1).
     match task_output {
         None | Some([]) => {
-            col = col.push(widget::text::caption("Waiting for output..."));
+            col = col.push(widget::text::caption(fl!("wizard-waiting-output")));
         }
         Some(lines) => {
             let mut console = widget::Column::new().spacing(2);
@@ -291,7 +309,7 @@ fn view_step_progress(
         col = col.push({
             let buttons: cosmic::Element<'static, Message> = widget::Row::new()
                 .push(
-                    widget::button::suggested("Done")
+                    widget::button::suggested(fl!("wizard-done"))
                         .on_press(Message::Wizard(WizardMsg::ProgressDone)),
                 )
                 .spacing(12)
@@ -300,7 +318,7 @@ fn view_step_progress(
         });
     } else {
         col = col.push(
-            widget::button::standard("Cancel")
+            widget::button::standard(fl!("action-cancel"))
                 .on_press(Message::Wizard(WizardMsg::ProgressCancelRequested)),
         );
     }
@@ -311,28 +329,33 @@ fn view_step_progress(
 pub fn volume_dialog_body(dialog: &VolumeDialog) -> cosmic::Element<'static, Message> {
     use crate::message::WizardMsg;
     let mut col = widget::Column::new().spacing(8);
-    col = col.push(widget::text::body("Host Path"));
+    col = col.push(widget::text::body(fl!("wizard-volume-dialog-host")));
     col = col.push({
-        let input: cosmic::Element<'static, Message> =
-            widget::text_input::text_input("/mnt/data", dialog.host.clone())
-                .on_input(|s| Message::Wizard(WizardMsg::VolumeDialogHostChanged(s)))
-                .into();
+        let input: cosmic::Element<'static, Message> = widget::text_input::text_input(
+            fl!("wizard-volume-path-placeholder"),
+            dialog.host.clone(),
+        )
+        .on_input(|s| Message::Wizard(WizardMsg::VolumeDialogHostChanged(s)))
+        .into();
         input
     });
-    col = col.push(widget::text::body("Container Path"));
+    col = col.push(widget::text::body(fl!("wizard-volume-dialog-container")));
     col = col.push({
-        let input: cosmic::Element<'static, Message> =
-            widget::text_input::text_input("/mnt/data", dialog.container.clone())
-                .on_input(|s| Message::Wizard(WizardMsg::VolumeDialogContainerChanged(s)))
-                .into();
+        let input: cosmic::Element<'static, Message> = widget::text_input::text_input(
+            fl!("wizard-volume-path-placeholder"),
+            dialog.container.clone(),
+        )
+        .on_input(|s| Message::Wizard(WizardMsg::VolumeDialogContainerChanged(s)))
+        .into();
         input
     });
     col = col.push({
         let mut ro = widget::list_column::list_column();
         ro = ro.add(
-            widget::settings::item::builder("Read-only").toggler(dialog.read_only, |v| {
-                Message::Wizard(WizardMsg::VolumeDialogReadOnlyToggled(v))
-            }),
+            widget::settings::item::builder(fl!("wizard-volume-dialog-read-only"))
+                .toggler(dialog.read_only, |v| {
+                    Message::Wizard(WizardMsg::VolumeDialogReadOnlyToggled(v))
+                }),
         );
         let ro_el: cosmic::Element<'static, Message> = ro.into_element();
         ro_el

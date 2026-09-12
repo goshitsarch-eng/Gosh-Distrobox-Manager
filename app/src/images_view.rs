@@ -6,6 +6,7 @@
 //! arrow → wizard (#103). Details dialog (#102) shows Tag + Image URL with
 //! Close + Create Container (wires `preselectedImage`, dead in Flutter).
 
+use crate::fl;
 use crate::message::{ImageMsg, Message};
 use crate::views::empty_state;
 use crate::wizard::{WizardState, image_card};
@@ -24,17 +25,17 @@ pub fn view_images(
     let mut col = widget::Column::new().spacing(12);
 
     // Headline (#98) + catalogue semantics (#104).
-    col = col.push(widget::text::title2("Available Images"));
-    col = col.push(widget::text::body(
-        "Compatible Linux distributions for new Distrobox containers (catalogue, not local images).",
-    ));
+    col = col.push(widget::text::title2(fl!("misc-images-title")));
+    col = col.push(widget::text::body(fl!("misc-images-subtitle")));
 
     // Search (#99).
     col = col.push({
-        let search_el: cosmic::Element<'static, Message> =
-            widget::text_input::search_input("Search images...", search.to_string())
-                .on_input(|s| Message::Images(ImageMsg::SearchChanged(s)))
-                .into();
+        let search_el: cosmic::Element<'static, Message> = widget::text_input::search_input(
+            fl!("misc-images-search-placeholder"),
+            search.to_string(),
+        )
+        .on_input(|s| Message::Images(ImageMsg::SearchChanged(s)))
+        .into();
         search_el
     });
 
@@ -42,7 +43,7 @@ pub fn view_images(
     if loading && images.is_empty() {
         col = col.push({
             let spin: cosmic::Element<'static, Message> =
-                widget::container(widget::text::body("Loading images…"))
+                widget::container(widget::text::body(fl!("misc-images-loading")))
                     .width(Length::Fill)
                     .center_x(Length::Fill)
                     .into();
@@ -51,10 +52,10 @@ pub fn view_images(
     } else if let Some(err) = error.filter(|_| images.is_empty()) {
         col = col.push(empty_state(
             "dialog-error-symbolic",
-            "Could not load images".to_string(),
+            fl!("misc-images-could-not-load"),
             err,
             Some(
-                widget::button::standard("Retry")
+                widget::button::standard(fl!("action-retry"))
                     .on_press(Message::Images(ImageMsg::LoadRequested))
                     .into(),
             ),
@@ -65,9 +66,9 @@ pub fn view_images(
             col = col.push(empty_state(
                 "document-open-symbolic",
                 if search.is_empty() {
-                    "No images available".to_string()
+                    fl!("misc-images-empty")
                 } else {
-                    "No images match your search".to_string()
+                    fl!("misc-images-empty-match")
                 },
                 String::new(),
                 None,
@@ -96,10 +97,12 @@ pub fn view_images(
     }
 
     // Custom URL + arrow (#103 → wizard with preselected image).
-    col = col.push(widget::text::caption_heading("CUSTOM IMAGE URL"));
+    col = col.push(widget::text::caption_heading(fl!(
+        "misc-images-custom-heading"
+    )));
     col = col.push({
         let input: cosmic::Element<'static, Message> = widget::text_input::text_input(
-            "e.g. docker.io/library/ubuntu:22.04",
+            fl!("misc-images-custom-placeholder"),
             custom.to_string(),
         )
         .on_input(|s| Message::Images(ImageMsg::CustomChanged(s)))
@@ -107,12 +110,10 @@ pub fn view_images(
         input
     });
     col = col.push(
-        widget::button::suggested("Use in Create Container")
+        widget::button::suggested(fl!("misc-images-custom-submit"))
             .on_press(Message::Images(ImageMsg::CustomSubmitted)),
     );
-    col = col.push(widget::text::caption(
-        "Enter a custom image URL to use when creating a new container.",
-    ));
+    col = col.push(widget::text::caption(fl!("misc-images-custom-help")));
 
     widget::scrollable(col).into()
 }
@@ -124,7 +125,7 @@ pub fn image_details_dialog(image: &str) -> cosmic::Element<'static, Message> {
     let tag = WizardState::image_tag(image);
     widget::Column::new()
         .push(widget::text::title3(name))
-        .push(widget::text::caption(format!("Tag: {tag}")))
+        .push(widget::text::caption(fl!("misc-images-tag", tag = tag)))
         .push(widget::text::body(image.to_string()))
         .spacing(8)
         .into()
@@ -137,11 +138,12 @@ pub fn image_details_actions(
     cosmic::Element<'static, Message>,
     cosmic::Element<'static, Message>,
 ) {
-    let close: cosmic::Element<'static, Message> = widget::button::standard("Close")
+    let close: cosmic::Element<'static, Message> = widget::button::standard(fl!("action-close"))
         .on_press(Message::Images(ImageMsg::DetailsClosed))
         .into();
-    let create: cosmic::Element<'static, Message> = widget::button::suggested("Create Container")
-        .on_press(Message::Images(ImageMsg::CreateWithImage(image)))
-        .into();
+    let create: cosmic::Element<'static, Message> =
+        widget::button::suggested(fl!("misc-images-create-container"))
+            .on_press(Message::Images(ImageMsg::CreateWithImage(image)))
+            .into();
     (close, create)
 }

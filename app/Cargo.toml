@@ -37,3 +37,9 @@ rust-embed = "8"
 
 [dev-dependencies]
 smol.workspace = true
+# Test-only, and deliberately not a normal dependency: the i18n tests name
+# `FluentValue` to drive `get_args_concrete` over the whole catalogue with a
+# numerically-typed `count`. The crate itself never names the type — `fl!`'s
+# generated `args.insert(key, value.into())` is the only place it appears, and
+# that resolves inside `i18n-embed-fl`'s own expansion.
+fluent-bundle = "0.16"

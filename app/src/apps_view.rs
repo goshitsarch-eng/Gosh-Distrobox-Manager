@@ -6,6 +6,7 @@
 //! cards in a 2-col grid with export toggles + EXPORTED label (#178),
 //! export-binary dialog (#179 — path field, LOUD on empty).
 
+use crate::fl;
 use crate::message::{AppMsg, Message};
 use crate::views::empty_state;
 use cosmic::iced::Length;
@@ -76,9 +77,9 @@ pub fn app_card(app: &AppInfo, container: &str) -> cosmic::Element<'static, Mess
     });
     col = col.push(widget::text::caption(app.exec.clone()));
     col = col.push(widget::text::caption(if app.is_exported {
-        "EXPORTED"
+        fl!("apps-exported")
     } else {
-        "NOT EXPORTED"
+        fl!("apps-not-exported")
     }));
     col.into()
 }
@@ -95,37 +96,40 @@ pub fn view_apps_page(
     let Some(container) = container else {
         return empty_state(
             "document-open-symbolic",
-            "Select a container".to_string(),
-            "Open a container's Applications tile to manage its exported apps.".to_string(),
+            fl!("apps-empty-select-title"),
+            fl!("apps-empty-select-body"),
             None,
         );
     };
     let mut col = widget::Column::new().spacing(12);
-    col = col.push(widget::text::title3(format!("Apps — {container}")));
+    col = col.push(widget::text::title3(fl!(
+        "apps-title",
+        container = container
+    )));
     // Search (#174).
     col = col.push({
         let search: cosmic::Element<'static, Message> =
-            widget::text_input::search_input("Search apps...", state.search.clone())
+            widget::text_input::search_input(fl!("apps-search-placeholder"), state.search.clone())
                 .on_input(|s| Message::Apps(AppMsg::SearchChanged(s)))
                 .into();
         search
     });
     // Manual binary export (#175).
     col = col.push(
-        widget::button::suggested("Manual Binary Export")
+        widget::button::suggested(fl!("apps-manual-binary-export"))
             .on_press(Message::Apps(AppMsg::BinaryDialogRequested)),
     );
     if loading {
-        col = col.push(widget::text::body("Loading apps…"));
+        col = col.push(widget::text::body(fl!("apps-loading")));
         return widget::scrollable(col).into();
     }
     if let Some(err) = error {
         col = col.push(empty_state(
             "dialog-error-symbolic",
-            "Could not load apps".to_string(),
+            fl!("apps-error-title"),
             err.to_string(),
             Some(
-                widget::button::standard("Retry")
+                widget::button::standard(fl!("action-retry"))
                     .on_press(Message::Apps(AppMsg::ReloadRequested(
                         container.to_string(),
                     )))
@@ -138,8 +142,11 @@ pub fn view_apps_page(
     // Section + badge (#176).
     col = col.push({
         let head: cosmic::Element<'static, Message> = widget::Row::new()
-            .push(widget::text::body("Installed in Container").width(Length::Fill))
-            .push(widget::text::caption(format!("{} Found", filtered.len())))
+            .push(widget::text::body(fl!("apps-section-installed")).width(Length::Fill))
+            .push(widget::text::caption(fl!(
+                "apps-count-found",
+                count = filtered.len()
+            )))
             .spacing(8)
             .align_y(cosmic::iced::Alignment::Center)
             .into();
@@ -150,9 +157,9 @@ pub fn view_apps_page(
         col = col.push(empty_state(
             "document-open-symbolic",
             if state.search.is_empty() {
-                "No applications found in this container".to_string()
+                fl!("apps-empty-no-apps-title")
             } else {
-                "No applications match your search".to_string()
+                fl!("apps-empty-no-match-title")
             },
             String::new(),
             None,
@@ -173,9 +180,9 @@ pub fn view_apps_page(
     }
     // Exported binaries count (existing T3 mirror surface).
     if !binaries.is_empty() {
-        col = col.push(widget::text::caption(format!(
-            "{} exported binaries",
-            binaries.len()
+        col = col.push(widget::text::caption(fl!(
+            "apps-count-binaries",
+            count = binaries.len()
         )));
     }
     widget::scrollable(col).into()
@@ -184,14 +191,14 @@ pub fn view_apps_page(
 /// Export-binary dialog body (#179): path field + LOUD error.
 pub fn binary_dialog_body(path: &str, error: Option<&str>) -> cosmic::Element<'static, Message> {
     let mut col = widget::Column::new()
-        .push(widget::text::body(
-            "Enter the path to a binary inside the container to export it to your host system.",
-        ))
+        .push(widget::text::body(fl!("apps-binary-dialog-body")))
         .push({
-            let input: cosmic::Element<'static, Message> =
-                widget::text_input::text_input("/usr/bin/some-command", path.to_string())
-                    .on_input(|s| Message::Apps(AppMsg::BinaryPathChanged(s)))
-                    .into();
+            let input: cosmic::Element<'static, Message> = widget::text_input::text_input(
+                fl!("apps-binary-path-placeholder"),
+                path.to_string(),
+            )
+            .on_input(|s| Message::Apps(AppMsg::BinaryPathChanged(s)))
+            .into();
             input
         })
         .spacing(8);

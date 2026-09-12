@@ -18,9 +18,11 @@
 //! in output (#159 — body vs caption lines, same rule as the wizard
 //! console), TaskState from the mirror — NEVER string-sniffing (#160),
 //! in-memory only (#161 — persistence is T12 config scope, not this page),
-//! relative times (#162 — no Fluent dependency; plain English rules).
+//! relative times (#162 — plain English rules, now Fluent messages
+//! `activity-time-*`; the ladder itself is unchanged).
 
 use crate::app::TaskView;
+use crate::fl;
 use crate::message::{ActivityMsg, Message, TaskMsg};
 use crate::views::empty_state;
 use cosmic::iced::Length;
@@ -54,11 +56,14 @@ impl TaskState {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    /// Localized status label. Returns an owned `String` because Fluent
+    /// messages are formatted at call time (the label is also used as a
+    /// `text::caption` body, which takes any `Into<Cow<str>>`).
+    pub fn label(self) -> String {
         match self {
-            TaskState::Running => "In Progress",
-            TaskState::Success => "Completed",
-            TaskState::Failed => "Failed",
+            TaskState::Running => fl!("activity-state-running"),
+            TaskState::Success => fl!("activity-state-success"),
+            TaskState::Failed => fl!("activity-state-failed"),
         }
     }
 }
@@ -129,19 +134,29 @@ pub fn stats(tasks: &BTreeMap<TaskId, TaskView>) -> (usize, usize, usize, usize)
 
 /// Relative time (row #162): Just now / Nm ago / Nh ago / Nd ago.
 /// (Flutter fell through to `MMM d, yyyy` past 7 days; without a date
-/// dependency this renders `Nd ago` instead — T15 may promote it.)
+/// dependency this renders `Nd ago` instead.)
+///
+/// The quotient is bound to a `u64` *before* it reaches `fl!`. That is not
+/// stylistic: `fl!` expands to `args.insert(key, value.into())` against a
+/// `HashMap<_, FluentValue>`, so an unbound `secs / 60` leaves `into()` with
+/// two ways to satisfy the target (`u64: Div<u64>` vs the `Div` impls glam
+/// brings into scope) and the expression stops compiling. The integer type is
+/// also what makes the plural selectors work at all — `FluentValue`'s
+/// `From<u64>` yields a `Number`, and only a `Number` matches `[one]`; a
+/// stringified count silently falls through to `*[other]` in every locale.
 pub fn relative_time(started_at: Instant) -> String {
     let secs = started_at.elapsed().as_secs();
     if secs < 60 {
-        "Just now".to_string()
+        fl!("activity-time-just-now")
     } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
+        let count: u64 = secs / 60;
+        fl!("activity-time-minutes", count = count)
     } else if secs < 86400 {
-        format!("{}h ago", secs / 3600)
+        let count: u64 = secs / 3600;
+        fl!("activity-time-hours", count = count)
     } else {
-        // 24h+: day count (no date-format dependency; T15 may promote to a
-        // Fluent date message).
-        format!("{}d ago", secs / 86400)
+        let count: u64 = secs / 86400;
+        fl!("activity-time-days", count = count)
     }
 }
 
@@ -168,21 +183,21 @@ pub fn timeline_row(id: TaskId, view: &TaskView) -> cosmic::Element<'static, Mes
                 .push(
                     widget::Column::new()
                         .push(widget::text::body(view.label.clone()))
-                        .push(widget::text::caption(format!(
-                            "{} · {}",
-                            relative_time(view.started_at),
-                            state.label()
+                        .push(widget::text::caption(fl!(
+                            "activity-timeline-meta",
+                            time = relative_time(view.started_at),
+                            state = state.label()
                         )))
                         .spacing(2)
                         .width(Length::Fill),
                 )
                 .push(
-                    widget::button::text("Output")
+                    widget::button::text(fl!("activity-output"))
                         .on_press(Message::Activity(ActivityMsg::Expanded(id))),
                 )
                 .push_maybe(if state == TaskState::Running {
                     Some(
-                        widget::button::text("Cancel")
+                        widget::button::text(fl!("action-cancel"))
                             .on_press(Message::Tasks(TaskMsg::CancelRequested(id))),
                     )
                 } else {
@@ -202,17 +217,19 @@ pub fn timeline_row(id: TaskId, view: &TaskView) -> cosmic::Element<'static, Mes
 pub fn output_drawer(view: &TaskView) -> cosmic::Element<'static, Message> {
     let mut col = widget::Column::new()
         .push(widget::text::title3(view.label.clone()))
-        .push(widget::text::caption(format!(
-            "{} · {}",
-            relative_time(view.started_at),
-            TaskState::of(view).label()
+        .push(widget::text::caption(fl!(
+            "activity-timeline-meta",
+            time = relative_time(view.started_at),
+            state = TaskState::of(view).label()
         )))
         .spacing(8);
     if view.output.is_empty() {
-        col = col.push(widget::text::caption("No output yet."));
+        col = col.push(widget::text::caption(fl!("activity-no-output")));
     } else {
         for line in &view.output {
             let lower = line.to_lowercase();
+            // NOTE (T15): "error"/"failed" are command-output markers,
+            // matched rather than displayed — deliberately NOT translated.
             if lower.contains("error") || lower.contains("failed") {
                 col = col.push(widget::text::body(line.clone()));
             } else {
@@ -231,32 +248,34 @@ pub fn view_activity(
     let mut col = widget::Column::new().spacing(12);
     // Search (#153).
     col = col.push({
-        let search: cosmic::Element<'static, Message> =
-            widget::text_input::search_input("Search logs...", state.search.clone())
-                .on_input(|s| Message::Activity(ActivityMsg::SearchChanged(s)))
-                .into();
+        let search: cosmic::Element<'static, Message> = widget::text_input::search_input(
+            fl!("activity-search-placeholder"),
+            state.search.clone(),
+        )
+        .on_input(|s| Message::Activity(ActivityMsg::SearchChanged(s)))
+        .into();
         search
     });
     // Filter chips (#154).
     col = col.push({
         let chips: cosmic::Element<'static, Message> = widget::Row::new()
             .push(filter_chip(
-                "All".to_string(),
+                fl!("activity-filter-all"),
                 ActivityFilter::All,
                 state.filter,
             ))
             .push(filter_chip(
-                "Running".to_string(),
+                fl!("activity-filter-running"),
                 ActivityFilter::Running,
                 state.filter,
             ))
             .push(filter_chip(
-                "Success".to_string(),
+                fl!("activity-filter-success"),
                 ActivityFilter::Success,
                 state.filter,
             ))
             .push(filter_chip(
-                "Errors".to_string(),
+                fl!("activity-filter-errors"),
                 ActivityFilter::Errors,
                 state.filter,
             ))
@@ -268,10 +287,10 @@ pub fn view_activity(
     let (total, running, success, failed) = stats(tasks);
     col = col.push({
         let bar: cosmic::Element<'static, Message> = widget::Row::new()
-            .push(stat_cell("Total".to_string(), total))
-            .push(stat_cell("Running".to_string(), running))
-            .push(stat_cell("Completed".to_string(), success))
-            .push(stat_cell("Failed".to_string(), failed))
+            .push(stat_cell(fl!("activity-stat-total"), total))
+            .push(stat_cell(fl!("activity-stat-running"), running))
+            .push(stat_cell(fl!("activity-stat-completed"), success))
+            .push(stat_cell(fl!("activity-stat-failed"), failed))
             .spacing(16)
             .into();
         bar
@@ -282,14 +301,14 @@ pub fn view_activity(
         col = col.push(empty_state(
             "document-open-symbolic",
             if tasks.is_empty() {
-                "No activity yet".to_string()
+                fl!("activity-empty-title")
             } else {
-                "No matching activities".to_string()
+                fl!("activity-empty-match-title")
             },
             if tasks.is_empty() {
-                "Your container operations will appear here".to_string()
+                fl!("activity-empty-body")
             } else {
-                "Try adjusting your search or filters".to_string()
+                fl!("activity-empty-match-body")
             },
             None,
         ));
@@ -327,11 +346,13 @@ fn stat_cell(label: String, count: usize) -> cosmic::Element<'static, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::TaskKind;
     use std::time::Duration;
 
     fn view(label: &str, completed: bool, success: bool) -> TaskView {
         TaskView {
             label: label.into(),
+            kind: TaskKind::Other,
             output: vec![],
             completed,
             success,
@@ -363,6 +384,7 @@ mod tests {
                 id,
                 TaskView {
                     label: label.into(),
+                    kind: TaskKind::Other,
                     output: vec![format!("out {label}")],
                     completed,
                     success,
@@ -395,12 +417,21 @@ mod tests {
     #[test]
     fn relative_times() {
         let now = Instant::now();
-        assert_eq!(relative_time(now), "Just now");
-        assert_eq!(relative_time(now - Duration::from_secs(300)), "5m ago");
-        assert_eq!(relative_time(now - Duration::from_secs(7200)), "2h ago");
+        // T15: the ladder is unchanged, but each branch now resolves through
+        // its Fluent message, so the expected values are the formatted
+        // en-fallback messages rather than bare literals.
+        assert_eq!(relative_time(now), fl!("activity-time-just-now"));
+        assert_eq!(
+            relative_time(now - Duration::from_secs(300)),
+            fl!("activity-time-minutes", count = 5)
+        );
+        assert_eq!(
+            relative_time(now - Duration::from_secs(7200)),
+            fl!("activity-time-hours", count = 2)
+        );
         assert_eq!(
             relative_time(now - Duration::from_secs(3 * 86400)),
-            "3d ago"
+            fl!("activity-time-days", count = 3)
         );
     }
 

@@ -11,6 +11,7 @@
 //! the toaster (§3.4); destructive actions use the destructive button class
 //! with a warning icon and the consequence in the body.
 
+use crate::fl;
 use crate::icons::{distro_icon, is_running, status_label};
 use crate::message::{ContainerMsg, DetailsMsg, DialogMsg, Message, TaskMsg};
 use cosmic::iced::Length;
@@ -34,18 +35,18 @@ pub enum Page {
 }
 
 impl Page {
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> String {
         match self {
-            Page::Dashboard => "Dashboard",
-            Page::Containers => "Containers",
-            Page::Images => "Images",
-            Page::Packages => "Packages",
-            Page::Updates => "Updates",
-            Page::Backups => "Backups",
-            Page::Activity => "Activity",
-            Page::Apps => "Apps",
-            Page::Settings => "Settings",
-            Page::Stats => "Stats",
+            Page::Dashboard => fl!("nav-dashboard"),
+            Page::Containers => fl!("nav-containers"),
+            Page::Images => fl!("nav-images"),
+            Page::Packages => fl!("nav-packages"),
+            Page::Updates => fl!("nav-updates"),
+            Page::Backups => fl!("nav-backups"),
+            Page::Activity => fl!("nav-activity"),
+            Page::Apps => fl!("nav-apps"),
+            Page::Settings => fl!("nav-settings"),
+            Page::Stats => fl!("nav-stats"),
         }
     }
 
@@ -104,27 +105,15 @@ pub fn container_list_copy(
     if containers.is_clean_empty() {
         return (
             "document-open-symbolic",
-            "No containers found.".to_string(),
+            fl!("dash-no-containers"),
             clean_body.to_string(),
         );
     }
     let n = containers.skipped.len();
-    let (noun, pronoun) = if n == 1 {
-        ("container", "it did not match")
-    } else {
-        ("containers", "none of them matched")
-    };
     (
         "dialog-warning-symbolic",
-        format!(
-            "{} row{} could not be read.",
-            n,
-            if n == 1 { "" } else { "s" }
-        ),
-        format!(
-            "distrobox reported {n} {noun}, but {pronoun} the expected format. \
-             This is usually a distrobox version mismatch."
-        ),
+        fl!("dash-rows-unreadable-title", count = n),
+        fl!("dash-rows-unreadable-body", count = n),
     )
 }
 
@@ -142,12 +131,7 @@ pub fn container_list_copy(
 /// two surfaces cannot drift apart, and phrased to match
 /// `container_list_copy`'s all-rows-failed branch.
 pub fn all_rows_failed_copy(skipped: usize) -> String {
-    let (noun, pronoun) = if skipped == 1 {
-        ("container row", "it did not match")
-    } else {
-        ("container rows", "none of them matched")
-    };
-    format!("{skipped} {noun} could not be read — {pronoun} the expected format.")
+    fl!("dash-all-rows-failed", count = skipped)
 }
 
 /// The Dashboard status card's body line, as a pure function.
@@ -164,32 +148,29 @@ pub fn all_rows_failed_copy(skipped: usize) -> String {
 pub fn dashboard_status_body(running: usize, total: usize, skipped: usize) -> String {
     if total == 0 {
         if skipped == 0 {
-            "No containers configured. Create one to get started!".to_string()
+            fl!("dash-no-containers-configured")
         } else {
             all_rows_failed_copy(skipped)
         }
     } else {
-        format!(
-            "{running} of {total} container{} running.",
-            if total != 1 { "s" } else { "" }
-        )
+        fl!("dash-status-running", running = running, total = total)
     }
 }
 
 /// The Dashboard container-preview empty state (icon, title, body), same rule
 /// and same reason as `dashboard_status_body` — both surfaces derive from this
 /// one decision so they cannot disagree about whether the list was readable.
-pub fn dashboard_preview_copy(skipped: usize) -> (&'static str, &'static str, String) {
+pub fn dashboard_preview_copy(skipped: usize) -> (&'static str, String, String) {
     if skipped == 0 {
         (
             "document-open-symbolic",
-            "No containers yet",
-            "Create your first container to get started".to_string(),
+            fl!("dash-preview-empty-title"),
+            fl!("dash-preview-empty-body"),
         )
     } else {
         (
             "dialog-warning-symbolic",
-            "Container list unreadable",
+            fl!("dash-preview-unreadable-title"),
             all_rows_failed_copy(skipped),
         )
     }
@@ -233,10 +214,10 @@ pub fn gate(
         // until T9/T12 (EnvMsg::Probed); refresh is the honest action today.
         return Some(empty_state(
             "dialog-error-symbolic",
-            "Environment Blocked".to_string(),
+            fl!("dash-env-blocked-title"),
             message,
             Some(
-                widget::button::suggested("Check Again")
+                widget::button::suggested(fl!("dash-check-again"))
                     .on_press(Message::Containers(ContainerMsg::RefreshRequested))
                     .into(),
             ),
@@ -246,10 +227,10 @@ pub fn gate(
         // Row #13: Distrobox Not Found.
         return Some(empty_state(
             "dialog-warning-symbolic",
-            "Distrobox Not Found".to_string(),
-            "Distrobox is required to manage Linux containers. Please install it to use Gosh Distrobox Manager.".to_string(),
+            fl!("dash-distrobox-missing-title"),
+            fl!("dash-distrobox-missing-body"),
             Some(
-                widget::button::suggested("Check Again")
+                widget::button::suggested(fl!("dash-check-again"))
                     .on_press(Message::Containers(ContainerMsg::RefreshRequested))
                     .into(),
             ),
@@ -310,7 +291,7 @@ pub fn container_row(
     let mut col = widget::Column::new().push(list.into_element());
     if is_running(&container.status) {
         col = col.push({
-            let stop: cosmic::Element<'static, Message> = widget::button::text("Stop")
+            let stop: cosmic::Element<'static, Message> = widget::button::text(fl!("action-stop"))
                 .on_press(Message::Containers(ContainerMsg::StopRequested(
                     container.name.clone(),
                 )))
@@ -335,10 +316,7 @@ pub fn skipped_summary(skipped: usize, show: bool) -> Option<String> {
     if !show || skipped == 0 {
         return None;
     }
-    Some(format!(
-        "{skipped} row{} skipped — could not be parsed.",
-        if skipped == 1 { "" } else { "s" }
-    ))
+    Some(fl!("dash-skipped-rows", count = skipped))
 }
 
 /// The numbers the Dashboard status card is built from. Grouped rather than
@@ -378,11 +356,11 @@ pub fn view_dashboard(
 
     // Status card (rows #14–#15).
     let mut status = widget::Column::new()
-        .push(widget::text::caption_heading("SYSTEM STATUS"))
+        .push(widget::text::caption_heading(fl!("dash-system-status")))
         .push(widget::text::title4(if healthy {
-            "All Systems Operational"
+            fl!("dash-all-systems-operational")
         } else {
-            "Attention Required"
+            fl!("dash-attention-required")
         }))
         .push(widget::text::body(dashboard_status_body(
             running, total, skipped,
@@ -404,9 +382,9 @@ pub fn view_dashboard(
     // Stat tiles (rows #16–#18).
     col = col.push({
         let tiles: cosmic::Element<'static, Message> = widget::Row::new()
-            .push(stat_tile("Total Containers".to_string(), total.to_string()))
-            .push(stat_tile("Running".to_string(), running.to_string()))
-            .push(stat_tile("Stopped".to_string(), stopped.to_string()))
+            .push(stat_tile(fl!("dash-stat-total"), total.to_string()))
+            .push(stat_tile(fl!("dash-stat-running"), running.to_string()))
+            .push(stat_tile(fl!("dash-stat-stopped"), stopped.to_string()))
             .spacing(12)
             .into();
         tiles
@@ -417,7 +395,7 @@ pub fn view_dashboard(
     if !task_rows.is_empty() {
         col = col.push({
             let t: cosmic::Element<'static, Message> =
-                widget::text::caption_heading("ACTIVE TASKS").into();
+                widget::text::caption_heading(fl!("dash-active-tasks")).into();
             t
         });
         for row in task_rows {
@@ -429,11 +407,12 @@ pub fn view_dashboard(
     // Containers preview (rows #22–#27): first 5 + View all.
     col = col.push({
         let header: cosmic::Element<'static, Message> = widget::Row::new()
-            .push(widget::text::caption_heading("CONTAINERS").width(Length::Fill))
+            .push(widget::text::caption_heading(fl!("dash-containers-heading")).width(Length::Fill))
             .push({
-                let view_all: cosmic::Element<'static, Message> = widget::button::text("View all")
-                    .on_press(Message::Containers(ContainerMsg::ViewAllRequested))
-                    .into();
+                let view_all: cosmic::Element<'static, Message> =
+                    widget::button::text(fl!("dash-view-all"))
+                        .on_press(Message::Containers(ContainerMsg::ViewAllRequested))
+                        .into();
                 view_all
             })
             .align_y(cosmic::iced::Alignment::Center)
@@ -456,15 +435,16 @@ pub fn view_dashboard(
     // (row #30, destructive class); Refresh (row #31).
     col = col.push({
         let t: cosmic::Element<'static, Message> =
-            widget::text::caption_heading("QUICK ACTIONS").into();
+            widget::text::caption_heading(fl!("app-quick-actions")).into();
         t
     });
     col = col.push({
-        let new_btn: cosmic::Element<'static, Message> = widget::button::standard("New Container")
-            .on_press(Message::Containers(ContainerMsg::NewContainerRequested))
-            .into();
+        let new_btn: cosmic::Element<'static, Message> =
+            widget::button::standard(fl!("app-new-container"))
+                .on_press(Message::Containers(ContainerMsg::NewContainerRequested))
+                .into();
         let upgrade_btn: cosmic::Element<'static, Message> =
-            widget::button::standard("Upgrade All")
+            widget::button::standard(fl!("app-upgrade-all"))
                 .on_press(Message::Containers(ContainerMsg::UpgradeAllRequested))
                 .into();
         let actions: cosmic::Element<'static, Message> = widget::Row::new()
@@ -475,12 +455,14 @@ pub fn view_dashboard(
         actions
     });
     col = col.push({
-        let stop_all: cosmic::Element<'static, Message> = widget::button::standard("Stop All")
-            .on_press(Message::Containers(ContainerMsg::StopAllRequested))
-            .into();
-        let refresh: cosmic::Element<'static, Message> = widget::button::standard("Refresh")
-            .on_press(Message::Containers(ContainerMsg::RefreshRequested))
-            .into();
+        let stop_all: cosmic::Element<'static, Message> =
+            widget::button::standard(fl!("app-stop-all"))
+                .on_press(Message::Containers(ContainerMsg::StopAllRequested))
+                .into();
+        let refresh: cosmic::Element<'static, Message> =
+            widget::button::standard(fl!("action-refresh"))
+                .on_press(Message::Containers(ContainerMsg::RefreshRequested))
+                .into();
         let row: cosmic::Element<'static, Message> = widget::Row::new()
             .push(stop_all)
             .push(refresh)
@@ -529,9 +511,10 @@ pub fn task_row(
         });
     } else {
         row = row.push({
-            let cancel: cosmic::Element<'static, Message> = widget::button::text("Cancel")
-                .on_press(Message::Tasks(TaskMsg::CancelRequested(id)))
-                .into();
+            let cancel: cosmic::Element<'static, Message> =
+                widget::button::text(fl!("action-cancel"))
+                    .on_press(Message::Tasks(TaskMsg::CancelRequested(id)))
+                    .into();
             cancel
         });
     }
@@ -587,22 +570,26 @@ pub fn view_details(
     // Status card (rows #58–#59).
     let mut status_row = widget::Row::new()
         .push(widget::text::body(status_label(&container.status)).width(Length::Fill))
-        .push(widget::text::caption(format!("ID: {}", container.id)))
+        .push(widget::text::caption(fl!(
+            "dash-container-id",
+            id = container.id.to_string()
+        )))
         .spacing(8)
         .align_y(cosmic::iced::Alignment::Center);
     if running {
         status_row = status_row.push({
-            let stop: cosmic::Element<'static, Message> = widget::button::standard("Stop")
-                .on_press(Message::Details(DetailsMsg::StopRequested(
-                    container.name.clone(),
-                )))
-                .into();
+            let stop: cosmic::Element<'static, Message> =
+                widget::button::standard(fl!("action-stop"))
+                    .on_press(Message::Details(DetailsMsg::StopRequested(
+                        container.name.clone(),
+                    )))
+                    .into();
             stop
         });
     }
     col = col.push({
         let heading: cosmic::Element<'static, Message> =
-            widget::text::caption_heading("CONTAINER STATUS").into();
+            widget::text::caption_heading(fl!("dash-container-status")).into();
         let status_el: cosmic::Element<'static, Message> = status_row.into();
         let card: cosmic::Element<'static, Message> = widget::Column::new()
             .push(heading)
@@ -616,9 +603,9 @@ pub fn view_details(
     // a typed Column accepts widgets; pre-wrapping in Element breaks the
     // Theme/Renderer inference this iced rev needs.
     let upgrade_label = if upgrading {
-        "Upgrading…"
+        fl!("dash-upgrading")
     } else {
-        "Upgrade Container"
+        fl!("dash-upgrade-container")
     };
     let actions = widget::Column::new()
         .push(
@@ -631,28 +618,28 @@ pub fn view_details(
             }),
         )
         .push(
-            widget::button::standard("Applications").on_press(Message::Details(
+            widget::button::standard(fl!("nav-apps")).on_press(Message::Details(
                 DetailsMsg::AppsRequested(container.name.clone()),
             )),
         )
         .push(
-            widget::button::standard("Clone Container").on_press(Message::Details(
+            widget::button::standard(fl!("dash-clone-container")).on_press(Message::Details(
                 DetailsMsg::CloneRequested(container.name.clone()),
             )),
         )
         .spacing(4);
-    let actions = actions.push(widget::button::standard("Open Terminal").on_press_maybe(
-        if running {
+    let actions = actions.push(
+        widget::button::standard(fl!("dash-open-terminal")).on_press_maybe(if running {
             Some(Message::Details(DetailsMsg::TerminalRequested(
                 container.name.clone(),
             )))
         } else {
             None
-        },
-    ));
+        }),
+    );
     col = col.push(
         widget::Column::new()
-            .push(widget::text::caption_heading("QUICK ACTIONS"))
+            .push(widget::text::caption_heading(fl!("app-quick-actions")))
             .push(actions)
             .spacing(4),
     );
@@ -660,11 +647,11 @@ pub fn view_details(
     // Danger zone (row #64): shared destructive confirm (§3.3).
     col = col.push(
         widget::Column::new()
-            .push(widget::text::caption_heading("DANGER ZONE"))
+            .push(widget::text::caption_heading(fl!("dash-danger-zone")))
             .push(
-                widget::button::destructive("Delete Container").on_press(Message::Details(
-                    DetailsMsg::RemoveRequested(container.name.clone()),
-                )),
+                widget::button::destructive(fl!("dash-delete-container")).on_press(
+                    Message::Details(DetailsMsg::RemoveRequested(container.name.clone())),
+                ),
             )
             .spacing(4),
     );
@@ -679,14 +666,17 @@ pub fn view_details(
 /// `CloneConfirmed { source, name }`.
 pub fn clone_dialog(source: &str, name: &str) -> cosmic::Element<'static, Message> {
     widget::Column::new()
-        .push(widget::text::body(format!(
-            "Clone {source} to a new container:"
+        .push(widget::text::body(fl!(
+            "dash-clone-dialog-body",
+            source = source
         )))
         .push({
-            let input: cosmic::Element<'static, Message> =
-                widget::text_input::text_input("New container name", name.to_string())
-                    .on_input(|s| Message::Details(DetailsMsg::CloneNameChanged(s)))
-                    .into();
+            let input: cosmic::Element<'static, Message> = widget::text_input::text_input(
+                fl!("dash-clone-dialog-placeholder"),
+                name.to_string(),
+            )
+            .on_input(|s| Message::Details(DetailsMsg::CloneNameChanged(s)))
+            .into();
             input
         })
         .spacing(8)
@@ -718,7 +708,7 @@ pub fn dialog_view(
                     .primary_action(primary)
                     .secondary_action({
                         let cancel: cosmic::Element<'static, Message> =
-                            widget::button::standard("Cancel")
+                            widget::button::standard(fl!("action-cancel"))
                                 .on_press(Message::Dialog(DialogMsg::Cancelled))
                                 .into();
                         cancel
@@ -728,11 +718,11 @@ pub fn dialog_view(
         }
         crate::app::ActiveDialog::Clone { source, name } => Some(
             widget::dialog()
-                .title(format!("Clone {source}"))
+                .title(fl!("dash-clone-dialog-title", source = source))
                 .control(clone_dialog(source, name))
                 .primary_action({
                     let clone: cosmic::Element<'static, Message> =
-                        widget::button::suggested("Clone")
+                        widget::button::suggested(fl!("dash-clone"))
                             .on_press(Message::Details(DetailsMsg::CloneConfirmed {
                                 source: source.clone(),
                                 name: name.clone(),
@@ -742,7 +732,7 @@ pub fn dialog_view(
                 })
                 .secondary_action({
                     let cancel: cosmic::Element<'static, Message> =
-                        widget::button::standard("Cancel")
+                        widget::button::standard(fl!("action-cancel"))
                             .on_press(Message::Dialog(DialogMsg::Cancelled))
                             .into();
                     cancel
@@ -810,7 +800,7 @@ mod tests {
         let clean = ContainerList::default();
         let (icon, title, body) = container_list_copy(&clean, "Create a container.");
         assert_eq!(icon, "document-open-symbolic");
-        assert_eq!(title, "No containers found.");
+        assert_eq!(title, crate::fl!("dash-no-containers"));
         assert_eq!(body, "Create a container.");
 
         let skipped = ContainerList {
@@ -844,9 +834,12 @@ mod tests {
             }],
         };
         let (_, title, body) = container_list_copy(&one, "Create a container.");
-        assert!(title.contains("1 row "), "singular noun in title: {title}");
         assert!(
-            body.contains("reported 1 container,"),
+            strip_isolation(&title).contains("1 row "),
+            "singular noun in title: {title}"
+        );
+        assert!(
+            strip_isolation(&body).contains("reported 1 container,"),
             "singular noun: {body}"
         );
         assert!(
@@ -858,6 +851,19 @@ mod tests {
             !body.contains("none of them"),
             "plural-only phrasing: {body}"
         );
+    }
+
+    /// The words a user actually reads, with Fluent's bidi-isolation markers
+    /// (U+2068/U+2069) taken back out.
+    ///
+    /// Every `{ $placeable }` that is not the only element of its pattern is
+    /// wrapped in those two characters — `use_isolating` defaults to true and
+    /// i18n-embed never turns it off — so `"reported { $count } containers"`
+    /// renders as `"reported \u{2068}1\u{2069} containers"`. Assertions about
+    /// the *copy* have to look past them; assertions about the count being
+    /// present at all do not (`contains('1')` is unaffected).
+    fn strip_isolation(s: &str) -> String {
+        s.replace(['\u{2068}', '\u{2069}'], "")
     }
 
     /// B3 (§6.4): the Dashboard mentions skipped rows only when the setting
@@ -874,13 +880,21 @@ mod tests {
     /// singular form, since a one-row skip is the common case.
     #[test]
     fn skipped_summary_counts_rows() {
+        // Compare against the catalogue, not against a copy of its text: the
+        // copy now lives in the .ftl and restating it here is how the two
+        // drift apart.
         assert_eq!(
             skipped_summary(1, true).as_deref(),
-            Some("1 row skipped — could not be parsed.")
+            Some(crate::fl!("dash-skipped-rows", count = 1).as_str())
         );
         assert_eq!(
             skipped_summary(3, true).as_deref(),
-            Some("3 rows skipped — could not be parsed.")
+            Some(crate::fl!("dash-skipped-rows", count = 3).as_str())
+        );
+        assert_ne!(
+            skipped_summary(1, true),
+            skipped_summary(3, true),
+            "the plural selector must still distinguish one row from several"
         );
     }
 
@@ -895,11 +909,16 @@ mod tests {
     fn all_rows_failed_copy_is_ungated_and_singular_aware() {
         assert_eq!(
             all_rows_failed_copy(1),
-            "1 container row could not be read — it did not match the expected format."
+            crate::fl!("dash-all-rows-failed", count = 1)
         );
         assert_eq!(
             all_rows_failed_copy(6),
-            "6 container rows could not be read — none of them matched the expected format."
+            crate::fl!("dash-all-rows-failed", count = 6)
+        );
+        assert_ne!(
+            all_rows_failed_copy(1),
+            all_rows_failed_copy(6),
+            "the singular branch must not have collapsed into the plural one"
         );
         // The distinction the assertion above cannot make on its own: the same
         // count through the setting-gated helper is `None`, so if the Dashboard
@@ -916,31 +935,42 @@ mod tests {
     #[test]
     fn dashboard_surfaces_never_call_an_unreadable_list_empty() {
         // The lie, spelled out: this is the string the user must NOT see.
-        let lie = "No containers configured. Create one to get started!";
+        let lie = crate::fl!("dash-no-containers-configured");
         assert_ne!(dashboard_status_body(0, 0, 6), lie);
         assert!(dashboard_status_body(0, 0, 6).contains("6"));
         // A genuinely empty account still gets the advice.
         assert_eq!(dashboard_status_body(0, 0, 0), lie);
         // A working list is described by its counts, not by the skip count.
-        assert_eq!(dashboard_status_body(2, 5, 3), "2 of 5 containers running.");
-        assert_eq!(dashboard_status_body(1, 1, 0), "1 of 1 container running.");
+        assert_eq!(
+            dashboard_status_body(2, 5, 3),
+            crate::fl!("dash-status-running", running = 2, total = 5)
+        );
+        assert_eq!(
+            dashboard_status_body(1, 1, 0),
+            crate::fl!("dash-status-running", running = 1, total = 1)
+        );
+        assert!(
+            dashboard_status_body(2, 5, 3).contains('2')
+                && dashboard_status_body(2, 5, 3).contains('5'),
+            "both counts survive the move into the catalogue"
+        );
 
         let (icon, title, body) = dashboard_preview_copy(6);
         assert_eq!(icon, "dialog-warning-symbolic");
-        assert_eq!(title, "Container list unreadable");
+        assert_eq!(title, crate::fl!("dash-preview-unreadable-title"));
         assert!(body.contains("6"));
-        assert!(!body.contains("Create your first container"));
+        assert!(!body.contains(&crate::fl!("dash-preview-empty-body")));
         // And the clean case is unchanged from what T6 shipped.
         let (icon, title, body) = dashboard_preview_copy(0);
         assert_eq!(icon, "document-open-symbolic");
-        assert_eq!(title, "No containers yet");
-        assert_eq!(body, "Create your first container to get started");
+        assert_eq!(title, crate::fl!("dash-preview-empty-title"));
+        assert_eq!(body, crate::fl!("dash-preview-empty-body"));
         // Both surfaces agree: one skip count, one verdict.
         assert_eq!(dashboard_status_body(0, 0, 6), all_rows_failed_copy(6));
         assert_eq!(body_of(dashboard_preview_copy(6)), all_rows_failed_copy(6));
     }
 
-    fn body_of(copy: (&'static str, &'static str, String)) -> String {
+    fn body_of(copy: (&'static str, String, String)) -> String {
         copy.2
     }
 }

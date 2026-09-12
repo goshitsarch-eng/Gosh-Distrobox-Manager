@@ -59,6 +59,9 @@ pub enum Message {
 pub enum TaskMsg {
     Started {
         label: String,
+        /// Routing discriminant, carried alongside the (translated) label so
+        /// no consumer has to match on rendered text. See [`crate::app::TaskKind`].
+        kind: crate::app::TaskKind,
         result: Result<TaskId, CoreFailure>,
     },
     Output {

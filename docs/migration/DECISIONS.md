@@ -312,6 +312,40 @@ Three agent disputes ruled on, all evidence-verified by lead:
   verified semantics-preserving; the two sensitive spots, `AppState::Default` →
   `new()` delegation and the `ResponseFn`/`ResponseMap` aliases, are pure).
 
+## D25 — ARCH-Q10 guard corrected: ban both spawn paths; violation story retracted
+
+> **Restored by T15.** This decision was recorded by T1 (`f2ffa5c`) and then
+> silently destroyed by `a9ee882` (T2), whose edit replaced the heading and
+> section body while adding D26. It went unnoticed because nothing fails when a
+> heading disappears: `clippy.toml` (three times), `core/src/service.rs:321`,
+> `core/src/fakers/command.rs:129` and the T1 row in `PLAN.md` all cite D25 as
+> authoritative, so the tree carried six dangling citations to a decision that
+> did not exist in this file. Recovered verbatim from `f2ffa5c` with the two
+> source-line references re-resolved against the current tree (they had drifted:
+> the live spawn is now `command.rs:133`, the allow site `:130`).
+
+- **Question:** The reviewer proved T1's `clippy.toml` (`std::process::Command::new`
+  only) is a placebo against this tree: `std::process::Command` appears in `core/src`
+  only in comments; the live spawn is `async_process::Command::new`
+  (`core/src/fakers/command.rs:133`). REVIEW ARCH-Q10's "already violated once" story
+  (`checked_run_command` re-established in `host_exec.rs`) is also false here —
+  `checked_run_command` never existed in this repo's history, and
+  `map_flatpak_spawn_host` only rewrites program/args without spawning.
+- **Choice:** `disallowed-methods` bans **both** `std::process::Command::new` (the
+  AGENTS.md rule as stated — the right regression net for a future hand-written
+  spawn) and `async_process::Command::new` (the actually-live path), with the single
+  `#[allow]` at the sanctioned indirection (`core/src/fakers/command.rs:130-133`)
+  and a demonstrated fire-test (allow removed → error observed) before T1 closes.
+- **Why:** A guard that cannot fire is worse than no guard — it certifies the exact
+  failure mode (runner bypass → every Flatpak user silently broken) as "enforced".
+  Same D21 failure class as the §0.2 mechanism: an answer ported from a neighboring
+  codebase's history without checking this tree.
+- **Spec amendment:** architecture.md §1.3 S2's "Green: no source change" now reads
+  "no behavioral change" — dropping `crate-type` to the rlib default newly compiles
+  the one doctest (`desktop_file.rs`, previously dead under staticlib/cdylib), so the
+  added `use` line is a declared forced edit and sign-off must show Doc-tests
+  1 passed alongside the 70 unit tests.
+
 ## D26 — T2 sign-off rulings (lead, 2026-09-11)
 
 T2 closes with the Rust gates green (unchanged tree: `fmt --check` exit 0; no Rust

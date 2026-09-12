@@ -14,6 +14,7 @@
 //! it a row number would break D19's frozen 1–193 sequence. It is recorded as
 //! I13 in PLAN.md §4 instead.
 
+use crate::fl;
 use crate::message::{Message, SettingsMsg};
 use crate::views::empty_state;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
@@ -169,18 +170,23 @@ pub fn system_info(
     installed: bool,
 ) -> cosmic::Element<'static, Message> {
     let mut col = widget::Column::new()
-        .push(widget::text::caption_heading("SYSTEM INFORMATION"))
+        .push(widget::text::caption_heading(fl!(
+            "settings-system-information"
+        )))
         .spacing(4);
     col = col.push({
         let row: cosmic::Element<'static, Message> = widget::Row::new()
-            .push(widget::text::body("Distrobox Version").width(cosmic::iced::Length::Fill))
+            .push(
+                widget::text::body(fl!("settings-distrobox-version"))
+                    .width(cosmic::iced::Length::Fill),
+            )
             .push(widget::text::body(if loading_version {
-                "Loading…".to_string()
+                fl!("state-loading")
             } else {
                 version.to_string()
             }))
             .push(
-                widget::button::standard("Refresh")
+                widget::button::standard(fl!("action-refresh"))
                     .on_press(Message::Settings(SettingsMsg::VersionReloadRequested)),
             )
             .spacing(8)
@@ -189,11 +195,16 @@ pub fn system_info(
         row
     });
     for (label, value) in [
-        ("Total Containers", total.to_string()),
-        ("Running Containers", running.to_string()),
+        (fl!("settings-total-containers"), total.to_string()),
+        (fl!("settings-running-containers"), running.to_string()),
         (
-            "Distrobox Installed",
-            if installed { "Yes" } else { "No" }.to_string(),
+            fl!("settings-distrobox-installed"),
+            if installed {
+                fl!("settings-yes")
+            } else {
+                fl!("settings-no")
+            }
+            .to_string(),
         ),
     ] {
         col = col.push({
@@ -216,7 +227,7 @@ pub fn preferences(
     terminals: &[gosh_distrobox_core::backends::Terminal],
 ) -> cosmic::Element<'static, Message> {
     let mut col = widget::Column::new()
-        .push(widget::text::caption_heading("PREFERENCES"))
+        .push(widget::text::caption_heading(fl!("settings-preferences")))
         .spacing(4);
     // Selected terminal picker.
     let names: Vec<String> = terminals.iter().map(|t| t.name.clone()).collect();
@@ -235,8 +246,8 @@ pub fn preferences(
     col = col.push({
         let mut toggles = widget::list_column::list_column();
         toggles = toggles.add(
-            widget::settings::item::builder("Confirm destructive actions")
-                .description("Ask before remove, stop-all, delete")
+            widget::settings::item::builder(fl!("settings-confirm-destructive"))
+                .description(fl!("settings-confirm-destructive-description"))
                 .toggler(config.confirm_destructive_actions, |v| {
                     Message::Settings(SettingsMsg::ConfirmToggled(v))
                 }),
@@ -245,8 +256,8 @@ pub fn preferences(
         // always collected and logged; this decides whether the Dashboard
         // mentions them.
         toggles = toggles.add(
-            widget::settings::item::builder("Show skipped rows")
-                .description("Report container rows that could not be parsed")
+            widget::settings::item::builder(fl!("settings-show-skipped-rows"))
+                .description(fl!("settings-show-skipped-rows-description"))
                 .toggler(config.show_skipped_lines, |v| {
                     Message::Settings(SettingsMsg::ShowSkippedLinesToggled(v))
                 }),
@@ -255,21 +266,25 @@ pub fn preferences(
         toggles_el
     });
     // Snapshot prefix.
-    col = col.push(widget::text::body("Snapshot Prefix"));
+    col = col.push(widget::text::body(fl!("settings-snapshot-prefix")));
     col = col.push({
-        let input: cosmic::Element<'static, Message> =
-            widget::text_input::text_input("gdm", config.snapshot_prefix.clone())
-                .on_input(|s| Message::Settings(SettingsMsg::SnapshotPrefixChanged(s)))
-                .into();
+        let input: cosmic::Element<'static, Message> = widget::text_input::text_input(
+            fl!("settings-snapshot-prefix-placeholder"),
+            config.snapshot_prefix.clone(),
+        )
+        .on_input(|s| Message::Settings(SettingsMsg::SnapshotPrefixChanged(s)))
+        .into();
         input
     });
     // Export dir.
-    col = col.push(widget::text::body("Default Export Directory"));
+    col = col.push(widget::text::body(fl!("settings-default-export-dir")));
     col = col.push({
-        let input: cosmic::Element<'static, Message> =
-            widget::text_input::text_input("~/Downloads", config.default_export_dir.clone())
-                .on_input(|s| Message::Settings(SettingsMsg::ExportDirChanged(s)))
-                .into();
+        let input: cosmic::Element<'static, Message> = widget::text_input::text_input(
+            fl!("settings-default-export-dir-placeholder"),
+            config.default_export_dir.clone(),
+        )
+        .on_input(|s| Message::Settings(SettingsMsg::ExportDirChanged(s)))
+        .into();
         input
     });
     col.into()
@@ -285,18 +300,18 @@ pub fn about() -> cosmic::Element<'static, Message> {
     static INFO: OnceLock<widget::about::About> = OnceLock::new();
     let info = INFO.get_or_init(|| {
         widget::about::About::default()
-            .name("Gosh Distrobox Manager")
+            .name(fl!("app-title"))
             .icon(widget::icon::from_name("io.github.gosh_distrobox_manager").handle())
             .version(format!("v{}", env!("CARGO_PKG_VERSION")))
-            .comments("A GUI for managing Distrobox containers.")
+            .comments(fl!("settings-about-comments"))
             .copyright("GPL-3.0-or-later")
             .license("GPL-3.0-or-later")
             .links([
                 (
-                    "Source Code",
+                    fl!("settings-link-source-code"),
                     "https://github.com/goshitsarch-eng/Gosh-Distrobox-Manager",
                 ),
-                ("Distrobox Docs", "https://distrobox.it"),
+                (fl!("settings-link-distrobox-docs"), "https://distrobox.it"),
             ])
     });
     widget::about(info, |url| {
@@ -307,9 +322,9 @@ pub fn about() -> cosmic::Element<'static, Message> {
 /// Danger zone (row #170): Delete All + confirm with warning box.
 pub fn danger_zone(has_containers: bool) -> cosmic::Element<'static, Message> {
     widget::Column::new()
-        .push(widget::text::caption_heading("DANGER ZONE"))
+        .push(widget::text::caption_heading(fl!("settings-danger-zone")))
         .push(
-            widget::button::destructive("Delete All Containers").on_press_maybe(
+            widget::button::destructive(fl!("settings-delete-all-containers")).on_press_maybe(
                 if has_containers {
                     Some(Message::Settings(SettingsMsg::DeleteAllRequested))
                 } else {
@@ -326,8 +341,8 @@ pub fn danger_zone(has_containers: bool) -> cosmic::Element<'static, Message> {
 pub fn config_unavailable() -> cosmic::Element<'static, Message> {
     empty_state(
         "dialog-warning-symbolic",
-        "Preferences unavailable".to_string(),
-        "Settings will not persist this session.".to_string(),
+        fl!("settings-preferences-unavailable"),
+        fl!("settings-preferences-unavailable-body"),
         None,
     )
 }

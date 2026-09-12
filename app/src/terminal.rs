@@ -12,6 +12,7 @@
 //! button spawns `terminal … <enter argv>` through the env-mapped runner.
 //! No output subscription — the terminal owns its window.
 
+use crate::fl;
 use crate::icons::{distro_icon, is_running, status_label};
 use crate::message::{ContainerMsg, DetailsMsg, Message, TerminalMsg};
 use cosmic::iced::Length;
@@ -85,23 +86,24 @@ pub fn view_terminal(
     col = col.push(info_header(container));
 
     // Command section (rows #69–#72).
-    col = col.push(widget::text::caption_heading("TERMINAL ACCESS"));
+    col = col.push(widget::text::caption_heading(fl!(
+        "misc-terminal-access-heading"
+    )));
     if !running {
         // Row #68: banner WITH Start CTA (B5 — dead in Flutter).
-        col = col.push(widget::warning(
-            "Container is not running. Start the container to access the terminal.",
+        col = col.push(widget::warning(fl!("misc-terminal-not-running-warning")));
+        col = col.push(widget::button::standard(fl!("action-start")).on_press(
+            Message::Containers(ContainerMsg::StartRequested(container.name.clone())),
         ));
-        col = col.push(
-            widget::button::standard("Start").on_press(Message::Containers(
-                ContainerMsg::StartRequested(container.name.clone()),
-            )),
-        );
     } else if state.loading_command {
-        col = col.push(widget::text::body("Loading terminal command…"));
+        col = col.push(widget::text::body(fl!("misc-terminal-loading-command")));
     } else if let Some(err) = &state.command_error {
-        col = col.push(widget::warning(format!("Error: {err}")));
+        col = col.push(widget::warning(fl!(
+            "misc-terminal-command-error",
+            error = err
+        )));
         col = col.push(
-            widget::button::standard("Retry").on_press(Message::Terminal(
+            widget::button::standard(fl!("action-retry")).on_press(Message::Terminal(
                 TerminalMsg::CommandReloadRequested(container.name.clone()),
             )),
         );
@@ -109,9 +111,7 @@ pub fn view_terminal(
         // Rows #69–#71: selectable monospace command + icon button + filled
         // Copy Command + lead-in (Flutter had all three).
         let cmd = argv.join(" ");
-        col = col.push(widget::text::body(
-            "Run this command in your terminal to enter the container:",
-        ));
+        col = col.push(widget::text::body(fl!("misc-terminal-enter-lead")));
         col = col.push(widget::text::monotext(cmd.clone()));
         col = col.push({
             let copy: cosmic::Element<'static, Message> = widget::Row::new()
@@ -120,7 +120,7 @@ pub fn view_terminal(
                         .on_press(Message::Terminal(TerminalMsg::CopyRequested(cmd.clone()))),
                 )
                 .push(
-                    widget::button::suggested("Copy Command")
+                    widget::button::suggested(fl!("misc-terminal-copy-command"))
                         .on_press(Message::Terminal(TerminalMsg::CopyRequested(cmd))),
                 )
                 .spacing(8)
@@ -132,7 +132,9 @@ pub fn view_terminal(
 
     // Terminal picker + Launch (D8).
     if running {
-        col = col.push(widget::text::caption_heading("TERMINAL"));
+        col = col.push(widget::text::caption_heading(fl!(
+            "misc-terminal-picker-heading"
+        )));
         let names: Vec<String> = terminals.iter().map(|t| t.name.clone()).collect();
         let selected_idx = state
             .terminal_id
@@ -148,7 +150,7 @@ pub fn view_terminal(
             picker
         });
         col = col.push(
-            widget::button::suggested("Launch Terminal").on_press(Message::Terminal(
+            widget::button::suggested(fl!("misc-terminal-launch")).on_press(Message::Terminal(
                 TerminalMsg::LaunchRequested(container.name.clone()),
             )),
         );
@@ -156,9 +158,9 @@ pub fn view_terminal(
 
     // Quick actions (rows #73–#74).
     let upgrade_label = if upgrading {
-        "Upgrading…"
+        fl!("misc-upgrading")
     } else {
-        "Upgrade Packages"
+        fl!("misc-terminal-upgrade-packages")
     };
     col = col.push(widget::button::standard(upgrade_label).on_press_maybe(
         if running && !upgrading {
@@ -171,27 +173,36 @@ pub fn view_terminal(
     ));
     if running {
         col = col.push(
-            widget::button::standard("Stop Container").on_press(Message::Containers(
-                ContainerMsg::StopRequested(container.name.clone()),
-            )),
+            widget::button::standard(fl!("misc-terminal-stop-container")).on_press(
+                Message::Containers(ContainerMsg::StopRequested(container.name.clone())),
+            ),
         );
     }
 
-    // Details rows (#75).
-    col = col.push(widget::text::caption_heading("CONTAINER DETAILS"));
+    // Details rows (#75). The label is localized, the value is user or backend
+    // data — both go in as placeables, so the pair composes without either
+    // side being pasted into a message body.
+    col = col.push(widget::text::caption_heading(fl!(
+        "misc-terminal-details-heading"
+    )));
     for (k, v) in [
-        ("ID", container.id.clone()),
-        ("Name", container.name.clone()),
-        ("Image", container.image.clone()),
-        ("Status", status_label(&container.status)),
+        (fl!("misc-terminal-detail-id"), container.id.clone()),
+        (fl!("misc-terminal-detail-name"), container.name.clone()),
+        (fl!("misc-terminal-detail-image"), container.image.clone()),
+        (
+            fl!("misc-terminal-detail-status"),
+            status_label(&container.status),
+        ),
     ] {
-        col = col.push(widget::text::caption(format!("{k}: {v}")));
+        col = col.push(widget::text::caption(fl!(
+            "misc-terminal-details-row",
+            key = k,
+            value = v
+        )));
     }
 
     // Honest help text (#76 — command display, not emulation).
-    col = col.push(widget::text::caption(
-        "Gosh Distrobox Manager shows the command to enter containers and launches your terminal. Full terminal emulation is not included.",
-    ));
+    col = col.push(widget::text::caption(fl!("misc-terminal-help")));
 
     widget::scrollable(col).into()
 }

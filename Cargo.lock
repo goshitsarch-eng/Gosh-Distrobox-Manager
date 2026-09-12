@@ -1861,6 +1861,7 @@ dependencies = [
 name = "gosh_distrobox_manager"
 version = "1.0.2"
 dependencies = [
+ "fluent-bundle",
  "futures",
  "gosh-distrobox-core",
  "i18n-embed",

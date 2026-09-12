@@ -8,6 +8,7 @@
 //! upgrade-all confirm + empty toast (#131), shared task progress (#132,
 //! dashboard mirror rows, not a fifth dialog copy).
 
+use crate::fl;
 use crate::icons::{distro_icon, is_running};
 use crate::message::{ContainerMsg, Message};
 use crate::views::empty_state;
@@ -28,9 +29,9 @@ pub fn running_card(
     upgrading: bool,
 ) -> cosmic::Element<'static, Message> {
     let state = if upgrading {
-        "UPGRADING…"
+        fl!("misc-updates-state-upgrading")
     } else {
-        "READY TO UPGRADE"
+        fl!("misc-updates-state-ready")
     };
     let mut col = widget::Column::new().spacing(8);
     col = col.push({
@@ -60,12 +61,12 @@ pub fn running_card(
         let action: cosmic::Element<'static, Message> = if upgrading {
             widget::Row::new()
                 .push(widget::progress_bar::indeterminate_circular())
-                .push(widget::text::caption("Upgrading…"))
+                .push(widget::text::caption(fl!("misc-upgrading")))
                 .spacing(8)
                 .align_y(cosmic::iced::Alignment::Center)
                 .into()
         } else {
-            widget::button::suggested("Upgrade")
+            widget::button::suggested(fl!("misc-updates-upgrade-action"))
                 .on_press(Message::Containers(ContainerMsg::UpgradeRequested(
                     container.name.clone(),
                 )))
@@ -93,7 +94,7 @@ pub fn stopped_card(container: &ContainerInfo) -> cosmic::Element<'static, Messa
             .push(
                 widget::Column::new()
                     .push(widget::text::body(container.name.clone()))
-                    .push(widget::text::caption("STOPPED"))
+                    .push(widget::text::caption(fl!("misc-updates-state-stopped")))
                     .push(widget::text::caption(container.image.clone()))
                     .spacing(2)
                     .width(Length::Fill),
@@ -103,9 +104,9 @@ pub fn stopped_card(container: &ContainerInfo) -> cosmic::Element<'static, Messa
             .into();
         head
     });
-    col = col.push(widget::warning("Start the container to enable upgrades."));
+    col = col.push(widget::warning(fl!("misc-updates-stopped-warning")));
     col = col.push(
-        widget::button::standard("Start").on_press(Message::Containers(
+        widget::button::standard(fl!("action-start")).on_press(Message::Containers(
             ContainerMsg::StartRequested(container.name.clone()),
         )),
     );
@@ -120,7 +121,10 @@ pub fn upgrade_task_rows(
 ) -> Vec<cosmic::Element<'static, Message>> {
     tasks
         .iter()
-        .filter(|(_, v)| v.label.starts_with("Upgrade "))
+        // Matched on the kind, never on the label: the label is translated,
+        // so a `starts_with("Upgrade ")` test silently dropped every upgrade
+        // task from this page outside the fallback locale (T15).
+        .filter(|(_, v)| v.kind == crate::app::TaskKind::Upgrade)
         .map(|(id, v)| crate::views::task_row(*id, v.label.clone(), v.completed, v.success))
         .collect()
 }
@@ -142,16 +146,16 @@ pub fn view_updates(
         // account gets the create-prompt, an all-rows-unreadable list does not.
         // T13 originally revised the Containers/Backups/Packages pages and left
         // this fourth gated page on the bare-empty test.
-        let (icon, title, body) =
-            crate::views::container_list_copy(containers, "Create a container to manage updates.");
+        let clean_body = fl!("misc-updates-empty-body");
+        let (icon, title, body) = crate::views::container_list_copy(containers, &clean_body);
         return empty_state(icon, title, body, None);
     }
     let (running_n, stopped_n) = summary(containers);
     let total = containers.len();
     let mut col = widget::Column::new().spacing(12);
-    col = col.push(widget::text::title3(format!(
-        "{total} Container{} Available",
-        if total != 1 { "s" } else { "" }
+    col = col.push(widget::text::title3(fl!(
+        "misc-updates-n-containers",
+        count = total
     )));
     // The fleet figure above counts only rows that parsed, so say so when the
     // list was short. Ungated by `show_skipped_lines` for the same reason as
@@ -162,8 +166,10 @@ pub fn view_updates(
             containers.skipped.len(),
         )));
     }
-    col = col.push(widget::text::body(format!(
-        "{running_n} running, {stopped_n} stopped. Upgrade running containers to update their packages."
+    col = col.push(widget::text::body(fl!(
+        "misc-updates-summary",
+        running = running_n,
+        stopped = stopped_n
     )));
     let running: Vec<&ContainerInfo> = containers
         .iter()
@@ -174,19 +180,25 @@ pub fn view_updates(
         .filter(|c| !is_running(&c.status))
         .collect();
     if !running.is_empty() {
-        col = col.push(widget::text::caption_heading("RUNNING CONTAINERS"));
+        col = col.push(widget::text::caption_heading(fl!(
+            "misc-updates-running-heading"
+        )));
         for c in running {
             col = col.push(running_card(c, upgrading(c)));
         }
     }
     if !stopped.is_empty() {
-        col = col.push(widget::text::caption_heading("STOPPED CONTAINERS"));
+        col = col.push(widget::text::caption_heading(fl!(
+            "misc-updates-stopped-heading"
+        )));
         for c in stopped {
             col = col.push(stopped_card(c));
         }
     }
     if !task_rows.is_empty() {
-        col = col.push(widget::text::caption_heading("UPGRADE TASKS"));
+        col = col.push(widget::text::caption_heading(fl!(
+            "misc-updates-tasks-heading"
+        )));
         for row in task_rows {
             col = col.push(row);
         }
