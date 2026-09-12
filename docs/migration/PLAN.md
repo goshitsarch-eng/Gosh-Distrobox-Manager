@@ -43,7 +43,7 @@ signed off on the diff; and it is committed.
 | Phase | State |
 |---|---|
 | Phase 1 — Plan | **Complete.** All three docs signed off with changes, 45 questions answered (38) or recorded (7), 21 decisions recorded. |
-| Phase 2 — Build | **Underway.** T0–T12 done; T13–T15 sequenced below (T13→T3, T14→{T6..T13}, T15→{T6..T12}); T16 gates Phase 3. |
+| Phase 2 — Build | **Underway.** T0–T13 done; T14–T15 sequenced below (T14→{T6..T13}, T15→{T6..T12}); T16 gates Phase 3. |
 | Phase 3 — Harden | Not started. |
 
 | # | Task | Owner | State |
@@ -61,7 +61,7 @@ signed off on the diff; and it is committed.
 | T10 | Backups page (snapshots/export/import/clone; xdg-portal picker per D16) | arch + ux | **Done** (`48160a0`; 99+9+5+4+6+4+6+4+5+1 green; advocate 3 blocking + guard gap fixed, signed off) |
 | T11 | Activity log + TaskState enum (kills string-sniffing) | arch + ux | **Done** (`fa507ce`; 99+13+5+4+6+4+6+4+5+1 green; advocate 5 + doc rounds fixed, signed off) |
 | T12 | Apps export page + Settings/about + config persistence (one-time DistroShelf import) | arch + ux | **Done** (`59ef837`; 109+18+5+5+4+6+4+6+4+5+1 green; advocate 7 (2 HIGH) + re-review 5 fixed, signed off; `verify.sh` 11/11 stages) |
-| T13 | B3 tolerant parsing + `show_skipped_lines`; B4 field codes; B7 runtime helper | arch | Queued |
+| T13 | B3 tolerant parsing + `show_skipped_lines`; B4 field codes; B7 runtime helper | arch | **Done** (`c738ff2`; 162+24+5+5+4+6+4+7+4+5+1 green; GLib differential 39/0 at tokenizer + launch tiers; advocate 5 confirmed (1 blocking-class: quoted line continuation) + 1 refuted by measurement + 1 deferred to T14, signed off; `verify.sh` 11/11 stages) |
 | T14 | S7 + S8 deletions (tagged pre-deletion commit) + spec/scripts/AGENTS/README/CI rewrite | arch + pkg | Queued |
 | T15 | i18n extraction pass 1 (per-screen Fluent strings; user-data placeables rule) | ux | Queued |
 | T16 | Harden: full parity walk in the running Flatpak, break-every-flow, file new tasks | reviewer | Queued |
