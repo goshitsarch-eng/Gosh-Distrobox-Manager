@@ -24,6 +24,7 @@
 
 use crate::backends::Terminal;
 use crate::fakers::{Command, CommandRunner};
+use crate::history::HistoryEntry;
 use serde::{Deserialize, Serialize};
 
 pub const CONFIG_ID: &str = "io.github.gosh_distrobox_manager";
@@ -59,6 +60,10 @@ pub struct AppConfig {
     pub show_skipped_lines: bool,
     /// Custom (non-read-only) terminals (ARCH-Q5/D11 store).
     pub custom_terminals: Vec<Terminal>,
+    /// Bounded completed-task ring (row #161, T20): oldest-first, capped at
+    /// [`crate::history::HISTORY_BOUND`] by [`crate::history::push_history`].
+    /// Seeds the Activity mirror at init alongside the live session.
+    pub task_history: Vec<HistoryEntry>,
 }
 
 impl Default for AppConfig {
@@ -70,6 +75,7 @@ impl Default for AppConfig {
             default_export_dir: String::new(),
             show_skipped_lines: false,
             custom_terminals: Vec::new(),
+            task_history: Vec::new(),
         }
     }
 }

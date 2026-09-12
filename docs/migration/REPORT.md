@@ -463,8 +463,8 @@ being kept. Filed as **I28**.
 | I27 | Smoke gate signalled a foreign instance and blamed the app | **Fixed in T16** |
 | I28 | Two doc comments asserted a test that did not exist (`from_list`) | **Fixed in T16** |
 | I29 | Five parity rows regressed to `bug` (#13, #20, #97, #134, #186) | **Fixed** — #13/#97 in T17, #20/#134/#186 in T18 |
-| I30 | Seven parity rows are `missing` (#5, #40, #41, #161, #185, #189, #190) | ◐ #185 in T18, #5/#40/#41/#189/#190 in T19, #161 open for T20 |
-| I31 | `app/`'s missing lib target is a systemic verification ceiling (148/193 rows at `source`) | **Structural half fixed** — lib target added; headless harness open |
+| I30 | Seven parity rows are `missing` (#5, #40, #41, #161, #185, #189, #190) | **Fixed** — #185 in T18, #5/#40/#41/#189/#190 in T19, #161 in T20 |
+| I31 | `app/`'s missing lib target is a systemic verification ceiling (148/193 rows at `source`) | **Fixed** — lib target added (§11.2); headless harness landed in T20 (§11.3: `Core::default()` + `init` + driven `update` + headless `view` over a `HarnessSnapshot` seam, with `into_stream` draining for done-shaped tasks; `Element` stays opaque, so pixels still need T3 and no `source` row moves without its own test) |
 
 Carried forward from earlier tasks, unchanged by this one: **I19** (RPM never executed),
 **I20** (CI publishes no artifact), **I21** (dead screenshots), **I22** (dead distro SVGs),
@@ -549,6 +549,45 @@ is why `views::task_affordance` was factored out rather than asserted on in plac
 that the gap is now named in the type system — `TaskAffordance::RunningCancelOnly` — and
 pinned by a test, instead of living only in a doc comment that claims a spinner the
 running branch does not render.
+
+### 11.3 I31 — the headless render harness (T20)
+
+**What changed.** `app/tests/render_harness.rs` constructs a real `App` with no window,
+no compositor and no display server: `cosmic::app::Core::default()` (which exists —
+`Core` implements `Default` at the pinned rev) plus `Application::init`, driven with
+`update` and rendered with `view`, `header_start`/`header_end`, `context_drawer`,
+`dialog` and `subscription`. The executor half runs under `#[tokio::test]`: returned
+tasks that the producing arm guarantees done/effect-shaped are polled to completion via
+`iced::runtime::task::into_stream` and their follow-up `App` messages re-enter `update`
+— the same produce→poll→feed-back loop the real runtime runs, minus the window.
+Config is isolated per test (`$XDG_CONFIG_HOME` at a fresh temp dir under a
+process-wide tokio mutex — env is process-global), so the harness reads no developer
+config and the round-trip test writes none.
+
+**The drain rule, and why it is load-bearing.** Polling a task RUNS its futures: a toast
+task would sleep out its full duration (`toaster::push` is `sleep(duration)` then
+`on_close`, read in the vendored source) and a backend task would execute real commands
+against the live environment. So only done/effect-shaped tasks are ever drained; every
+drain carries a 10 s timeout that fails loudly on a violation instead of hanging the
+suite. Effects (clipboard, window, …) poll and drop — no runtime headless interprets
+them — while `Output(App(m))` messages are recovered and re-dispatched.
+
+**Seed rows migrated.** #161 (finish records into ring + mirror and renders),
+#21 (failed completion marks failed through a real `update`), #152 (Clear Completed
+empties mirror AND ring), #153/#154 (search + filter drive and the filtered page
+renders), plus the executor proof (`CopyImageRequested`'s batch drains to exactly its
+one follow-up) and the T2 restart round trip (null-backed spawn → `Completed` →
+fresh `App` reseeds). State assertions go through `HarnessSnapshot`, a counts/labels/
+scalars seam on `App` — the same precedent as `DashboardCounts` and `task_affordance`.
+
+**What it does not buy, stated with the same plainness as §11.2.** `Element` has no
+`Debug` and no introspection API at the pinned rev (verified: `element.rs` has no `fmt`
+impl at all), so no assertion here inspects a widget tree and no pixel claim is made —
+the five "T3-observed" caveats T18/T19 left now read "after T20's harness landed (it
+pins state + headless render, not pixels)". The 148 `source` rows each still need their
+own test; row #161 is re-tiered with its evidence above, and the aggregate counts and
+tier distribution reconcile in T21 (same as T17–T19).
+
 ## Appendix A — the 193 parity rows, walked
 
 Every row from `ux.md` §6, with the verdict reached in T16 and the highest verification tier
@@ -563,7 +602,7 @@ a call path, a citation, or the reason for an absence. Rows whose status in `ux.
 | 2 | Nav rail >=600px, extended >=1000px | dropped | source | Deliberate drop, decided twice: row approach cell ("Accept COSMIC condensed+toggle; drop both breakpoints (§1)") and §1 "Recommendation: accept the… |
 | 3 | Bottom nav bar <600px | dropped | source | Dropped: row approach cell "Drop — no COSMIC equivalent"; §1 table "No bottom-nav-bar equivalent exists — COSMIC does not put app nav at the bo… |
 | 4 | Nav labels (divergent sets: Home/Boxes/Pkgs/Logs vs Dashboard/Containers/...) | live | source | Divergence is gone — one consistent set drives the (single) nav. But it is neither Flutter set verbatim: Home->Dashboard and Logs->Activity, and th… |
-| 5 | Per-destination icons, selected/unselected variants | live | T1 | Fixed by T19 (was `missing` in the T16 walk): `Page::icon()` returns a freedesktop symbolic name per destination, chained into `nav_model.insert().icon()` in `init`; text labels kept. T1: `every_rail_destination_has_a_distinct_symbolic_icon` pins non-empty + distinct + `-symbolic` form for all 9 rail entries. All names verified in pop-icon-theme 3.5.0 (Flatpak via BaseApp); Stats is Pop-only (Adwaita gap, I22 class). No selected/unselected variants — the rail's selected state is the framework highlight the two Flutter variants collapse into. Rendered glyphs are T3-observed until T20's harness lands. |
+| 5 | Per-destination icons, selected/unselected variants | live | T1 | Fixed by T19 (was `missing` in the T16 walk): `Page::icon()` returns a freedesktop symbolic name per destination, chained into `nav_model.insert().icon()` in `init`; text labels kept. T1: `every_rail_destination_has_a_distinct_symbolic_icon` pins non-empty + distinct + `-symbolic` form for all 9 rail entries. All names verified in pop-icon-theme 3.5.0 (Flatpak via BaseApp); Stats is Pop-only (Adwaita gap, I22 class). No selected/unselected variants — the rail's selected state is the framework highlight the two Flutter variants collapse into. Rendered glyphs are T3-observed after T20's harness landed (it pins state + headless render, not pixels). |
 | 6 | Page switching | live | source | Both directions verified: user selection (NavSelect -> activate) and programmatic (views::activate_page/activate_containers at app/src/app.rs:815,… |
 | 7 | Tab state preserved on switch | live | source | Comes free as §1 predicted. Nothing asserts it: no test drives nav, so this rests on reading the state ownership, not on an observation. |
 | 8 | Global gates (distrobox-missing, env-blocked) | live | source | The dup is resolved exactly as §3.4 asked (implement once, wrap `view()`); the gate result is still toaster-wrapped (app.rs:1450). §3.4's third gat… |
@@ -578,7 +617,7 @@ a call path, a citation, or the reason for an absence. Rows whose status in `ux.
 | 17 | Stat card: Running | live | source | Live as a value card. The approach column's 'theme success colour' is NOT rendered: `stat_tile` (views.rs:504-511) applies no colour, and `status_c… |
 | 18 | Stat card: Stopped | live | source | Live as a value card; the approach column's 'theme warning colour' is not rendered (see #17/#34). Note the semantic is broader than Flutter's: 'sto… |
 | 19 | Active Tasks section (conditional, only when non-empty) | live | source | Live and correctly conditional. Vestigial parameter: `active_task_count` is passed and immediately discarded — `let _ = active_task_count;` (views.… |
-| 20 | Task card: spinner, description, "In progress…"/"Completed" | live | T1 | Fixed by T18 (was `bug` in the T16 walk): the running branch renders `progress_bar::indeterminate_circular()` + an "In progress…" caption beside Cancel, and success renders check + "Completed" (failed keeps the error icon with no success copy). T1: the affordance table in `parity_rows.rs` covers all four flag combinations; the `RunningCancelOnly`→`Running` rename forced the pinning edit, as designed. Rendered output itself is T3-observed until T20's harness lands. |
+| 20 | Task card: spinner, description, "In progress…"/"Completed" | live | T1 | Fixed by T18 (was `bug` in the T16 walk): the running branch renders `progress_bar::indeterminate_circular()` + an "In progress…" caption beside Cancel, and success renders check + "Completed" (failed keeps the error icon with no success copy). T1: the affordance table in `parity_rows.rs` covers all four flag combinations; the `RunningCancelOnly`→`Running` rename forced the pinning edit, as designed. Rendered output itself is T3-observed after T20's harness landed (it pins state + headless render, not pixels). |
 | 21 | Task card: cancel button | live | source | Live. Implemented as a LABELLED text button ('Cancel') rather than the approach column's `button::icon("process-stop-symbolic")` + label — better f… |
 | 22 | Containers section header | live | source | Live; rendered by `views::view_dashboard` from app.rs:3528. Uses `text::caption_heading` (the §3.6/§3.4 shared heading style) rather than a page-lo… |
 | 23 | "View all" → containers tab | live | source | DEAD → LIVE. The empty callback is gone; the button now drives `nav_model.activate_position`. Tier source: no test asserts the nav switch (app/test… |
@@ -598,8 +637,8 @@ a call path, a citation, or the reason for an absence. Rows whose status in `ux.
 | 37 | Container card list | live | source | Rows are plain Columns, not card/parchment-wrapped as Flutter's Card(elevation:0) was — matches the ux.md approach column (list_column + list::butt… |
 | 38 | Card: distro icon with status dot overlay | rescoped | T1 | Rescoped on one axis now (was two): (a) no icon+dot Stack overlay — same information is a ● text glyph (kept); (b) RETIRED by T18 — the dot rides its theme colour. |
 | 39 | Card: name / status text / image path | rescoped | T1 | Two of three live and T1-pinned; the third (image path in caption style under the status) is a real parity loss on the card — Flutter showed it (co… |
-| 40 | Card: inline "Open Terminal" when running | live | T1 | Fixed by T19 (was `missing` in the T16 walk): the shared `container_row` renders an inline "Open Terminal" text button when running, reusing the terminal page's `OpenRequested` arm — the same control and running gate as the details page. T1: `the_card_offers_stop_and_terminal_only_while_running` pins the `card_actions` gate (both actions on Up, neither on Created/Exited/Other). Rendered output is T3-observed until T20's harness lands. |
-| 41 | Card: ⋮ → quick actions | live | T1 | Fixed by T19 (was `missing` in the T16 walk): every card carries a labelled ⋮ trigger opening a `context_drawer` (single-window per D9, the §3.2 recommendation) with the five quick-action rows (#47–#51): Details / Open Terminal (disabled when stopped, #48) / Stop (running-only, #49) / Upgrade / Delete (destructive, via the shared confirm). T1: `the_card_menu_table_gates_terminal_and_stop_on_running` pins all five rows × both states, and `every_card_menu_row_redispatches_through_an_existing_arm` pins each row's message to an existing arm. Rendered drawer is T3-observed until T20's harness lands. |
+| 40 | Card: inline "Open Terminal" when running | live | T1 | Fixed by T19 (was `missing` in the T16 walk): the shared `container_row` renders an inline "Open Terminal" text button when running, reusing the terminal page's `OpenRequested` arm — the same control and running gate as the details page. T1: `the_card_offers_stop_and_terminal_only_while_running` pins the `card_actions` gate (both actions on Up, neither on Created/Exited/Other). Rendered output is T3-observed after T20's harness landed (it pins state + headless render, not pixels). |
+| 41 | Card: ⋮ → quick actions | live | T1 | Fixed by T19 (was `missing` in the T16 walk): every card carries a labelled ⋮ trigger opening a `context_drawer` (single-window per D9, the §3.2 recommendation) with the five quick-action rows (#47–#51): Details / Open Terminal (disabled when stopped, #48) / Stop (running-only, #49) / Upgrade / Delete (destructive, via the shared confirm). T1: `the_card_menu_table_gates_terminal_and_stop_on_running` pins all five rows × both states, and `every_card_menu_row_redispatches_through_an_existing_arm` pins each row's message to an existing arm. Rendered drawer is T3-observed after T20's harness landed (it pins state + headless render, not pixels). |
 | 42 | Card: long-press → quick actions | dropped | source | Sanctioned drop, cited to ux.md §3.2/row 42. The drop is correct; the paired "wire right-click context_menu instead" from the same sentence is unim… |
 | 43 | Card: tap → details | live | source | Genuinely wired end to end (row tap -> message -> handler -> view_details). No integration test covers DetailsMsg::OpenRequested (app/tests/dashboa… |
 | 44 | FAB "New Container" → wizard | rescoped | source | Same destination (blank create wizard), different affordance: a header suggested button instead of a FAB. Note the FAB's Flutter bug class does not… |
@@ -719,7 +758,7 @@ a call path, a citation, or the reason for an absence. Rows whose status in `ux.
 | 158 | Output preview -> full-output sheet (draggable 0.5-0.95) | live | source | Live as the planned port, not a regression: ux.md:570 pre-accepted the loss ("resize range is lost, accept it"), and app.rs:1773-1774 records the s… |
 | 159 | Severity colouring in output (error/warning/ok) | rescoped | source | Rescoped honestly: two classes survive (error vs ok) but the Flutter WARNING class (orange, dart:471-472) has no distinct counterpart — warning lin… |
 | 160 | Status derived by string-matching output text | live | T1 | Live; this is T11's headline deliverable. Residual caveat worth recording: output-text matching survives in two places, but both are COSMETIC, not… |
-| 161 | History is in-memory only (500-line cap, lost on exit) | missing | none | Still missing, and deliberately so rather than silently ported. ux.md:266 classes "Persistent task history" as P1 (proposal: cosmic_config or a sma… |
+| 161 | History is in-memory only (500-line cap, lost on exit) | live | T2 | Fixed by T20 (was `missing` in the T16 walk): completed tasks persist as a 50-entry ring with a 20-line preview each in cosmic-config (`task_history` key, alongside the D11 prefs — no xdg-data file was needed); Activity seeds the mirror from the ring at init so it renders persisted + live, with finish times converted back to past `Instant`s. T2: `history_survives_a_restart_round_trip` runs a NullCommandRunner-backed upgrade to `Finished`, drives the resulting `Completed` through `update`, and asserts a fresh `App` over the same config dir reseeds the label, counts and render. T1: ring bound/eviction, schema migration (future dropped, legacy stamped), serde forward-compat, tail cap, seed mapping + future-clock saturation — each killed under a behaviour-deleting mutation. Clear Completed clears the ring with the mirror (else entries resurrect); cancels persist via the latch hook (the registry never delivers `Finished` for those). |
 | 162 | Relative time formatting (`Just now`, `5m ago`, `DateFormat`) | rescoped | T1 | Rescoped in one branch: past 7 days Flutter fell through to `DateFormat('MMM d, yyyy')` (dart:75); the port renders `Nd ago` indefinitely, recorded… |
 | 163 | Distrobox version + per-row refresh | live | source | Live. Tier T2 because an integration test exercises the data path the refresh button calls; the button->message->toast wiring itself is source-veri… |
 | 164 | Total / running containers, installed yes-no | live | source | Live and unambiguously wired. Tier source: the row assembly has no test, and `running_count` — the value source for the middle row — has no test of… |
@@ -744,7 +783,7 @@ a call path, a citation, or the reason for an absence. Rows whose status in `ux.
 | 183 | 10x hand-rolled confirm dialogs w/ inconsistent copy (of 23 AlertDialog uses) | live | source | Copy divergence is structurally impossible now — one `fl!` string per action, one dialog shape. Two §3.3 details differ from the proposal: the warn… |
 | 184 | Distro icon mapping diverges across 9 files (3 variants: 8-outcome x6, 10-outcome x1, 6-outcome x2) | live | T1 | Matches the row's approach ("One `distro_icon()` (§3.6)") and fixes the behaviour bug the row tracked: the 6-outcome copies no longer fall through… |
 | 185 | Distro colour mapping duplicated x3; status colour x4 | live | T1 | Fixed by T18 (was `missing` in the T16 walk): `distro_colour` is written — the same 10-outcome superset as `distro_icon`, mapped onto accent/success/warning theme roles (decorative rotation, `destructive` excluded, unknown → neutral) — and both helpers now reach widgets: status roles tint the shared row, details status and terminal banner; distro roles tint the updates image lines and the wizard/Images tag. T1: `distro_colours_follow_theme_roles` pins the table against the live theme. No `Colors.*`-style literals anywhere in `app/`. |
-| 186 | Hard-coded Colors.green/orange/blue/red palette | live | T1 | Fixed by T18 (was `bug` in the T16 walk): `status_color` lost its `#[allow(dead_code)]` and reaches real widgets via `Text::class` — T18 re-checked the vendored source and found `.class(color)` compiles where `.color()` cannot (cosmic's `Copy` text class has `From<Color>` but not `From<StyleFn>`), retiring the "structurally unavailable" claim. T1: the pre-existing `status_colors_follow_theme_roles` plus the new distro table; rendered colours are T3-observed until T20's harness lands. |
+| 186 | Hard-coded Colors.green/orange/blue/red palette | live | T1 | Fixed by T18 (was `bug` in the T16 walk): `status_color` lost its `#[allow(dead_code)]` and reaches real widgets via `Text::class` — T18 re-checked the vendored source and found `.class(color)` compiles where `.color()` cannot (cosmic's `Copy` text class has `From<Color>` but not `From<StyleFn>`), retiring the "structurally unavailable" claim. T1: the pre-existing `status_colors_follow_theme_roles` plus the new distro table; rendered colours are T3-observed after T20's harness landed (it pins state + headless render, not pixels). |
 | 187 | Snackbar policy inconsistent (3 / 0 / 4 / silent) | live | source | Applied at the shell rather than per page, so a page cannot be silent by omission — the silent-return class is gone by construction. No test assert… |
 | 188 | 500 ms isTaskRunning polling (2 pages) | live | source | Both the polling and the string-sniffing are gone (`Row #160`: TaskState derived only from mirror fields, app/src/activity.rs:34-46). The 30 s tick… |
 | 189 | Keyboard shortcuts | live | T1 | Fixed by T19 (was `missing` in the T16 walk): `init` calls `core.set_keyboard_nav(true)` (focus traversal + Tab/Shift+Tab/Escape/F11/Ctrl+F via libcosmic's own subscription, verified at the pinned rev), `on_escape` closes dialog → card menu → activity drawer, `on_search` focuses the page's search field over stable ids, and a raw-key `listen_with` filter binds Ctrl+R (page-aware refresh, recovery-capable from gated states) + Ctrl+N (create wizard). T1: `ctrl_r_and_ctrl_n_fire_and_no_other_chord_does` pins both chords + five mis-fire negatives, `ctrl_f_targets_each_search_field_and_no_ops_elsewhere` pins the focus map. Live-shortcut behaviour is T3-observed (not performed headless — §4.4 class). |

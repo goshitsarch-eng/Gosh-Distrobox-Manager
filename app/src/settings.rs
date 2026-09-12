@@ -51,6 +51,10 @@ pub struct PrefsEntry {
     /// B3 (§6.4): mention the rows a list parser skipped.
     pub show_skipped_lines: bool,
     pub custom_terminals: Vec<gosh_distrobox_core::backends::Terminal>,
+    /// Bounded completed-task ring (row #161, T20): one more per-key file
+    /// (`task_history`), oldest-first. Read with migration + the same
+    /// degrade-don't-crash rule as every other key.
+    pub task_history: Vec<gosh_distrobox_core::HistoryEntry>,
 }
 
 /// Manual, and it MUST mirror `AppConfig::default()` — never a derived
@@ -75,6 +79,7 @@ impl From<&AppConfig> for PrefsEntry {
             default_export_dir: cfg.default_export_dir.clone(),
             show_skipped_lines: cfg.show_skipped_lines,
             custom_terminals: cfg.custom_terminals.clone(),
+            task_history: cfg.task_history.clone(),
         }
     }
 }
@@ -88,6 +93,7 @@ impl From<&PrefsEntry> for AppConfig {
             default_export_dir: entry.default_export_dir.clone(),
             show_skipped_lines: entry.show_skipped_lines,
             custom_terminals: entry.custom_terminals.clone(),
+            task_history: entry.task_history.clone(),
         }
     }
 }
@@ -149,6 +155,19 @@ pub fn load_entry() -> Option<(AppConfig, bool)> {
                 }
                 Vec::new()
             }),
+        // Row #161: the disk→memory choke point is also the migration point —
+        // future-schema entries are dropped here, once, so no reader downstream
+        // ever sees an entry this build cannot interpret.
+        task_history: gosh_distrobox_core::migrate_history(
+            config
+                .get::<Vec<gosh_distrobox_core::HistoryEntry>>("task_history")
+                .unwrap_or_else(|e| {
+                    if e.is_err() {
+                        tracing::warn!(target: "gosh_config", "config key task_history unreadable, using default: {e}");
+                    }
+                    Vec::new()
+                }),
+        ),
     };
     Some((cfg, needs_import))
 }
@@ -368,6 +387,13 @@ mod tests {
                 separator_arg: "--".to_string(),
                 read_only: true,
             }],
+            task_history: vec![gosh_distrobox_core::HistoryEntry {
+                schema: gosh_distrobox_core::HISTORY_SCHEMA,
+                label: "Upgrade demo".to_string(),
+                success: false,
+                finished_unix: 1_700_000_000,
+                tail: vec!["boom".to_string()],
+            }],
         };
         let entry = super::PrefsEntry::from(&cfg);
         // Spot-check through the entry too, so the assertion is not satisfied
@@ -375,6 +401,8 @@ mod tests {
         assert!(entry.show_skipped_lines);
         assert_eq!(entry.selected_terminal, "kitty");
         assert_eq!(entry.custom_terminals.len(), 1);
+        assert_eq!(entry.task_history.len(), 1);
+        assert_eq!(entry.task_history[0].label, "Upgrade demo");
         let back = gosh_distrobox_core::AppConfig::from(&entry);
         assert_eq!(cfg, back);
     }
@@ -409,6 +437,7 @@ mod tests {
         assert!(entry.default_export_dir.is_empty());
         assert!(!entry.show_skipped_lines);
         assert!(entry.custom_terminals.is_empty());
+        assert!(entry.task_history.is_empty());
         // And the core side of the same contract, so a change to
         // `AppConfig::default()` that forgets `PrefsEntry` is caught too.
         let core = gosh_distrobox_core::AppConfig::default();

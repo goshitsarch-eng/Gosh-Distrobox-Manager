@@ -17,20 +17,21 @@
 //! (#158 — the draggable 0.5–0.95 resize range is lost, accepted), severity
 //! in output (#159 — body vs caption lines, same rule as the wizard
 //! console), TaskState from the mirror — NEVER string-sniffing (#160),
-//! in-memory only (#161 — persistence is T12 config scope, not this page),
+//! persisted + live history (#161 — the config ring seeds the mirror at
+//! init, T20; before that the page was live-session-only),
 //! relative times (#162 — plain English rules, now Fluent messages
 //! `activity-time-*`; the ladder itself is unchanged).
 
-use crate::app::TaskView;
+use crate::app::{TaskKind, TaskView};
 use crate::fl;
 use crate::message::{ActivityMsg, Message, TaskMsg};
 use crate::views::empty_state;
 use cosmic::iced::Length;
 use cosmic::widget;
-use gosh_distrobox_core::TaskId;
+use gosh_distrobox_core::{HistoryEntry, TaskId};
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Task state — the real enum that kills string-sniffing (row #160, T11
 /// title deliverable). Derived ONLY from the T5 mirror fields
@@ -115,6 +116,33 @@ pub fn filter_tasks<'a>(
         .collect();
     out.sort_by_key(|(_, v)| Reverse(v.started_at));
     out
+}
+
+/// Seed completed mirror views from the persisted history ring (row #161,
+/// T20). Pure — and deliberately so: `init` calls it, and the mapping (label
+/// kept, outcome kept, tail kept, finish time converted back to an `Instant`
+/// by subtracting the elapsed span from now) is pinned below rather than
+/// trusted. Seeded views are `TaskKind::Other` — the ring does not persist
+/// the routing discriminant (see `history.rs`), and routing only matters for
+/// live tasks. A finish time in the future (clock moved back across the
+/// restart) saturates to now rather than panicking the subtraction.
+pub fn seed_views_from_history(history: &[HistoryEntry], now_unix: u64) -> Vec<TaskView> {
+    let now = Instant::now();
+    history
+        .iter()
+        .map(|e| TaskView {
+            label: e.label.clone(),
+            kind: TaskKind::Other,
+            output: e.tail.clone(),
+            completed: true,
+            success: e.success,
+            started_at: now
+                .checked_sub(Duration::from_secs(
+                    now_unix.saturating_sub(e.finished_unix),
+                ))
+                .unwrap_or(now),
+        })
+        .collect()
 }
 
 /// Stats bar counts (row #155) from `TaskState`.
@@ -347,8 +375,6 @@ fn stat_cell(label: String, count: usize) -> cosmic::Element<'static, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::TaskKind;
-    use std::time::Duration;
 
     fn view(label: &str, completed: bool, success: bool) -> TaskView {
         TaskView {
@@ -444,5 +470,74 @@ mod tests {
         tasks.insert(TaskId::new(), view("c", true, false));
         let (total, running, success, failed) = stats(&tasks);
         assert_eq!((total, running, success, failed), (3, 1, 1, 1));
+    }
+
+    #[test]
+    fn history_seeds_completed_views_with_elapsed_start() {
+        // Row #161: what survives the restart is the label, the outcome, the
+        // tail and the finish time — and the finish time must come back as a
+        // PAST `Instant`, or every seeded row reads "Just now" forever.
+        let now_unix = HistoryEntry::now_unix();
+        let history = vec![
+            HistoryEntry {
+                schema: gosh_distrobox_core::HISTORY_SCHEMA,
+                label: "Upgrade demo".into(),
+                success: true,
+                finished_unix: now_unix.saturating_sub(300),
+                tail: vec!["done".into()],
+            },
+            HistoryEntry {
+                schema: gosh_distrobox_core::HISTORY_SCHEMA,
+                label: "Install flop".into(),
+                success: false,
+                finished_unix: now_unix.saturating_sub(7200),
+                tail: vec![],
+            },
+        ];
+        let views = seed_views_from_history(&history, now_unix);
+        assert_eq!(views.len(), 2);
+        for (v, e) in views.iter().zip(&history) {
+            assert_eq!(v.label, e.label);
+            assert!(v.completed, "seeded views are finished tasks");
+            assert_eq!(
+                v.success, e.success,
+                "the outcome survives, never re-sniffed"
+            );
+            assert_eq!(v.output, e.tail);
+            assert_eq!(v.kind, TaskKind::Other);
+        }
+        let elapsed_5m = views[0].started_at.elapsed().as_secs();
+        assert!(
+            (295..=310).contains(&elapsed_5m),
+            "a task finished 5m ago must seed ~5m in the past, got {elapsed_5m}s"
+        );
+        let elapsed_2h = views[1].started_at.elapsed().as_secs();
+        assert!(
+            (7195..=7210).contains(&elapsed_2h),
+            "a task finished 2h ago must seed ~2h in the past, got {elapsed_2h}s"
+        );
+    }
+
+    #[test]
+    fn history_seed_saturates_a_future_finish_to_now() {
+        // Clock moved back across the restart: `finished_unix` is ahead of
+        // `now_unix`. The subtraction must saturate, not panic or wrap to a
+        // start time billions of seconds in the past.
+        let now_unix = 1_700_000_000;
+        let views = seed_views_from_history(
+            &[HistoryEntry {
+                schema: gosh_distrobox_core::HISTORY_SCHEMA,
+                label: "Clock skew".into(),
+                success: true,
+                finished_unix: now_unix + 3600,
+                tail: vec![],
+            }],
+            now_unix,
+        );
+        assert_eq!(views.len(), 1);
+        assert!(
+            views[0].started_at.elapsed().as_secs() < 5,
+            "a future finish seeds as just now"
+        );
     }
 }

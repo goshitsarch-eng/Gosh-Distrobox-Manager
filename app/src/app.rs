@@ -24,7 +24,8 @@ use cosmic::widget::{self, nav_bar};
 use gosh_distrobox_core::fakers::CommandRunner;
 use gosh_distrobox_core::models::{AppInfo, ContainerInfo, ContainerStats, ExportedBinary};
 use gosh_distrobox_core::{
-    Backend, ContainerList, CoreError, CoreFailure, MAX_TASK_OUTPUT_LINES, TaskEvent, TaskId,
+    Backend, ContainerList, CoreError, CoreFailure, HistoryEntry, MAX_TASK_OUTPUT_LINES, TaskEvent,
+    TaskId,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -180,6 +181,36 @@ impl TaskView {
             self.output.drain(0..drain_to);
         }
     }
+}
+
+/// Harness-observable state snapshot (T20, I31 render-harness seam).
+///
+/// Integration tests drive `App` headless (`Core::default()` + `init` +
+/// `update` + `view`) but `App`'s fields are private and the rendered
+/// `Element` is opaque by design — no `Debug`, no introspection API at the
+/// pinned rev (verified in the vendored `iced` sources) — so without this
+/// seam a harness test could assert nothing beyond "did not panic". The
+/// snapshot exposes counts, labels and small scalars only: enough to pin a
+/// seed row's state transition alongside the headless `view()` that renders
+/// it, without leaking the model. Same precedent as `DashboardCounts` (I23)
+/// and `task_affordance` (#20): factor the decision into something a test
+/// can reach, then test that.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HarnessSnapshot {
+    pub tasks_total: usize,
+    pub tasks_running: usize,
+    pub tasks_success: usize,
+    pub tasks_failed: usize,
+    /// Mirror labels, sorted — what the Activity timeline renders, in an
+    /// order-independent form (the mirror is keyed by random `TaskId`).
+    pub task_labels: Vec<String>,
+    /// Persisted completed-task ring length (`None` = config unavailable, in
+    /// which case history is live-session-only exactly as before T20).
+    pub history_len: Option<usize>,
+    pub activity_search: String,
+    pub activity_filter: crate::activity::ActivityFilter,
+    pub activity_expanded: Option<TaskId>,
+    pub has_error: bool,
 }
 
 impl App {
@@ -494,6 +525,18 @@ impl cosmic::Application for App {
             busy: std::collections::BTreeSet::new(),
         };
         app.sync_terminals();
+        // Row #161: seed the mirror with persisted completed tasks so Activity
+        // renders persisted + live. Fresh ids, unknown to the core registry —
+        // so the TTL sweep can never evict them (the ring's own bound owns
+        // that) and no subscription ever re-fires for them (no double
+        // persist). Seeded before the gate check: the entries are already
+        // finished, so they owe nothing to the environment.
+        if let Some(cfg) = app.config.as_ref() {
+            let now = HistoryEntry::now_unix();
+            for view in crate::activity::seed_views_from_history(&cfg.task_history, now) {
+                app.tasks.insert(TaskId::new(), view);
+            }
+        }
         // Row #189: focus traversal + the keyboard_nav bindings (Tab /
         // Shift+Tab / Escape / F11 / Ctrl+F). libcosmic subscribes the
         // listener itself when this is set (cosmic.rs at the pinned rev)
@@ -1395,6 +1438,11 @@ impl cosmic::Application for App {
                         view.completed = true;
                         view.success = success;
                     }
+                    // Row #161: a natural finish enters the persisted ring
+                    // (cancels enter via `latch_cancelled` — the registry
+                    // never delivers `Finished` for those, so the two hooks
+                    // are disjoint and no task persists twice).
+                    self.persist_history(id);
                     // O2 latch: the wizard progress step survives sweep.
                     if let Some(w) = self.wizard.as_mut()
                         && w.task_id == Some(id)
@@ -1433,6 +1481,16 @@ impl cosmic::Application for App {
                 }
                 TaskMsg::ClearCompleted => {
                     self.tasks.retain(|_, v| !v.completed);
+                    // Row #161: Clear Completed covers the persisted ring too,
+                    // or the button lies — cleared entries would resurrect on
+                    // the next restart. Best-effort and silent (same reasoning
+                    // as `persist_history`).
+                    if let Some(cfg) = self.config.as_mut()
+                        && !cfg.task_history.is_empty()
+                    {
+                        cfg.task_history.clear();
+                        self.save_config_silent();
+                    }
                     // A drawer open on a cleared task closes (same B2
                     // class as Expired/Cancelled above).
                     if let Some(id) = self.activity.expanded
@@ -2880,6 +2938,54 @@ impl App {
     /// Best-effort config write (T12 §5): mutate in memory, persist when
     /// a handle exists, toast when it doesn't. Never crashes. Returns an
     /// optional follow-up task (persistence-failure toast).
+    /// Read the harness snapshot (T20, I31 seam — see [`HarnessSnapshot`]).
+    /// Pure read; the harness calls it between driven `update`s.
+    pub fn harness_snapshot(&self) -> HarnessSnapshot {
+        let (total, running, success, failed) = crate::activity::stats(&self.tasks);
+        let mut task_labels: Vec<String> = self.tasks.values().map(|v| v.label.clone()).collect();
+        task_labels.sort();
+        HarnessSnapshot {
+            tasks_total: total,
+            tasks_running: running,
+            tasks_success: success,
+            tasks_failed: failed,
+            task_labels,
+            history_len: self.config.as_ref().map(|c| c.task_history.len()),
+            activity_search: self.activity.search.clone(),
+            activity_filter: self.activity.filter,
+            activity_expanded: self.activity.expanded,
+            has_error: self.error.is_some(),
+        }
+    }
+
+    /// Append a finished task to the persisted history ring (row #161).
+    /// Silent best-effort — deliberately NOT `write_config`: that toasts on
+    /// failure, and a completion-time toast about config would read as a task
+    /// failure. A broken config degrades to a live-session-only log (the
+    /// pre-T20 behaviour) with a journal line saying why.
+    fn persist_history(&mut self, id: TaskId) {
+        let Some(view) = self.tasks.get(&id) else {
+            return;
+        };
+        let entry = HistoryEntry::new(view.label.clone(), view.success, &view.output);
+        let Some(cfg) = self.config.as_mut() else {
+            tracing::debug!(target: "gosh_config", "task history kept in memory only (no config)");
+            return;
+        };
+        gosh_distrobox_core::push_history(&mut cfg.task_history, entry);
+        self.save_config_silent();
+    }
+
+    /// Best-effort config save without a toast (row #161 history path — see
+    /// [`App::persist_history`] for why the toast path is wrong here).
+    fn save_config_silent(&self) {
+        if let Some(cfg) = self.config.as_ref()
+            && let Err(e) = crate::settings::save_entry(&crate::settings::PrefsEntry::from(cfg))
+        {
+            tracing::warn!(target: "gosh_config", "task history not persisted: {e}");
+        }
+    }
+
     fn write_config(
         &mut self,
         f: impl FnOnce(&mut gosh_distrobox_core::AppConfig),
@@ -3775,6 +3881,12 @@ impl App {
         if let Some(view) = self.tasks.get_mut(&id) {
             view.completed = true;
         }
+        // Row #161: a cancel is a finish too, and the registry never
+        // delivers `Finished` for one (cancel takes the channel sender, so
+        // `finish()` has nothing to emit through) — without this hook
+        // cancelled tasks would be the only completed tasks that never
+        // persist. Disjoint from the `Completed` hook: no task reaches both.
+        self.persist_history(id);
         if let Some(w) = self.wizard.as_mut()
             && w.task_id == Some(id)
         {
@@ -3968,4 +4080,121 @@ fn task_output_subscription(id: TaskId) -> Subscription<Message> {
             }
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{App, Backend, TaskKind, TaskView};
+    use cosmic::app::Application as _;
+    use gosh_distrobox_core::backends::Distrobox;
+    use gosh_distrobox_core::{AppConfig, EnvGuard, EnvMode};
+    use std::sync::Arc;
+
+    /// Serialises the two env-touching tests below (same pattern as the
+    /// render harness: env is process-global, and the redirect plus all
+    /// config IO must be atomic against each other). No other unit test in
+    /// this binary touches env or config IO — verified by grep.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Row #161, cancel leg: a registry-backed cancel persists like a natural
+    /// finish. The `Completed` hook cannot cover cancels (the registry never
+    /// delivers `Finished` for one — cancel takes the channel sender), so
+    /// `latch_cancelled` is the second persist choke point, and this pins it.
+    ///
+    /// In-crate (not in the harness) on purpose: reaching the latch needs a
+    /// task in the app's OWN backend registry, and only in-crate code can swap
+    /// the backend `init` built. The spawn is NullCommandRunner-backed (no
+    /// real commands); the config dir is isolated exactly like the harness
+    /// (no other unit test touches env or config IO — verified by grep — so
+    /// no lock is needed within this binary, and every other test binary is
+    /// a separate process).
+    #[tokio::test]
+    async fn latch_cancelled_persists_a_registry_backed_cancel() {
+        let _env_guard = ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("gdm-t20-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("cancel test config dir is writable");
+        // SAFETY: this is the only unit test in the binary that touches env
+        // or config IO, so no other thread can observe the swap mid-flight.
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &dir);
+            std::env::remove_var("HOST_XDG_CONFIG_HOME");
+        }
+
+        let (mut app, _init_task) = App::init(cosmic::app::Core::default(), ());
+        let backend = Backend::new(
+            Distrobox::null_command_runner(&[]),
+            EnvGuard {
+                mode: EnvMode::Native,
+                message: None,
+                distrobox_installed: true,
+            },
+        );
+        // Spawn but do NOT drain: the cancel must land on a running task.
+        let id = backend
+            .upgrade_container("mybox")
+            .await
+            .expect("null-backed spawn succeeds");
+        app.backend = Arc::new(backend);
+        app.config = Some(AppConfig::default());
+        app.tasks.insert(
+            id,
+            TaskView {
+                label: "Upgrade mybox".to_string(),
+                kind: TaskKind::Upgrade,
+                output: vec!["Reading package lists".to_string()],
+                completed: false,
+                success: false,
+                started_at: std::time::Instant::now(),
+            },
+        );
+
+        let _cancelled = app.update(crate::message::Message::Tasks(
+            crate::message::TaskMsg::CancelRequested(id),
+        ));
+
+        let view = app.tasks.get(&id).expect("mirror keeps the cancelled task");
+        assert!(view.completed);
+        assert!(!view.success, "a cancel is never a success");
+        let ring = &app.config.as_ref().expect("config set").task_history;
+        assert_eq!(ring.len(), 1, "the cancel entered the persisted ring");
+        assert_eq!(ring[0].label, "Upgrade mybox");
+        assert!(!ring[0].success);
+        let (disk, _) = crate::settings::load_entry().expect("isolated config re-reads");
+        assert_eq!(
+            disk.task_history.len(),
+            1,
+            "the cancel reached the disk key"
+        );
+    }
+
+    /// Negative control: cancelling an UNKNOWN id persists nothing and marks
+    /// nothing. The registry says no, the latch never runs, the ring stays
+    /// empty — a cancel must not fabricate history for a task that never ran.
+    #[tokio::test]
+    async fn cancel_of_an_unknown_task_persists_nothing() {
+        let _env_guard = ENV_LOCK.lock().await;
+        let dir =
+            std::env::temp_dir().join(format!("gdm-t20-cancel-unknown-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("cancel test config dir is writable");
+        // SAFETY: same as above — the only env/config-IO tests in this binary.
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &dir);
+            std::env::remove_var("HOST_XDG_CONFIG_HOME");
+        }
+
+        let (mut app, _init_task) = App::init(cosmic::app::Core::default(), ());
+        app.config = Some(AppConfig::default());
+        let before = app.harness_snapshot();
+        let _none = app.update(crate::message::Message::Tasks(
+            crate::message::TaskMsg::CancelRequested(gosh_distrobox_core::TaskId::new()),
+        ));
+        let after = app.harness_snapshot();
+        assert_eq!(
+            before, after,
+            "an unknown cancel changes no observable state"
+        );
+        assert_eq!(after.history_len, Some(0));
+    }
 }

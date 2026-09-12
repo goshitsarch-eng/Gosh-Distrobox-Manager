@@ -3,6 +3,7 @@ pub mod config;
 pub mod env;
 pub mod error;
 pub mod fakers;
+pub mod history;
 pub mod models;
 pub mod service;
 pub mod tasks;
@@ -21,6 +22,7 @@ pub use config::{
 };
 pub use env::{BLOCKED_MESSAGE, EnvGuard, EnvMode};
 pub use error::{CoreError, CoreFailure};
+pub use history::{HISTORY_BOUND, HISTORY_SCHEMA, HistoryEntry, migrate_history, push_history};
 pub use service::Backend;
 pub use tasks::{
     COMPLETED_TASK_TTL, MAX_TASK_OUTPUT_LINES, SpawnTask, TaskEvent, TaskId, TaskRegistry,
