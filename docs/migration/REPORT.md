@@ -468,8 +468,49 @@ being kept. Filed as **I28**.
 
 Carried forward from earlier tasks, unchanged by this one: **I19** (RPM never executed),
 **I20** (CI publishes no artifact), **I21** (dead screenshots), **I22** (dead distro SVGs),
-**I24** (seven callerless core helpers), **I25** (stale `architecture.md` source-line refs),
-**I26** (10 nav destinations vs 8).
+**I24** (seven callerless core helpers), **I26** (10 nav destinations vs 8).
+
+---
+
+### 11.1 I25 — the `architecture.md` source-line sweep (closed by T16)
+
+`DECISIONS.md` counted 161 source-line references in `architecture.md` and assigned all of
+them to T14, which rewrote only the prose and touched zero `.rs:NNN` refs. T16 swept the
+remainder to **section names and symbols**, matching the convention `DECISIONS.md` had
+already adopted for the five Rust-side sites that cited the doc by line number.
+
+**What that means concretely.** A citation like `distrobox.rs:1524` is now
+`distrobox.rs::get_container_stats`. The reason is not style: a line number is a
+measurement, and each of these was a measurement of a tree that the *fix being described*
+then changed. The sweep rewrote **36 lines** carrying 54 in-repo `file:line` references,
+across §0.2, §0.3, §0.4, §2.3, §4.1, §4.3, §5.3, §6.1, §6.2, §6.4 and §8, replacing them
+with `file::symbol` and `§N.N` references that cannot go stale. (Several of the 36 were bare `(:612)`
+continuations inheriting a filename from a sentence above — the class that made this sweep
+hardest to do mechanically, since the nearest preceding filename is often not the right
+one.) One further class could not have resolved under any renumbering at all: the
+references into `rust/src/api.rs`, a file T14 deleted outright.
+
+**Two classes were deliberately left numbered**, and this is the part worth checking.
+§0.1's external pins (libcosmic, `async-process`, `cosmic-config`, `iced/futures`) stay as
+written — their numbering cannot be checked from this tree, and pinning an exact revision
+is the point. And the `api.rs`/`app_state.rs`/`frb_generated` references stay as written,
+because they are historical by design: §1.3 is the strip plan and §1.3.1 exists to record
+where execution diverged from it. Rewriting the plan to match its own outcome destroys the
+evidence that it was a plan, so §1.3 now says so explicitly rather than being renumbered.
+
+**One correction was rejected.** A sweep proposal would have changed §1.4's "the 2139-line
+file" to 3,384. That paragraph declares its basis as the `e5436a0` tree, and
+`2139 + 599 = 2738` — the arithmetic its own next paragraph performs — closes only with
+2139. The number is right *for the tree it names*.
+
+**Two defects in the sweep itself, found and fixed before commit.** After the rewrite, a
+symbol-reference check over the result found §4.1 citing `read_lines`, which is not a
+symbol in this tree; the function is `read_lines_to_registry`. And §6.2 still described
+the podman→docker fallback as running "seven times", three paragraphs above row B7 and
+§0.3 item 7, which had both corrected that count to six — the sweep of a stale *number*
+had exposed an unrelated stale *prose count* sitting next to it. The same check confirmed
+that all five surviving `known_distros.rs` line references still resolve to the lines they
+claim, and that all 26 `§` references resolve to real headings.
 
 ---
 

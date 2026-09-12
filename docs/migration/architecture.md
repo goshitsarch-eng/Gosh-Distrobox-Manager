@@ -63,8 +63,8 @@ instance creation — with `:2043` `runtime.run(stream)` driving the task. So
 The trap is therefore not `update()` but the contexts where **no** runtime is entered:
 a bare `std::thread`, or the body of a `smol`-driven unit test (`smol` is this crate's
 dev-dependency; `tokio::spawn` under `smol::block_on` has no ambient runtime — the
-existing suite already drives async `Distrobox` methods that way,
-`distrobox.rs:1905`). Today `api.rs` calls `tokio::spawn` freely because FRB invoked
+existing suite already drives async `Distrobox` methods that way, under
+`smol::block_on`). Today `api.rs` calls `tokio::spawn` freely because FRB invoked
 these functions on its own tokio runtime; that ambient runtime exists in neither of
 those two contexts.
 
@@ -79,79 +79,123 @@ so the only ergonomic way to call it is from a task.
 
 ### 0.3 Backend bugs confirmed by reading source
 
-All of these were read in this repo, not inferred. §6.4 gives the fixes.
+All of these were read in this repo, not inferred. Each is fixed by the §6.4 row named
+with it.
 
-1. **`emerge` dead-ends.** `detect_package_manager` emits `"emerge"` (and `"xbps"`,
-   `"yum"`) — `rust/src/backends/distrobox/distrobox.rs:1215-1232`. But
-   `list_installed_packages` (`:1237`) and `search_packages` (`:1276`) match arms cover
-   `dnf|yum`, `xbps` and **not** `emerge` → the `_ =>` arm returns
+**Why these carry no line numbers.** They were measured against the pre-T1 `rust/` tree
+(recoverable as `git show 634f9d3:rust/src/…`), and every one of them has since moved at
+least twice: T1's `git mv rust core`, the §6.4 fix that edited the very function being
+cited, and T13's tolerant-parsing pass. A Phase-1 finding that cites a line number is
+stale the moment its fix lands — which is a property of the finding, not of the tree — so
+each item here points at its fix row instead. That is the same convention `DECISIONS.md`
+adopted for the five Rust-side sites that cited *this* document by line number. Where a
+number is still given below it is a number in the **current** tree, checked when this
+paragraph was written (T16).
+
+1. **`emerge` dead-ends** (§6.4, row B1). `detect_package_manager` emitted `"emerge"`
+   (and `"xbps"`, `"yum"`) but `list_installed_packages` and `search_packages` matched
+   `dnf|yum` and `xbps` and **not** `emerge`, so the catch-all arm returned
    `Error::CommandFailed { stderr: "Unsupported package manager: emerge" }`. Worse:
-   `install_package` (`:1316`) and `remove_package` (`:1348`) each embed their **own,
-   different** detection script that omits the `emerge` branch entirely, so a Gentoo
-   container reports `unknown` and `exit 1`s. Independently,
-   `models/known_distros.rs:19` maps `gentoo` → `PackageManager::Unknown` and the
-   `PackageManager` enum (`:45`) has no `Emerge`/`Xbps` variant, so the
-   `install_cmd_for_file` / `package_file_ext` paths (`:55-73`) cannot serve Gentoo or
-   Void either.
-2. **Chunk-based "lines".** `stream_reader_to_task_output` (`rust/src/api.rs:78-93`)
-   reads into a `[u8; 1024]` and pushes **each read** as one "line". One log line can
-   arrive as three entries; three lines can arrive as one. apt/dnf/pacman progress
-   bars (`\r`-driven) render as garbage.
-3. **One bad line kills the list.** `Distrobox::list` (`distrobox.rs:1103-1128`):
-   `Err(e) => { error!(…); return Err(e); }` — a single unparseable `distrobox ls`
-   row makes the *entire* container list fail. The same shape appears in
-   `list_snapshots` (`:1430`) and `list_installed_packages` (`:1237`), though those
-   silently skip instead of failing, which is the opposite inconsistency.
-4. **Naive `%`-strip.** `launch_app` (`distrobox.rs:908-921`) strips exactly
-   `" %f" " %u" " %F" " %U"` using `str::replace` — which also mangles those byte
-   sequences appearing anywhere inside arguments, not just as trailing field codes.
-   The Desktop Entry spec field codes are `%f %F %u %U %i %c %k %v %m %d %D %n %N`,
-   plus `%%` (a literal `%`). `%i` expands to **two** arguments (`--icon <name>`) and
-   `%c` is the translated name. Separately, `cmd.arg(cleaned_exec)` passes the entire
-   exec string as **one argv element**, relying on distrobox re-splitting it — a
-   correctness and injection hazard.
-5. **No start-container op.** `Distrobox` exposes `stop` (`:1136`), `stop_all`
-   (`:1141`), `remove` (`:1130`), `enter_cmd` (`:1086`) — but nothing that starts a
-   stopped/Created container. The Dart UI's `stopContainer`/`stopAllContainers` have
-   no inverse.
-6. **Cancel leaks the child process.** `cancel_task` (`api.rs:429`) calls
+   `install_package` and `remove_package` each embedded their **own, different** detection
+   script that omitted the `emerge` branch entirely, so a Gentoo container reported
+   `unknown` and `exit 1`ed. Independently, `models/known_distros.rs` mapped
+   `gentoo` → `PackageManager::Unknown`, and the `PackageManager` enum had neither an
+   `Emerge` nor an `Xbps` variant, so the `install_cmd_for_file` / `package_file_ext`
+   paths could not serve Gentoo or Void either.
+   **Fixed (T8):** the three divergent scripts collapsed into one
+   `distrobox.rs::detect_script`, the enum gained `Xbps` and `Emerge`
+   (`known_distros.rs:56`, `:57`), `gentoo` now maps to `PackageManager::Emerge`
+   (`known_distros.rs:19`), and the package-manager listing and search paths cover it.
+   **Residual, and wider than this item claimed:** installing a *local file* still cannot
+   serve them — `PackageManager::install_cmd` returns `None` for `Emerge | Unknown`
+   (`known_distros.rs:130`) and `installable_file` returns `None` for
+   `Xbps | Emerge | Unknown` (`:142`), deliberately, since emerge and xbps have no direct
+   local-file verb. That is a capability the Flutter original also lacked, not a
+   regression, but it means "B1 is fixed" is true of *listing* and *searching* only.
+2. **Chunk-based "lines"** (§6.4, row B2). `stream_reader_to_task_output` read into a
+   `[u8; 1024]` and pushed **each read** as one "line". One log line could arrive as three
+   entries; three lines could arrive as one. apt/dnf/pacman progress bars (`\r`-driven)
+   rendered as garbage.
+   **Fixed (T5/B2):** the reader accumulates into a `Vec<u8>` and emits complete records
+   split on `\n` **and** `\r`, holding the incomplete tail across reads and flushing on EOF.
+3. **One bad line kills the list** (§6.4, row B3). `Distrobox::list` returned `Err` after
+   `error!(…)` on a single unparseable `distrobox ls` row, discarding every good row with
+   it — the entire container list failed. The same shape appeared in `list_snapshots` and
+   `list_installed_packages`, though those silently skipped instead of failing, which is
+   the opposite inconsistency.
+   **Fixed (T13/B3):** parse failures became `warn!` + collect, and `list` returns
+   `ContainerList { containers, skipped }`. `TolerantList<T>` carries the other four.
+   **As built, the container type is a `Vec`, not the `BTreeMap` this row originally
+   specified** — see row B3 and `distrobox.rs::ContainerList` for why.
+4. **Naive `%`-strip** (§6.4, row B4). `launch_app` stripped exactly
+   `" %f" " %u" " %F" " %U"` using `str::replace` — which also mangled those byte
+   sequences appearing anywhere inside arguments, not just as trailing field codes. The
+   Desktop Entry spec's field codes are `%f %F %u %U %i %c %k %v %m %d %D %n %N`, plus
+   `%%` for a literal `%`; `%i` expands to **two** arguments (`--icon <name>`) and `%c` is
+   the translated name. Separately, `cmd.arg(cleaned_exec)` passed the entire exec string
+   as **one argv element**, relying on distrobox to re-split it — a correctness and
+   injection hazard.
+   **Fixed (T13/B4):** `desktop_file::split_exec` honours the spec's quoting and escaping
+   rules, and `launch_app` feeds the resulting argv to `cmd.args()`. **As built, the
+   failure mechanism was the argv slot count rather than a re-split** — `distrobox-enter`
+   ends in `exec "$@"` with no `eval`, so the single-string form asked for a program whose
+   name was the whole fused string. Row B4 records the measurement.
+5. **No start-container op** (§6.4, row B5). `Distrobox` exposed `stop`, `stop_all`,
+   `remove` and `enter_cmd` — but nothing that starts a stopped or `Created` container.
+   The Dart UI's `stopContainer` / `stopAllContainers` had no inverse.
+   **Fixed (T9/B5):** `Distrobox::start` (`podman start <name>`, Docker fallback) plus
+   `start_and_enter`, with the `Status::Created|Exited → Up` transition observed by a
+   `list()` refresh rather than assumed. This is what makes the start banners on the
+   terminal and Updates pages (rows #68/#130) real CTAs instead of copy.
+6. **Cancel leaks the child process** (§6.4, row B8). `cancel_task` calls
    `task.handle.abort()`. Dropping the task drops the `Box<dyn Child>`. The
-   `async-process` docs are explicit (`async-process-2.5.0/src/lib.rs:223`):
+   `async-process` docs are explicit (`async-process-2.5.0/src/lib.rs:223` — an
+   external pin, §0.1):
    *"If the `Child` is dropped, the process keeps running in the background"* —
    `kill_on_drop` is opt-in (`:1064`) and this crate never sets it. So "Cancel" on a
    `distrobox create` abandons a still-running process and reports it as cancelled.
-7. **`podman`/`docker` fallback duplicated six times.** `start` (`:1161`),
-   `get_container_id` (`:1485`), `create_snapshot` (`:1534`), `list_snapshots`
-   (`:1557`), `delete_snapshot` (`:1602`), `get_container_stats` (`:1668`) each inline
+   **Fixed (T5/B8):** §3.3's `oneshot` + `select!` + `Child::kill()` replaced
+   `JoinHandle::abort`, so the child is signalled before its handle is dropped.
+7. **`podman`/`docker` fallback duplicated six times** (§6.4, row B7).
+   `start`, `get_container_id`, `create_snapshot`, `list_snapshots`,
+   `delete_snapshot` and `get_container_stats` each inline
    their own "try podman, on error try docker" block with the same format strings. All
    of them *do* route through `self.cmd_output_string` → `self.cmd_runner` (so the
    Flatpak / host-exec mapping is applied — good), but the runtime selection logic is
    copy-pasted and inconsistent.
    *Correction (T13/D27):* this item first read "seven times" and listed
-   `export_container` (`:1500`) and `import_container` (`:1510`) among them. Counted,
+   `export_container` and `import_container` among them. Counted,
    neither ever had a docker branch — both are podman-literal, because both are
    **streaming** (`cmd_spawn` → a `Child`) and the fallback shape is an output one. So
    six was the true count, `start` was missing from the list, and the two streaming
    sites were never in scope. The B7 row inherits this correction.
-8. **Env-guard detection is duplicated and weaker in Rust.** The Dart guard
-   (`lib/utils/environment_guard_io.dart`) checks the three hardcoded absolute paths
-   **and** scans `$PATH`; the Rust `has_distrobox_host_exec`
-   (`rust/src/backends/host_exec.rs:20`) checks only the three absolute paths. The
-   precedence chain itself is written twice — `AppState::new`
-   (`rust/src/app_state.rs:15-28`) and `is_distrobox_installed` (`rust/src/api.rs:141-161`).
+   **Fixed (T13/B7):** all six route through `Distrobox::runtime_output` plus
+   `container_runtime::retarget` — one `Command::program` swap, argv byte-identical.
+8. **Env-guard detection is duplicated and weaker in Rust** (§6.4, row B6). The Dart
+   guard (`lib/utils/environment_guard_io.dart`, deleted with the Flutter tree in T14)
+   checks the three hardcoded absolute paths **and** scans `$PATH`; the Rust guard
+   (`core/src/backends/host_exec.rs::has_distrobox_host_exec`) checks only the three
+   absolute paths. The precedence chain itself was written twice — in `AppState::new`
+   and in `is_distrobox_installed` (both pre-T1 `rust/src/` files, since deleted).
+   **Fixed (T13/B6):** the guard gained the `$PATH` scan and the chain collapsed to a
+   single `env::detect` (§2.4), called once, with the `Blocked` wording preserved.
 
 ### 0.4 What is *not* a bug, despite looking like one
 
 - The T1 modules genuinely have zero `flutter_rust_bridge` imports. Verified:
   `grep -rn flutter_rust_bridge rust/src/{backends,fakers,models}` → no hits. FRB
-  coupling is exactly: `api.rs` (`#[frb]`, `StreamSink`, `pub use` re-export list),
-  `lib.rs:1` (`mod frb_generated;`), `frb_generated.rs`, the `flutter_rust_bridge`
-  dep, `[lib] crate-type = ["staticlib","cdylib"]`, and `flutter_rust_bridge.yaml`.
+  coupling was exactly: `api.rs` (`#[frb]`, `StreamSink`, `pub use` re-export list),
+  `rust/src/lib.rs` line 1 (`mod frb_generated;`), `frb_generated.rs`, the
+  `flutter_rust_bridge` dep, `[lib] crate-type = ["staticlib","cdylib"]`, and
+  `flutter_rust_bridge.yaml`. All of it is gone as of T14; `core/src/lib.rs` is now an
+  eight-line `pub mod` list with no FRB item in it.
 - `anyhow` is only used at the `api.rs` boundary for `map_err(|e| anyhow::anyhow!(e))`.
   Inside the backend, errors are already the typed `distrobox::Error` (thiserror).
-- The legacy gschema (`rust/data/io.github.gosh_distrobox_manager.gschema.xml`) is
-  read by **nobody** (no `gio`/`Settings` usage in Rust or Dart). Its keys are
-  dead but their *intent* is the config spec — see §5.3.
+- The legacy gschema (`rust/data/io.github.gosh_distrobox_manager.gschema.xml`) was
+  read by **nobody** (no `gio`/`Settings` usage in Rust or Dart). Its keys were
+  dead but their *intent* is the config spec — see §5.3. The file is **deleted**, not
+  moved: T1 (`f2ffa5c`) removed it with the rest of `rust/data/`, and §5.4's key table
+  is what carries the intent forward.
 - `models/known_distros.rs`, `flatpak.rs`, `host_exec.rs`, `desktop_file.rs`,
   `output_tracker.rs`, `fakers/*` are clean and testable as-is. Several already carry
   `#[cfg(test)]` unit tests (e.g. `flatpak.rs`, `host_exec.rs`) that must keep passing.
@@ -216,6 +260,12 @@ cargo clippy --workspace --all-targets -- -D warnings` is green. Nothing in this
 plan is a "delete the FFI and see what breaks" step — each deletion is preceded by a
 pure-move commit that relocates whatever the deletion would otherwise strand.
 
+**Scope of the line numbers below.** Every `api.rs` line number in these steps is a
+measurement of the **pre-strip** tree, when the file still existed; `api.rs` was
+deleted at S8, so no number here can resolve today and none is meant to. They are left
+as written on purpose — §1.3.1 records where execution diverged, and rewriting a plan
+to match its outcome destroys the evidence that it was a plan.
+
 **S1 — Workspace scaffold (no renames).**
 - Add root `Cargo.toml`: `[workspace] members = ["rust"] resolver = "3"` (edition
   2024 → resolver 3; a *virtual* manifest must state it explicitly).
@@ -277,7 +327,8 @@ pure-move commit that relocates whatever the deletion would otherwise strand.
 
 **S7 — Delete FRB entirely.**
 - `git rm core/src/api.rs core/src/frb_generated.rs flutter_rust_bridge.yaml`
-- `core/src/lib.rs`: drop `mod frb_generated;` (`:1`) and `pub mod api;` (`:2`).
+- `core/src/lib.rs`: drop `mod frb_generated;` and `pub mod api;` (they were lines 1
+  and 2 of the pre-T1 file; the file is now a plain eight-module list).
 - `core/Cargo.toml`: remove `flutter_rust_bridge`.
 - `git rm -r lib/src/rust` (generated Dart).
 - Green: nothing references the removed symbols any more (S3 moved the types, S4 the
@@ -515,7 +566,9 @@ pub enum TerminalMsg {
 }
 ```
 
-**Return conventions.** Verified against `src/app/mod.rs:20` and `src/action.rs:77`:
+**Return conventions.** Verified against **libcosmic's** `src/app/mod.rs:20` and
+`src/action.rs:77` (the pinned rev of §0.1 — these are the framework's paths, not this
+repo's, and `app/src/action.rs` does not exist):
 
 ```rust
 // app/src/app.rs
@@ -572,8 +625,8 @@ pub struct EnvGuard {
     pub distrobox_installed: bool,
 }
 
-/// Single implementation of the precedence chain that is currently written twice
-/// (`app_state.rs:15-28` and `api.rs:141-161`).
+/// Single implementation of the precedence chain that was written twice in the
+/// pre-T1 tree (`AppState::new` and `is_distrobox_installed`, both since deleted).
 pub fn detect(runner: &CommandRunner) -> (CommandRunner, EnvGuard);
 ```
 
@@ -802,16 +855,16 @@ Notes on why this shape:
 
 ### 4.1 The eight copy-pasted bodies, collapsed
 
-`create_container` (`api.rs:168-208`), `upgrade_container` (`:262-301`),
-`clone_container` (`:304-343`), `install_package` (`:469-508`),
-`remove_package` (`:511-550`), `restore_from_snapshot` (`:572-611`),
-`export_container_to_file` (`:618-657`), `import_container_from_file` (`:660-699`)
-are the same ~40 lines with four substitutions: the label, the `"Error starting …"`
-prefix, the success string, and the failure string. Two other differences matter:
-four of them `await` a `Result<Box<dyn Child + Send>, Error>`
-(`create`/`clone_from`/`restore_from_snapshot`), and four are **synchronous**
-(`upgrade` `:1147`, `install_package` `:1316`, `remove_package` `:1348`,
-`export_container` `:1500`, `import_container` `:1510`).
+The eight pre-T1 `rust/src/api.rs` bodies — `create_container`, `upgrade_container`,
+`clone_container`, `install_package`, `remove_package`, `restore_from_snapshot`,
+`export_container_to_file`, `import_container_from_file` — are the same ~40 lines with
+four substitutions: the label, the `"Error starting …"` prefix, the success string,
+and the failure string. (They are named rather than line-numbered because `api.rs`
+itself was deleted in T14; what survives is `core/src/service.rs::spawn_task`.) Two
+other differences matter: four of them `await` a `Result<Box<dyn Child + Send>, Error>`
+(`create`/`clone_from`/`restore_from_snapshot`), and four are **synchronous** —
+`Distrobox::upgrade`, `install_package`, `remove_package`, `export_container` and
+`import_container` in `core/src/backends/distrobox/distrobox.rs`.
 
 ```rust
 // core/src/service.rs
@@ -888,7 +941,7 @@ pub async fn upgrade_container(&self, name: &str) -> Result<TaskId, CoreError> {
 `run_child_task` keeps its current contract (both streams drained concurrently,
 success/failure line appended — `api.rs:95-130`) with three changes: the cancel
 `select!` (§3.3), the line-buffered reader (`stream_reader_to_task_output` →
-`read_lines`, §6.4-B2), and it now emits `TaskEvent::Output`/`Finished` over the
+`read_lines_to_registry`, §6.4-B2), and it now emits `TaskEvent::Output`/`Finished` over the
 channel instead of reaching into the registry per line (today `push_task_output`
 takes the registry write lock **once per 1024-byte chunk**, `api.rs:46-54`).
 
@@ -911,8 +964,8 @@ vs `stop_container(name: String)`); and it stops the `task_id.clone()` shuttle
 ### 4.3 `CoreError` — thiserror at the UI boundary
 
 `thiserror` is already a dependency (`rust/Cargo.toml`), and the backend already
-uses typed errors — `distrobox::Error` (`distrobox.rs:339`) and
-`distrobox::Error::CommandFailed { exit_code, command, stderr }` (`:671-683`). Only
+uses typed errors — `distrobox::Error` (`core/src/backends/distrobox/distrobox.rs`)
+and its `CommandFailed { exit_code, command, stderr }` variant. Only
 `api.rs` flattens them into `anyhow` (35 × `map_err(|e| anyhow::anyhow!(e))`),
 which is precisely the information the UI needs and cannot get.
 
@@ -1045,11 +1098,11 @@ by name:
 
 | Key | Type | Source | Notes |
 |---|---|---|---|
-| `selected_terminal` | `String` | gschema `selected-terminal` (default `'gnome-terminal'`) | **Value semantics change**: today it is a bare program name; with `supported_terminals.rs` revived (§6.4-T2b) the right identity is `Terminal::full_command_id()` (program + `extra_args`), which is the crate's own dedup key (`supported_terminals.rs:27-34`). A legacy value of `"gnome-terminal"` still matches the built-in entry by `program` via `terminal_by_program` (`:230`) — the migration reads the legacy value, matches on program, and rewrites as a `full_command_id`. **Open question Q7** |
+| `selected_terminal` | `String` | gschema `selected-terminal` (default `'gnome-terminal'`) | **Value semantics change**: today it is a bare program name; with `supported_terminals.rs` revived (§6.4-T2b) the right identity is `Terminal::full_command_id()` (program + `extra_args`), which is the crate's own dedup key (`supported_terminals.rs::full_command_id`). A legacy value of `"gnome-terminal"` still matches the built-in entry by `program` via `supported_terminals.rs::terminal_by_program` — the migration reads the legacy value, matches on program, and rewrites as a `full_command_id`. **Open question Q7** |
 | `window_width` | `i32` | gschema `window-width` (default 900) | written from `on_window_resize` (`src/app/mod.rs:455`), debounced (a resize emits many events; write on a 500 ms trailing edge, not per event) |
 | `window_height` | `i32` | gschema `window-height` (default 700) | same |
 | `distrobox_source` | `String` | gschema `distrobox-executable` (default `'host'`) | values `"host"` \| `"bundled"`. Today unread; wired to env detection — `"host"` means resolve `distrobox` on the *host* (i.e. keep the `flatpak-spawn --host` / `distrobox-host-exec` mapping), `"bundled"` means use whatever is on the sandbox's own `PATH`. **Open question Q8** — "bundled" implies shipping a distrobox in the Flatpak, which nothing does today |
-| `custom_terminals` | `Vec<Terminal>` | new | persists `TerminalRepository::save_terminal` / `delete_terminal` (`supported_terminals.rs:194,210`), which currently have **no backing store at all** despite returning `anyhow::Result`. `Terminal` already derives `Serialize`/`Deserialize` (`:11-12`), so this is a storage decision only |
+| `custom_terminals` | `Vec<Terminal>` | new | persists `TerminalRepository::save_terminal` / `delete_terminal`, which had **no backing store at all** despite returning `anyhow::Result`. `Terminal` already derived `Serialize`/`Deserialize`, so this was a storage decision only. **As built (T12):** the store sits one level up in `AppConfig::custom_terminals` (§6.2) |
 | `refresh_interval_secs` | `u32` | new (default `5`) | drives the containers/stats poll + the 30 s sweep tick |
 | `confirm_destructive_actions` | `bool` | new (default `true`) | gates the confirm dialog for remove/stop-all/rmi |
 | `snapshot_prefix` | `String` | new (default `"gdm"`) | default prefix for `create_snapshot` names, feeds `list_snapshots(filter_prefix)` |
@@ -1127,9 +1180,10 @@ Counts, with every line count taken from the tree at `e5436a0` (23 `.rs` files u
 
 **The one hard rule survives:** never `std::process::Command`; always `CommandRunner`
 — because the env dispatch (Flatpak/host-exec) is implemented as a `map_cmd`
-transform on the runner (`flatpak.rs:3-11`, `host_exec.rs:5-13`). Every `Command` in
-`distrobox.rs` already goes through `self.cmd_runner` via `cmd_spawn`/`cmd_output`
-(`:612`, `:666`), so a bypass would silently run inside the sandbox. Worth a
+transform on the runner (`flatpak.rs::map_flatpak_spawn_host`,
+`host_exec.rs::map_distrobox_host_exec`). Every `Command` in `distrobox.rs` already
+goes through `self.cmd_runner` via `cmd_spawn`/`cmd_output`, so a bypass would
+silently run inside the sandbox. Worth a
 `#![deny]`-style guard: a clippy `disallowed-methods` lint on
 `std::process::Command::new` in `core/` as a regression net. **Open question Q10.**
 
@@ -1139,8 +1193,8 @@ transform on the runner (`flatpak.rs:3-11`, `host_exec.rs:5-13`). Every `Command
 `tx: Option<async_channel::Sender<TaskEvent>>`; `handle: JoinHandle<anyhow::Result<()>>`
 → `handle: Option<JoinHandle<()>>` (taken on completion so the registry does not hold
 finished handles); add `cancel: Option<oneshot::Sender<()>>` and `TaskId`.
-`push_output`'s ring-buffer logic (`:36-41`) is preserved verbatim — it is the 500-line
-cap.
+`push_output`'s ring-buffer logic is preserved verbatim — it is the
+`MAX_TASK_OUTPUT_LINES` cap (`core/src/tasks.rs`).
 
 **`app_state.rs` (36 lines) + `api.rs::is_distrobox_installed`.** The `LazyLock`
 global goes away: state moves into `App`/`Backend`, constructed once in `init()`. The
@@ -1164,7 +1218,7 @@ impl Terminal {
     pub fn launch(
         &self,
         runner: &CommandRunner,
-        enter: &Command,            // Distrobox::enter_cmd(name), distrobox.rs:1086
+        enter: &Command,            // Distrobox::enter_cmd(name)
     ) -> Result<Box<dyn Child + Send>, Error>;
 }
 ```
@@ -1205,22 +1259,25 @@ launching a terminal the user did not pick is worse than showing none.
 
 **`backends/container_runtime.rs` (54) + `docker.rs` (95) + `podman.rs` (138).**
 Currently dead — nothing calls `get_container_runtime` (`container_runtime.rs:83`),
-while `distrobox.rs` re-implements the podman→docker fallback inline **seven times**
-(§0.3-B7). Decision: **wire it, don't delete it**, because `podman.rs` carries value
+while `distrobox.rs` re-implements the podman→docker fallback inline **six times**
+(§0.3 item 7, which inherited T13/D27's correction of this count — the "seven" first
+written here included two *streaming* sites that never had a docker branch, and missed
+`start`, which did). Decision: **wire it, don't delete it**, because `podman.rs` carries value
 the inline code does not:
 
 - `PodmanEventStream` (`podman.rs:66`) parses `podman events` JSON and
-  `PodmanEvent::is_distrobox` / `is_container_event` (`:41`, `:50`) filter to
+  `PodmanEvent::is_distrobox` / `is_container_event` filter to
   distrobox container start/stop/exit. That is exactly the live container-state
   source a COSMIC app should subscribe to, and it is a `Stream` — a natural
   `Subscription::run`. It replaces the Dart side's poll-only `refresh()`.
-- `ContainerRuntime::usage()` returns the `Usage` struct (`container_runtime.rs:22`)
-  whose `Deserialize` aliases (`mem_usage`/`MemUsage`, `CPU`, `NetIO`, …) already
-  handle both podman's and docker's `stats` field names. `get_container_stats`
-  (`distrobox.rs:1524`) currently hand-parses the same data with
+- `ContainerRuntime::usage()` returns the `Usage` struct
+  (`container_runtime.rs::Usage`) whose `Deserialize` aliases
+  (`mem_usage`/`MemUsage`, `CPU`, `NetIO`, …) already handle both podman's and
+  docker's `stats` field names. `get_container_stats`
+  (`distrobox.rs::get_container_stats`) currently hand-parses the same data with
   `split('\t')` + `trim_end_matches('%')` + `unwrap_or(0.0)`.
 
-Shape of the change: extend `ContainerRuntime` with the operations the seven inline
+Shape of the change: extend `ContainerRuntime` with the operations the six inline
 sites need (`start`, `commit`, `rmi`, `images`, `stats_raw`), implement them once in
 `Podman`/`Docker`, and add `Distrobox::runtime() -> Result<Arc<dyn ContainerRuntime>>`
 memoized at construction. `get_container_runtime` (`:83`) already prefers Podman and
@@ -1263,17 +1320,29 @@ earlier draft of this note claimed.
 
 ### 6.4 The fixes, with where each lands
 
+**The line numbers in this table locate the code each fix *replaced*, not the code as
+it stands.** They are measurements of the pre-fix tree (`e5436a0`, the Phase-1
+baseline), and every one of them was invalidated by the fix itself. Each row's
+**As built** sentence names the symbol that carries the fix today. The trailing *File*
+column names the file the fix was assigned to, which is a **plan target and not always a
+current path**: the three task-runtime rows (`B2`, `B8`, `B9`) name
+`core/src/task_runtime.rs`, a planned module that landed as `core/src/tasks.rs` — each
+of those rows now states its current home. This is the same convention
+`DECISIONS.md` adopted for the five Rust-side sites that cited this document by line
+number — a citation that cannot outlive the change it describes is better written as a
+name.
+
 | ID | Fix | File |
 |---|---|---|
 | **B1** | **`emerge` + one package-manager table.** Replace the three divergent detection scripts (`distrobox.rs:1215`, `:1316`, `:1348`) with one `detect_package_manager -> Result<PackageManager, CoreError>` plus one verb table. Extend `PackageManager` with `Xbps`, `Emerge` (`known_distros.rs:45`); fix the `gentoo`→`Unknown` mapping (`:19`) and `void`→`Unknown` (`:32`). Verbs: apt `apt-get install -y`/`remove -y`; dnf/yum/pacman/zypper/apk as today; xbps `xbps-install -y`/`xbps-remove -y` (correct today); **emerge `emerge --ask=n <pkg>` / `emerge --unmerge <pkg>`** (note `--ask=n`, not `-y` — emerge has no `-y`). `Unknown` only when genuinely nothing is found, and then the UI offers manual command entry instead of an error toast | `distrobox.rs`, `known_distros.rs` |
-| **B2** | **Line-buffered readers.** Rewrite `stream_reader_to_task_output` (`api.rs:78`) to accumulate into a `Vec<u8>` and emit complete records split on `\n` **and** `\r` (apt/dnf/pacman/emerge progress bars are `\r`-driven), stripping `\r\n`, dropping empties, holding the incomplete tail across reads, and flushing on EOF. Because both stdout and stderr feed the same task, keep the existing interleaving semantics; a per-stream buffer prevents a `\r`-less stderr chunk from ever appearing | `task_runtime.rs` |
+| **B2** | **Line-buffered readers.** Rewrite `stream_reader_to_task_output` (`api.rs:78`) to accumulate into a `Vec<u8>` and emit complete records split on `\n` **and** `\r` (apt/dnf/pacman/emerge progress bars are `\r`-driven), stripping `\r\n`, dropping empties, holding the incomplete tail across reads, and flushing on EOF. Because both stdout and stderr feed the same task, keep the existing interleaving semantics; a per-stream buffer prevents a `\r`-less stderr chunk from ever appearing. **As built (T5):** `read_lines_to_registry` (`core/src/tasks.rs`) | `task_runtime.rs` |
 | **B3** | **Tolerant list parsing.** `Distrobox::list` returns `Err` and discards everything on one bad row. Change `ContainerInfo::from_str` failures to `warn!` + collect, and return `ContainerList { containers: Vec<ContainerInfo>, skipped: Vec<ParseIssue> }`. Apply the same to `list_snapshots`, `list_installed_packages`, `get_exported_binaries`, `list_apps`. `ParseIssue` carries the raw line and the parse error so the UI can show "3 rows skipped". Also fixes the inconsistency where `list()` fails hard but its peers silently skip. **As built (T13, D27):** `containers` is a `Vec`, not the `BTreeMap` this row originally specified — the map is erased at the `Backend` boundary anyway (`service.rs` already did `into_values()`), so the container type was never observable; the `Vec` preserves the name-sort the map happened to provide, and `Deref<Target = Vec<...>>` keeps every slice consumer unchanged. Blank lines are *not* parse issues. `TolerantList<T>` carries the other four (each returns `impl Deref<Target = Vec<T>>`), and only `containers()` hands the wrapper across the `Backend` boundary — `show_skipped_lines` is specified against `ContainerList.skipped` alone. **Also (T13, D27):** the header row is now dropped by *identity* (`is_distrobox_header`, a four-literal match on `ID/NAME/STATUS/IMAGE`, which is exactly what `distrobox-list` prints at line 231 of 1.8.2.5) rather than by position. The old `.skip(1)` predated T13 — it came in with T1's `git mv rust core` — and removed whatever line was first, so a response without a header lost a real container with no log, no count, and no UI trace: the same silent-loss class this row exists to remove. `is_clean_empty()` is wired to the Containers/Backups/Packages empty states, so an all-rows-unreadable list is never rendered as "no containers yet" | `distrobox.rs`, `models/dto.rs`, `app/src/views.rs` |
 | **B4** | **Correct desktop-entry field-code handling.** Add `desktop_file::split_exec(exec: &str) -> Vec<String>`: split on whitespace honoring quotes/backslash escapes (the spec's own quoting rules), then for each token strip `%%`→`%`, drop `%i`/`%c`/`%k` (**and** the extra argument `%i` would have introduced), drop `%v`/`%m`/`%d`/`%D`/`%n`/`%N` (deprecated), and strip `%f`/`%F`/`%u`/`%U`. `launch_app` (`:908`) then feeds the resulting argv to `cmd.args()` instead of `cmd.arg(one_big_string)`, fixing both the multi-argument bug and the injection hazard of interpolating a desktop-file `Exec` (which may originate inside a container) into a single argv slot. **As built (T13, D27):** the failure mechanism is the argv *slot count*, not a re-split — `distrobox-enter` ends in `exec "$@"` with no `eval` (1.8.2.5, the `--` branch: `shift; break` then `exec "$@"`), so the old single-string form asked for a program whose name was the whole fused string and the app never launched. `%i` **is** droppable-but-formable: `ExportableApp::entry.icon` is in scope, yet expanding it would be wrong, because `distrobox-export` rewrites `Icon=` to a host-side absolute path under `/run/host` (1.8.2.5, lines 582-590) that the container cannot open. An `Exec` that leaves no command after field-code removal is now a typed `Err` rather than a bare `enter --name <box> --` (a silent interactive shell in place of the app the user asked for) | `desktop_file.rs`, `distrobox.rs` |
 | **B5** | **`start`.** Add to `Distrobox`: `start(&self, name) -> Result<String, Error>` (`podman start <name>`, Docker fallback, mirroring `get_container_id` `:1395`) and `start_and_enter(&self, name) -> Result<Box<dyn Child + Send>, Error>` (`enter_cmd(name)` then `cmd_spawn`). Rationale: `distrobox enter` implicitly starts a stopped container (`enter_cmd`, `:1086`), so "Start" can be `enter`-detached or a true `podman start`; the latter is what a UI button labelled "Start" should mean, and it leaves the container `Up` with no attached process. New messages: `ContainerMsg::StartRequested(String)`. Requires the `Status::Created|Exited → Up` transition to be reflected by a `list()` refresh — where the `PodmanEventStream` subscription (§6.2) pays off | `distrobox.rs` |
 | **B6** | **Env guard dedupe + PATH scan.** `has_distrobox_host_exec` (`host_exec.rs:20`) gains the `$PATH` scan the Dart guard already has (`environment_guard_io.dart:28-45`), and the precedence chain collapses to `env::detect` (§2.4), called once. The `Blocked` message text is preserved so user-facing wording does not drift | `host_exec.rs`, `env.rs` |
 | **B7** | **Single runtime-selection helper.** The **six** inline podman→docker blocks route through one place (§6.2). **As built (T13, D27):** this row's "seven" was an overcount — counted in `HEAD`, six functions carried a fallback (`start`, `get_container_id`, `create_snapshot`, `list_snapshots`, `delete_snapshot`, `get_container_stats`) and all six convert. `export_container`/`import_container` never had a docker branch at all (they are **streaming**, `cmd_spawn` → `Child`, which a `String`-returning helper cannot serve) and stay podman-literal. Q11 is answered by the *helper* branch, not the trait — `Distrobox::runtime_output(cmd, Fallback)` plus `container_runtime::retarget`, a `Command::program` swap that leaves the argv byte-identical. The two fallback triggers are not interchangeable: five sites retry on error (`OnError`), `get_container_id` alone retries on empty output and **propagates** a podman error (`OnEmpty`) — its original podman branch ended in `?`, so retrying there would answer a broken podman with a misleading "container not found" | `distrobox.rs`, `container_runtime.rs` |
-| **B8** | **Cancel kills the child.** §3.3 — `oneshot` + `select!` + `Child::kill()` instead of `JoinHandle::abort` | `task_runtime.rs` |
-| **B9** | **Per-chunk write lock.** `push_task_output` (`api.rs:46`) takes the registry write lock once per 1024-byte chunk. With `TaskEvent` over a channel this becomes one send per *line*, and the registry is only locked on insert/finish/sweep | `task_runtime.rs` |
+| **B8** | **Cancel kills the child.** §3.3 — `oneshot` + `select!` + `Child::kill()` instead of `JoinHandle::abort`. **As built (T5):** `run_child_task` (`core/src/tasks.rs`) | `task_runtime.rs` |
+| **B9** | **Per-chunk write lock.** `push_task_output` (`api.rs:46`) takes the registry write lock once per 1024-byte chunk. With `TaskEvent` over a channel this becomes one send per *line*, and the registry is only locked on insert/finish/sweep. **As built (T5):** `RegistryTask::push_output` (`core/src/tasks.rs`) | `task_runtime.rs` |
 
 ---
 
@@ -1369,7 +1438,8 @@ cosmic-config keys snake_case, so the mapping is a rename, not a copy (§5.3).
 
 **Q7 — `selected_terminal` migration semantics (§5.3).** Legacy values are bare
 program names (`'gnome-terminal'`); the revived terminal model identifies a terminal by
-`full_command_id()` = `program + extra_args` (`supported_terminals.rs:27`). Plan: match
+`full_command_id()` = `program + extra_args`
+(`supported_terminals.rs::full_command_id`). Plan: match
 the legacy value against `program` and rewrite. Sub-question: what if the legacy value
 matches **two** entries (e.g. several Flatpak terminals all have
 `program == "flatpak"` but different `extra_args` — the crate's own doc-comment calls
@@ -1412,7 +1482,8 @@ long-lived child process and a failure mode where the stream dies silently and t
 stops updating. Does the event stream need a watchdog/reconnect, and is it worth it
 versus the `refresh_interval_secs` poll?
 
-**Q13 — `Status::Other(String)` display.** `Status` (`distrobox.rs:108`) is
+**Q13 — `Status::Other(String)` display.** `Status`
+(`core/src/backends/distrobox/distrobox.rs::Status`) is
 `Up | Created | Exited | Other(String)` — `Other` catches podman's transitional states
 (`Paused`, `Restarting`) and is currently rendered as free text. With live events
 (§6.2) these become reachable. Should the UI model them explicitly, or keep the
