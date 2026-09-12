@@ -86,11 +86,15 @@ flatpak-builder --user --install --force-clean --disable-rofiles-fuse \
     .flatpak-builder/build \
     flatpak/io.github.gosh_distrobox_manager.json
 
-# ---- 10. Smoke test (D17: alive + readiness + clean SIGTERM + negative) ---------
+# ---- 10 & 11. Smoke test (D17: alive + readiness + clean SIGTERM + negative) ----
+# Two stages, not one with two banners: the negative variant is a separate
+# claim (the Flatpak host grant is load-bearing), and it gets its own number so
+# a failure in it is distinguishable in CI output. Both were numbered 10 until
+# T16; the duplicate read as one stage that printed twice.
 stage 10 "smoke-test.sh (positive)"
 ./scripts/smoke-test.sh
 
-stage 10 "smoke-test.sh (negative: no flatpak-spawn grant)"
+stage 11 "smoke-test.sh (negative: no flatpak-spawn grant)"
 ./scripts/smoke-test.sh --negative-flatpak-spawn
 
 echo "verify.sh: ALL STAGES PASSED"

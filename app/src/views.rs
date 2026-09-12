@@ -789,8 +789,8 @@ pub fn push_toast(toasts: &mut Toasts<Message>, text: String) -> cosmic::app::Ta
 #[cfg(test)]
 mod tests {
     use super::{
-        all_rows_failed_copy, container_list_copy, dashboard_preview_copy, dashboard_status_body,
-        skipped_summary,
+        DashboardCounts, all_rows_failed_copy, container_list_copy, dashboard_preview_copy,
+        dashboard_status_body, skipped_summary,
     };
 
     /// The Containers page picks its empty state on `is_clean_empty()`, not
@@ -814,6 +814,79 @@ mod tests {
             "…but rows WERE returned, so `is_empty()` alone would show the wrong state"
         );
         assert!(ContainerList::default().is_clean_empty(), "no rows at all");
+    }
+
+    /// The app-side half of I23, at the seam `from_list` was introduced to be.
+    ///
+    /// T13's post-commit review found `app/src/app.rs`'s Dashboard counts
+    /// un-pinnable because `app/` has no lib target — so the value was built
+    /// inline inside `view_dashboard`, reachable only by driving the widget
+    /// tree, and hardcoding `skipped: 0` left the suite green. `from_list` is
+    /// the answer to that: named, pure, and callable from here.
+    ///
+    /// It shipped without a test. Both this file's doc comment above it and
+    /// `app/tests/skipped_rows.rs`'s module header asserted the seam *was*
+    /// tested, which made the claim worse than not having one — a reader
+    /// checking where I23's residual (b) was closed would have found a
+    /// reassuring sentence and no test. Pinned here so the sentence is true.
+    ///
+    /// The two mutations I23 named by hand, both of which this fails:
+    /// `skipped: 0` and `show_skipped: true`.
+    #[test]
+    fn dashboard_counts_do_not_prettify_the_skip_count() {
+        use gosh_distrobox_core::models::{ContainerInfo, Status};
+        use gosh_distrobox_core::{ContainerList, ParseIssue};
+
+        // Two containers, one of them running, plus a row that did not parse —
+        // the shape a real `distrobox ls` with one bad row produces.
+        let container = |name: &str, status: Status| ContainerInfo {
+            id: name.into(),
+            name: name.into(),
+            status,
+            image: "registry.fedoraproject.org/fedora:39".into(),
+        };
+        let list = ContainerList {
+            containers: vec![
+                container("fedora", Status::Up("Up 2 hours".into())),
+                container("ubuntu", Status::Created("Created".into())),
+            ],
+            skipped: vec![ParseIssue::new("77aa11cc22dd | broken", "3 columns")],
+        };
+
+        let counts = DashboardCounts::from_list(&list, false);
+        assert_eq!(counts.total, 2, "the total counts parsed rows");
+        assert_eq!(
+            counts.running, 1,
+            "the running split is delegated, not re-derived"
+        );
+        assert_eq!(counts.stopped, 1);
+        assert_eq!(
+            counts.skipped, 1,
+            "mutation: `skipped: 0` here is the exact edit I23 found green — the \
+             user is then shown a two-container fleet with no notice that a third \
+             row was dropped"
+        );
+
+        // Mutation: `show_skipped: true`, which would render the caption for a
+        // user who turned the preference off. Both directions asserted, so a
+        // hardcoded `true` and a hardcoded `false` each fail one of them.
+        assert!(
+            !DashboardCounts::from_list(&list, false).show_skipped,
+            "the preference must reach the view as the user set it"
+        );
+        assert!(
+            DashboardCounts::from_list(&list, true).show_skipped,
+            "…in both directions, or a hardcoded `false` passes the assertion above"
+        );
+
+        // The caption is gated on the preference *and* the count, so an
+        // all-clean list must stay silent even with the preference on.
+        let clean = DashboardCounts::from_list(&ContainerList::default(), true);
+        assert_eq!(clean.skipped, 0);
+        assert_eq!(
+            super::skipped_summary(clean.skipped, clean.show_skipped),
+            None
+        );
     }
 
     /// `container_list_copy` feeds all three container-gated empty states

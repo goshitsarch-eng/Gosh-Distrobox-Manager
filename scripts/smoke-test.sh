@@ -51,6 +51,11 @@ if [ "$mode" = "negative" ]; then
     # untouched.
     RUN_ARGS+=(--no-talk-name=org.freedesktop.Flatpak)
 fi
+# PIDs matching the binary pattern BEFORE we launch. Anything matching that
+# appears afterwards is ours; anything here is somebody else's. See (3) for
+# why this matters — a foreign instance makes `pgrep | head -1` signal the
+# wrong process and then blame the app for not exiting.
+PRE_EXISTING="$(pgrep -f '^gosh_distrobox_manage[r]' 2>/dev/null | tr '\n' ' ' || true)"
 flatpak run "${RUN_ARGS[@]}" --command=sh "$APP_ID" \
     -c 'exec gosh_distrobox_manager' >"$LOG_FILE" 2>&1 &
 APP_PID=$!
@@ -129,12 +134,34 @@ fi
 # takes no --signal flag in flatpak 1.18 (SIGKILL only), so direct signalling
 # is the only TERM path. The pgrep pattern uses the [r] trick so it never
 # matches this script's own cmdline (the D26 self-match class).
-BIN_PID="$(pgrep -f '^gosh_distrobox_manage[r]' | head -1 || true)"
+#
+# **Every PID is scoped to THIS launch (T16).** The bare pattern matches any
+# installed-and-running copy of the app, not just ours, and `pgrep` emits in
+# ascending PID order, so `head -1` prefers the OLDEST. An unrelated instance
+# alive on the machine therefore got the SIGTERM while ours kept running, and
+# the final check — also unscoped — saw ours and reported "binary lingers",
+# blaming the app for the script's own wrong target. Reproduced deterministically
+# by leaving one instance running before a `verify.sh`; passes when none is.
+# Subtracting PRE_EXISTING makes the test measure what it claims to: the
+# process this script started.
+mine() {
+    local p
+    for p in $(pgrep -f '^gosh_distrobox_manage[r]' 2>/dev/null || true); do
+        case " $PRE_EXISTING " in
+            *" $p "*) ;;          # not ours — it was running before we launched
+            *) printf '%s\n' "$p" ;;
+        esac
+    done
+}
+BIN_PID="$(mine | head -1)"
 if [ -z "$BIN_PID" ]; then
     echo "smoke ($mode): FAIL — no app binary found to signal" >&2
     kill -TERM "$APP_PID" || true
     wait "$APP_PID" || true
     exit 1
+fi
+if [ -n "$PRE_EXISTING" ]; then
+    echo "smoke ($mode): NOTE — ignoring pre-existing instance(s): $PRE_EXISTING" >&2
 fi
 kill -TERM "$BIN_PID"
 deadline=$((SECONDS + 15))
@@ -147,7 +174,7 @@ if kill -0 "$BIN_PID" 2>/dev/null; then
 fi
 kill -TERM "$APP_PID" 2>/dev/null || true
 wait "$APP_PID" || true
-if pgrep -f '^gosh_distrobox_manage[r]' >/dev/null 2>&1; then
+if [ -n "$(mine)" ]; then
     echo "smoke ($mode): FAIL — binary lingers after SIGTERM" >&2
     exit 1
 fi

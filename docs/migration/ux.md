@@ -10,6 +10,23 @@ Phase 1 deliverable. **No source changes.** This document is the UX half of the 
 > it from the pre-deletion tag:
 > `git show pre-t14-flutter-parity:lib/screens/dashboard_page.dart`.
 > The rows remain the parity record against which `app/` is walked in T16.
+>
+> **Post-T16 status (this paragraph added by T16; nothing below it was rewritten).**
+> The walk is done and its per-row results are `REPORT.md` appendix A — one row
+> per id 1–193, each with the verdict reached against the current tree and the
+> highest verification tier actually attained (D19: T1 unit, T2 integration,
+> `source`, or `none`). The verdicts there are **post-adversarial-correction**;
+> where they differ from a row's `Status` cell below, the appendix is the walk
+> result and this table remains the frozen Flutter-side record. Nothing in the
+> rows was edited — D19's amendment makes the `lib/…` citations provenance, and
+> re-tiering a row in place would have destroyed the evidence for the freeze
+> while leaving the freeze looking intact.
+> Summary: live 131 · rescoped 41 · dropped 9 · missing 7 · bug 5;
+> tiers: `source` 148 · T1 26 · T2 12 · `none` 7. All 15 `dead` rows accounted
+> for (REPORT.md §5.1). The walk found five `bug` rows (I29), seven `missing`
+> rows (I30) and one systemic ceiling — `app/`'s missing lib target, which puts
+> 148 of 193 rows at `source` (I31). Interactive break-every-flow could **not**
+> be performed; REPORT.md §4.4 records why and what that costs.
 
 - **Parity source of truth:** the Flutter UI as it stood at tag `pre-t14-flutter-parity`, under `lib/` (8,942 lines). Deleted from the working tree by T14; recoverable via `git show pre-t14-flutter-parity:<path>`. `AGENTS.md` confirms the GTK4/Rust UI is legacy and does not ship.
 - **Target:** libcosmic `1.0.0`, pinned rev `a401af8b1c54a8abd393b8c5b7c8809402f83850` (2026-09-10, edition 2024, `rust-version` 1.93, lib target renamed `cosmic`). Not on crates.io — git dependency only. Never depend on crates.io `cosmic` (squat) or tag `v0.12` (stale pre-1.0).
