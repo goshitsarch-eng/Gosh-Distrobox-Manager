@@ -1605,48 +1605,60 @@ impl cosmic::Application for App {
     /// Header actions (row #123): Updates gets Refresh + Upgrade All
     /// (`header_end` two buttons); Containers keeps New Container.
     fn header_end(&self) -> Vec<cosmic::Element<'_, Self::Message>> {
+        // Row #134: the shell header renders even while `views::gate`
+        // replaces the page body, so EVERY action goes through the env gate —
+        // actions that need a working backend render disabled in the blocked
+        // and not-installed states instead of toasting. (An earlier comment
+        // claimed the FAB's all-states bug "disappears with the move"; it did
+        // not — the header button inherited it. This gate is the fix.)
+        let blocked = is_blocked(self.backend.env());
+        let installed = self.backend.is_distrobox_installed();
+        let gate = |msg: Message| views::gate_header_message(msg, blocked, installed);
         match self.active_page() {
             Page::Containers if self.details_for.is_none() && self.wizard.is_none() => {
                 vec![
                     widget::button::suggested(fl!("app-new-container"))
-                        .on_press(Message::Containers(ContainerMsg::NewContainerRequested))
+                        .on_press_maybe(gate(Message::Containers(
+                            ContainerMsg::NewContainerRequested,
+                        )))
                         .into(),
                 ]
             }
             Page::Updates => vec![
                 widget::button::standard(fl!("action-refresh"))
-                    .on_press(Message::Containers(ContainerMsg::RefreshRequested))
+                    .on_press_maybe(gate(Message::Containers(ContainerMsg::RefreshRequested)))
                     .into(),
                 widget::button::suggested(fl!("app-upgrade-all"))
-                    .on_press(Message::Containers(ContainerMsg::UpgradeAllRequested))
+                    .on_press_maybe(gate(Message::Containers(ContainerMsg::UpgradeAllRequested)))
                     .into(),
             ],
-            // Row #134: the FAB's all-states bug disappears with the move —
-            // header-only affordance (no empty-list dependence).
             Page::Activity => vec![
                 widget::button::standard(fl!("app-clear-completed"))
-                    .on_press(Message::Tasks(TaskMsg::ClearCompleted))
+                    .on_press_maybe(gate(Message::Tasks(TaskMsg::ClearCompleted)))
                     .into(),
             ],
             Page::Backups => vec![
                 widget::button::suggested(fl!("app-new-snapshot"))
-                    .on_press(Message::Backups(
+                    .on_press_maybe(gate(Message::Backups(
                         crate::message::BackupsMsg::CreateDialogRequested,
-                    ))
+                    )))
                     .into(),
             ],
             // Row #172: header refresh, enabled only with a container to
             // reload (the page itself renders "Select a container" without
-            // one, so a press would have nothing to act on).
-            Page::Apps => vec![
-                widget::button::standard(fl!("action-refresh"))
-                    .on_press_maybe(
-                        self.selected_container
-                            .clone()
-                            .map(|c| Message::Apps(AppMsg::ReloadRequested(c))),
-                    )
-                    .into(),
-            ],
+            // one, so a press would have nothing to act on) AND a working
+            // env (row #134).
+            Page::Apps => {
+                let reload = self
+                    .selected_container
+                    .clone()
+                    .and_then(|c| gate(Message::Apps(AppMsg::ReloadRequested(c))));
+                vec![
+                    widget::button::standard(fl!("action-refresh"))
+                        .on_press_maybe(reload)
+                        .into(),
+                ]
+            }
             _ => vec![],
         }
     }

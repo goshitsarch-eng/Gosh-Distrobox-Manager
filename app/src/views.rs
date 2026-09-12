@@ -12,8 +12,10 @@
 //! with a warning icon and the consequence in the body.
 
 use crate::fl;
-use crate::icons::{distro_icon, is_running, status_label};
-use crate::message::{ContainerMsg, DetailsMsg, DialogMsg, EnvMsg, Message, TaskMsg, is_blocked};
+use crate::icons::{distro_icon, is_running, status_color, status_label};
+use crate::message::{
+    AppMsg, BackupsMsg, ContainerMsg, DetailsMsg, DialogMsg, EnvMsg, Message, TaskMsg, is_blocked,
+};
 use cosmic::iced::Length;
 use cosmic::widget::toaster::{Toast, Toasts};
 use cosmic::widget::{self, nav_bar};
@@ -289,6 +291,40 @@ pub fn header_refresh(page: Page) -> Option<HeaderRefresh> {
     }
 }
 
+/// Header-action env gate (T18, row #134): `Some(msg)` when the header action
+/// `msg` may fire in this env state, `None` when it cannot act and must render
+/// disabled. The shell header renders even while `gate()` replaces the page
+/// body, so without this Backups shows "New Snapshot" in the blocked and
+/// not-installed states and the press can only toast.
+///
+/// Gated (need a working backend): New Container, Upgrade All (else the #131
+/// empty-set toast), New Snapshot (else the select-a-container toast), Apps
+/// reload. NOT gated: Refresh — a refresh from a gated state re-probes first
+/// (T17), so it is the recovery path, not a dead control — and Clear
+/// Completed, which only touches the local task mirror. Any other message
+/// passes through: this helper constrains header actions only.
+///
+/// Pure so `parity_rows.rs` pins the table; `header_end` is the only caller.
+pub fn gate_header_message(
+    msg: Message,
+    blocked: bool,
+    distrobox_installed: bool,
+) -> Option<Message> {
+    let gated = blocked || !distrobox_installed;
+    let needs_backend = matches!(
+        msg,
+        Message::Containers(ContainerMsg::NewContainerRequested)
+            | Message::Containers(ContainerMsg::UpgradeAllRequested)
+            | Message::Backups(BackupsMsg::CreateDialogRequested)
+            | Message::Apps(AppMsg::ReloadRequested(_))
+    );
+    if gated && needs_backend {
+        None
+    } else {
+        Some(msg)
+    }
+}
+
 /// Shared container row (§6.3, rows #24/#37–#39): distro icon, name, status
 /// dot + text, chevron. Tap → details; inline Stop when running (row #25).
 pub fn container_row(
@@ -296,12 +332,10 @@ pub fn container_row(
     selected: bool,
 ) -> cosmic::Element<'static, Message> {
     // Rows #24/#34/#38/#45: distro icon, name, status DOT + text, chevron.
-    // The dot is a ● glyph in default text colour + the `status_label` copy.
-    // `status_color()` (theme success/accent/warning/control) exists and is
-    // unit-tested, but NEITHER `Text::color` NOR `SelectableText::color`
-    // satisfy `<Theme as Catalog>::Class: From<StyleFn>` in this iced rev —
-    // coloured text is structurally unavailable. No hard-coded colours
-    // (ux.md §3.5 holds); the coloured dot lands when the bound lifts.
+    // The "● {status}" line rides the theme role for the status
+    // (success/accent/warning/control) via `Text::class` — see
+    // `status_color` for why `class`, not `color`. No hard-coded colours
+    // (ux.md §3.5 holds).
     let status = status_label(&container.status);
     let row = widget::Row::new()
         .push(
@@ -311,7 +345,9 @@ pub fn container_row(
         )
         .push({
             let status_line: cosmic::Element<'static, Message> =
-                widget::text::caption(format!("● {status}")).into();
+                widget::text::caption(format!("● {status}"))
+                    .class(status_color(&container.status))
+                    .into();
             let name_col: cosmic::Element<'static, Message> = widget::Column::new()
                 .push(widget::text::body(container.name.clone()))
                 .push(status_line)
@@ -568,21 +604,20 @@ fn stat_tile(title: String, value: String) -> cosmic::Element<'static, Message> 
 /// gives the view's contract something executable to assert against, the same
 /// seam `DashboardCounts::from_list` gives the Dashboard's skip count.
 ///
-/// The running variant is deliberately **not** called `Running`. I29/#20 is the
-/// finding that a running task row renders no spinner at all — only a Cancel
-/// button — while both the frozen row and `task_row`'s doc comment claim
-/// "spinner while running". `RunningCancelOnly` puts that gap in the type's own
-/// vocabulary, so adding a progress affordance forces this variant's rename and
-/// therefore updates the test that pins it, instead of silently leaving two
-/// documents describing behaviour that now exists.
+/// The running variant used to be called `RunningCancelOnly`: I29/#20 filed that
+/// a running task row rendered no spinner at all — only a Cancel button — and
+/// the name put that gap in the type's own vocabulary, so adding a progress
+/// affordance would force a rename and therefore update the test pinning it.
+/// T18 closed the gap (`task_row` renders spinner + "In progress…" + Cancel),
+/// so the variant is `Running` now and the pinning test was updated with it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TaskAffordance {
-    /// Completed successfully: a check.
+    /// Completed successfully: a check + "Completed" caption.
     Succeeded,
     /// Completed with a failure: an error icon, never a check (row #21).
     Failed,
-    /// Still running: a Cancel control, and nothing else (row #20 / I29).
-    RunningCancelOnly,
+    /// Still running: spinner + "In progress…" caption + Cancel (row #20).
+    Running,
 }
 
 impl TaskAffordance {
@@ -598,7 +633,7 @@ impl TaskAffordance {
         match self {
             TaskAffordance::Succeeded => Some("object-select-symbolic"),
             TaskAffordance::Failed => Some("dialog-error-symbolic"),
-            TaskAffordance::RunningCancelOnly => None,
+            TaskAffordance::Running => None,
         }
     }
 }
@@ -610,16 +645,17 @@ pub fn task_affordance(completed: bool, success: bool) -> TaskAffordance {
     match (completed, success) {
         (true, true) => TaskAffordance::Succeeded,
         (true, false) => TaskAffordance::Failed,
-        (false, _) => TaskAffordance::RunningCancelOnly,
+        (false, _) => TaskAffordance::Running,
     }
 }
 
-/// Active-task row (rows #19–#21): label + done/cancel.
+/// Active-task row (rows #19–#21): label + state affordance.
 ///
-/// **Row #20 is not met, and I29 filed it as such.** The frozen row and this
-/// doc comment both say "spinner while running"; the running branch renders a
-/// Cancel button and no progress affordance. See `TaskAffordance::RunningCancelOnly`
-/// for why the gap is spelled out rather than papered over.
+/// Row #20's four elements: description (the label), a spinner while running
+/// (`progress_bar::indeterminate_circular`, the same widget the Updates page
+/// uses), an "In progress…"/"Completed" status caption, and Cancel on running
+/// rows (row #21). A failed task keeps the error icon with no success copy —
+/// "Completed" beside it would read as success.
 pub fn task_row(
     id: gosh_distrobox_core::TaskId,
     label: String,
@@ -634,18 +670,32 @@ pub fn task_row(
         .align_y(cosmic::iced::Alignment::Center);
     // The icon name comes off the resolved variant rather than being re-derived
     // from `success` here: `task_affordance` already made that decision, and two
-    // sources for one decision is how row #20's doc comment drifted from its code.
-    if let Some(icon) = task_affordance(completed, success).icon_name() {
-        let done: cosmic::Element<'static, Message> =
-            widget::icon::from_name(icon).size(16).icon().into();
-        row = row.push(done);
-    } else {
-        // `RunningCancelOnly`: the Cancel control is the only trailing widget,
-        // because there is no progress affordance (I29 / row #20).
-        let cancel: cosmic::Element<'static, Message> = widget::button::text(fl!("action-cancel"))
-            .on_press(Message::Tasks(TaskMsg::CancelRequested(id)))
-            .into();
-        row = row.push(cancel);
+    // sources for one decision is how row #20's doc comment once drifted from
+    // its code.
+    match task_affordance(completed, success) {
+        TaskAffordance::Running => {
+            let spinner: cosmic::Element<'static, Message> =
+                widget::progress_bar::indeterminate_circular().into();
+            row = row
+                .push(spinner)
+                .push(widget::text::caption(fl!("task-state-running")));
+            let cancel: cosmic::Element<'static, Message> =
+                widget::button::text(fl!("action-cancel"))
+                    .on_press(Message::Tasks(TaskMsg::CancelRequested(id)))
+                    .into();
+            row = row.push(cancel);
+        }
+        done => {
+            let icon = done
+                .icon_name()
+                .expect("finished variants always resolve to an icon");
+            let badge: cosmic::Element<'static, Message> =
+                widget::icon::from_name(icon).size(16).icon().into();
+            row = row.push(badge);
+            if done == TaskAffordance::Succeeded {
+                row = row.push(widget::text::caption(fl!("task-state-completed")));
+            }
+        }
     }
     row.into()
 }
@@ -696,9 +746,14 @@ pub fn view_details(
         hero
     });
 
-    // Status card (rows #58–#59).
+    // Status card (rows #58–#59). The status copy rides its theme role
+    // (row #186), like the shared row's dot.
     let mut status_row = widget::Row::new()
-        .push(widget::text::body(status_label(&container.status)).width(Length::Fill))
+        .push(
+            widget::text::body(status_label(&container.status))
+                .class(status_color(&container.status))
+                .width(Length::Fill),
+        )
         .push(widget::text::caption(fl!(
             "dash-container-id",
             id = container.id.to_string()

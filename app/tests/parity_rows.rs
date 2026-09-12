@@ -19,9 +19,10 @@
 //! a pure function first (see `views::task_affordance`).
 
 use gosh_distrobox_core::{EnvGuard, EnvMode};
-use gosh_distrobox_manager::message::TaskMsg;
+use gosh_distrobox_manager::message::{AppMsg, BackupsMsg, ContainerMsg, Message, TaskMsg};
 use gosh_distrobox_manager::views::{
-    self, HeaderRefresh, Page, ReprobeOutcome, TaskAffordance, header_refresh, reprobe_outcome,
+    self, HeaderRefresh, Page, ReprobeOutcome, TaskAffordance, gate_header_message, header_refresh,
+    reprobe_outcome,
 };
 
 // ------------------------------------------------------------- I26 / row #5
@@ -159,12 +160,11 @@ fn a_task_completion_carries_its_success_flag_rather_than_implying_it() {
 /// Rows #20/#21: the trailing-affordance decision, for all four flag
 /// combinations.
 ///
-/// The `(false, _)` arms are the #20 finding: a running task resolves to
-/// `RunningCancelOnly` **for both values of `success`**, because while a task is
-/// running the success flag is not yet meaningful and must not influence the
-/// render. `TaskAffordance::RunningCancelOnly`'s doc comment carries the rest —
-/// that the frozen row and `task_row`'s doc comment both claim a spinner the
-/// running branch does not render.
+/// The `(false, _)` arms resolve to `Running` **for both values of `success`**,
+/// because while a task is running the success flag is not yet meaningful and
+/// must not influence the render. The variant used to be `RunningCancelOnly` —
+/// the name filed the #20 gap (no spinner) in the type itself — and T18's
+/// rename to `Running` is what forced this edit, as designed.
 #[test]
 fn the_task_row_affordance_covers_all_four_flag_combinations() {
     assert_eq!(
@@ -177,21 +177,20 @@ fn the_task_row_affordance_covers_all_four_flag_combinations() {
         TaskAffordance::Failed,
         "row #21: a completed, failed task must never resolve to a check"
     );
-    // The #20 arms. If someone adds a progress affordance, this variant's name
-    // changes and these two lines must change with it — which is the intent.
+    // The #20 arms: running renders spinner + "In progress…" + Cancel.
     assert_eq!(
         views::task_affordance(false, true),
-        TaskAffordance::RunningCancelOnly,
-        "running resolves to the cancel-only affordance regardless of `success`"
+        TaskAffordance::Running,
+        "running resolves to the running affordance regardless of `success`"
     );
     assert_eq!(
         views::task_affordance(false, false),
-        TaskAffordance::RunningCancelOnly,
+        TaskAffordance::Running,
         "`success` must not influence a running row: it is not yet meaningful"
     );
 }
 
-/// The gap's own control: `RunningCancelOnly` is not a `Succeeded`/`Failed`.
+/// The running variant is not a `Succeeded`/`Failed`.
 ///
 /// Trivial on its face, but it is the assertion that would catch a refactor
 /// collapsing the three variants into a bool pair — which would silently delete
@@ -321,5 +320,67 @@ fn a_blocked_reprobe_keeps_the_guard_message_as_the_banner() {
             error: Some(message.to_string())
         },
         "Blocked dominates: even a stale installed=true must not recover"
+    );
+}
+
+// ------------------------------------------------------------ T18 / row #134
+
+/// Row #134: header actions that need a working backend are gated in the
+/// blocked and not-installed states; the recovery and local actions stay live.
+///
+/// I29 filed this as `bug`: the shell header renders even while the gate
+/// replaces the page body, so Backups showed "New Snapshot" in every state
+/// and the press could only toast. `header_end` now routes every action
+/// through `gate_header_message` (`on_press_maybe`), so this table IS the
+/// header's enabled matrix — one entry per header button, pinned in both
+/// gated states and the healthy state.
+#[test]
+fn gated_header_actions_disable_while_recovery_and_local_actions_stay_live() {
+    use ContainerMsg::{NewContainerRequested, RefreshRequested, UpgradeAllRequested};
+    // (message, gated-in-blocked/not-installed-states?)
+    let table: Vec<(Message, bool)> = vec![
+        (Message::Containers(NewContainerRequested), true),
+        (Message::Containers(UpgradeAllRequested), true),
+        (Message::Backups(BackupsMsg::CreateDialogRequested), true),
+        (Message::Apps(AppMsg::ReloadRequested("box".into())), true),
+        // Refresh re-probes from a gated state (T17): the recovery path.
+        (Message::Containers(RefreshRequested), false),
+        // Clear Completed touches only the local task mirror.
+        (Message::Tasks(TaskMsg::ClearCompleted), false),
+    ];
+    for (msg, gated) in &table {
+        for (blocked, installed, state) in
+            [(true, true, "blocked"), (false, false, "not-installed")]
+        {
+            let verdict = gate_header_message(msg.clone(), blocked, installed);
+            if *gated {
+                assert!(
+                    verdict.is_none(),
+                    "{msg:?} must disable in the {state} state: it cannot act there"
+                );
+            } else {
+                assert!(
+                    verdict.is_some(),
+                    "{msg:?} must stay live in the {state} state: it is the recovery/local path"
+                );
+            }
+        }
+        assert!(
+            gate_header_message(msg.clone(), false, true).is_some(),
+            "{msg:?} must stay live in the healthy state"
+        );
+    }
+}
+
+/// The gate constrains header actions only: any other message passes through
+/// unchanged, so a future header button cannot be silently swallowed by an
+/// over-broad match.
+#[test]
+fn the_header_gate_passes_non_header_messages_through() {
+    let id = gosh_distrobox_core::TaskId::new();
+    let msg = Message::Tasks(TaskMsg::CancelRequested(id));
+    assert!(
+        gate_header_message(msg, true, false).is_some(),
+        "non-header messages are outside the gate's contract"
     );
 }

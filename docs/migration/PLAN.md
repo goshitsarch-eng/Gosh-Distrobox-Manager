@@ -226,7 +226,7 @@ them.
 | # | Task | Owner | State |
 |---|---|---|---|
 | T17 | EnvGuard re-probe (#13) + Images refresh routing (#97) | arch | **Done** (166+29+5+5+4+6+4+9+7+5+4+5+1 green; 5 new tests, each killed under a behaviour-deleting mutation; `verify.sh --fast` stages 1–8 green; I29 #13/#97 → `live` with appendix rows re-tiered, aggregate counts reconcile in T21) |
-| T18 | Task-card spinner (#20) + gated header actions (#134) + status/distro colours (#186/#185) | ux | ☐ open |
+| T18 | Task-card spinner (#20) + gated header actions (#134) + status/distro colours (#186/#185) | ux | **Done** (166+30+5+6+4+6+4+11+7+5+4+5+1 green; 4 new tests + 2 updated pins, each killed under a behaviour-deleting mutation; `verify.sh --fast` stages 1–8 green; I29 #20/#134/#186 → `live`, I30 #185 → `live`, #24/#34/#38 caveats updated, I29 closed; aggregate counts reconcile in T21) |
 | T19 | Nav icons (#5) + card terminal (#40) + card menu (#41) + shortcuts (#189) + a11y labels (#190), on the D28 destination set | ux | ☐ open |
 | T20 | Task-history persistence (#161) + I31 render-harness half | arch | ☐ open |
 | T21 | CI release artifact (I20) + full gate + REPORT.md appendix | pkg | ☐ open |

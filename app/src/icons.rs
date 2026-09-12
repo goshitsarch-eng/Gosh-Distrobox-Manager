@@ -87,12 +87,12 @@ pub fn is_running(status: &Status) -> bool {
 /// theme at render time (`cosmic::theme::active()`), same as libcosmic's
 /// own widgets (e.g. `toaster`).
 ///
-/// NOT YET RENDERED: coloured `Text` is unavailable in this iced rev
-/// (`<Theme as Catalog>::Class: From<StyleFn>` unsatisfied for both `Text`
-/// and `SelectableText` — verified against the vendored source). Views use
-/// the default-colour ● until the bound lifts; first render lands with the
-/// row that needs it (T9 terminal banner or T11 activity states).
-#[allow(dead_code)]
+/// Rendered via `Text::class`, NOT `Text::color`: `color` needs
+/// `Theme::Class: From<StyleFn>`, which cosmic's `Text` class cannot satisfy
+/// (it is `Copy`, so it cannot hold the boxed closure) — but the class has
+/// `From<Color>`, so `.class(status_color(..))` compiles and themes. An
+/// earlier comment claimed coloured text was structurally unavailable; T18
+/// re-checked the vendored source and found the `class` path.
 pub fn status_color(status: &Status) -> cosmic::iced::Color {
     let theme = cosmic::theme::active();
     let cosmic = theme.cosmic();
@@ -101,6 +101,47 @@ pub fn status_color(status: &Status) -> cosmic::iced::Color {
         Status::Created(_) => cosmic.accent_color().into(),
         Status::Exited(_) => cosmic.warning_color().into(),
         Status::Other(_) => cosmic.control_7().into(),
+    }
+}
+
+/// Theme distro colour (ux.md §3.6, row #185 — the half that was never
+/// written). Same 10-outcome superset conditions as `distro_icon`, mapped
+/// onto theme roles instead of Flutter's hard-coded brand literals (D10:
+/// literals defeat high-contrast and user accents, so they are not ported).
+///
+/// The mapping is deliberately decorative, not semantic: three roles cannot
+/// carry ten distro identities, so families rotate over
+/// accent/success/warning with unknown falling back to the neutral control —
+/// the same fallback shape `distro_icon` uses. `destructive` is excluded on
+/// purpose: no decorative marker should borrow the destructive semantic.
+/// Distro identity is always carried by the icon + name as well, never by
+/// colour alone.
+pub fn distro_colour(image: &str) -> cosmic::iced::Color {
+    let theme = cosmic::theme::active();
+    let cosmic = theme.cosmic();
+    let lower = image.to_lowercase();
+    // Same branch order as `distro_icon` (the 10-outcome superset); the role
+    // rotation keeps adjacent families distinct.
+    if lower.contains("ubuntu") {
+        cosmic.accent_color().into()
+    } else if lower.contains("fedora") {
+        cosmic.success_color().into()
+    } else if lower.contains("arch") {
+        cosmic.warning_color().into()
+    } else if lower.contains("debian") {
+        cosmic.accent_color().into()
+    } else if lower.contains("alpine") {
+        cosmic.success_color().into()
+    } else if lower.contains("centos") || lower.contains("rocky") {
+        cosmic.warning_color().into()
+    } else if lower.contains("opensuse") || lower.contains("suse") {
+        cosmic.accent_color().into()
+    } else if lower.contains("gentoo") {
+        cosmic.success_color().into()
+    } else if lower.contains("void") {
+        cosmic.warning_color().into()
+    } else {
+        cosmic.control_7().into()
     }
 }
 
@@ -145,6 +186,48 @@ mod tests {
         assert_eq!(
             status_color(&Status::Other("".into())),
             cosmic.control_7().into()
+        );
+    }
+
+    #[test]
+    fn distro_colours_follow_theme_roles() {
+        // Row #185: the same 10-outcome superset as `distro_icon`, pinned
+        // against the live theme (not fixed RGB) so light/dark/high-contrast
+        // all satisfy this by construction. Rotation order and the neutral
+        // fallback are load-bearing — a reorder silently re-tints families.
+        let theme = cosmic::theme::active();
+        let cosmic = theme.cosmic();
+        let (accent, success, warning, neutral) = (
+            cosmic.accent_color(),
+            cosmic.success_color(),
+            cosmic.warning_color(),
+            cosmic.control_7(),
+        );
+        for image in ["ubuntu:24.04", "Debian 12", "opensuse/tumbleweed"] {
+            assert_eq!(
+                distro_colour(image),
+                accent.into(),
+                "{image} rides the accent role"
+            );
+        }
+        for image in ["Fedora 41", "alpine:edge", "gentoo/stage3"] {
+            assert_eq!(
+                distro_colour(image),
+                success.into(),
+                "{image} rides the success role"
+            );
+        }
+        for image in ["archlinux:latest", "rockylinux:9", "voidlinux"] {
+            assert_eq!(
+                distro_colour(image),
+                warning.into(),
+                "{image} rides the warning role"
+            );
+        }
+        assert_eq!(
+            distro_colour("something-else"),
+            neutral.into(),
+            "unknown distros fall back to the neutral control, like `distro_icon`"
         );
     }
 

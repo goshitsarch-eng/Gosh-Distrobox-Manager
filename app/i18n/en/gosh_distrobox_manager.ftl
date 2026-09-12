@@ -183,6 +183,12 @@ activity-state-running = In Progress
 activity-state-success = Completed
 activity-state-failed = Failed
 
+# Shared task row (row #20, dashboard + updates). Separate keys from the
+# activity-* trio on purpose: the running caption carries the ellipsis the
+# frozen row quotes ("In progress…"), which the timeline meta must not show.
+task-state-running = In progress…
+task-state-completed = Completed
+
 # Timeline row + output drawer metadata: "{ relative time } · { status }".
 # Both values are placeables — the status is itself an already-localized
 # activity-state-* message.

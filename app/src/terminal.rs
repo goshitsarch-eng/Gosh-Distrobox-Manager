@@ -13,7 +13,7 @@
 //! No output subscription — the terminal owns its window.
 
 use crate::fl;
-use crate::icons::{distro_icon, is_running, status_label};
+use crate::icons::{distro_icon, is_running, status_color, status_label};
 use crate::message::{ContainerMsg, DetailsMsg, Message, TerminalMsg};
 use cosmic::iced::Length;
 use cosmic::widget;
@@ -64,7 +64,10 @@ pub fn info_header(container: &ContainerInfo) -> cosmic::Element<'static, Messag
         .push(
             widget::Column::new()
                 .push(widget::text::body(container.name.clone()))
-                .push(widget::text::caption(status_label(&container.status)))
+                .push(
+                    widget::text::caption(status_label(&container.status))
+                        .class(status_color(&container.status)),
+                )
                 .push(widget::text::monotext(container.image.clone()))
                 .spacing(2)
                 .width(Length::Fill),

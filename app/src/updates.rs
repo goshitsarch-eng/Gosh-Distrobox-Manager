@@ -9,7 +9,7 @@
 //! dashboard mirror rows, not a fifth dialog copy).
 
 use crate::fl;
-use crate::icons::{distro_icon, is_running};
+use crate::icons::{distro_colour, distro_icon, is_running};
 use crate::message::{ContainerMsg, Message};
 use crate::views::empty_state;
 use cosmic::iced::Length;
@@ -48,7 +48,10 @@ pub fn running_card(
                 widget::Column::new()
                     .push(widget::text::body(container.name.clone()))
                     .push(widget::text::caption(state))
-                    .push(widget::text::caption(container.image.clone()))
+                    .push(
+                        widget::text::caption(container.image.clone())
+                            .class(distro_colour(&container.image)),
+                    )
                     .spacing(2)
                     .width(Length::Fill),
             )
@@ -95,7 +98,10 @@ pub fn stopped_card(container: &ContainerInfo) -> cosmic::Element<'static, Messa
                 widget::Column::new()
                     .push(widget::text::body(container.name.clone()))
                     .push(widget::text::caption(fl!("misc-updates-state-stopped")))
-                    .push(widget::text::caption(container.image.clone()))
+                    .push(
+                        widget::text::caption(container.image.clone())
+                            .class(distro_colour(&container.image)),
+                    )
                     .spacing(2)
                     .width(Length::Fill),
             )

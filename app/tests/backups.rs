@@ -184,3 +184,69 @@ async fn blocked_env_refuses_backup_ops() {
             .contains("Distrobox container")
     );
 }
+
+// ------------------------------------------------------------ T18 / row #134
+
+/// T2: the header gate reads the LIVE `Backend::env()`, not a re-spelled
+/// fixture. Both backends are real `Backend`s over `NullCommandRunner`; the
+/// only difference is the guard, and the gate's verdict on the exact header
+/// `Message`s flips with it. (`header_end`'s call itself is source-verified —
+/// every button goes through `gate_header_message` — per the T17 precedent:
+/// no App harness exists until T20.)
+#[tokio::test]
+async fn header_gate_follows_the_live_backend_env() {
+    use gosh_distrobox_manager::message::{
+        AppMsg, BackupsMsg, ContainerMsg, Message, TaskMsg, is_blocked,
+    };
+    use gosh_distrobox_manager::views::gate_header_message;
+
+    fn backend_for(mode: EnvMode, installed: bool) -> Backend {
+        Backend::new(
+            Distrobox::null_command_runner(&[]),
+            EnvGuard {
+                mode,
+                message: None,
+                distrobox_installed: installed,
+            },
+        )
+    }
+
+    // The six header messages `header_end` sends, in page order.
+    let header_messages = || {
+        vec![
+            Message::Containers(ContainerMsg::NewContainerRequested),
+            Message::Containers(ContainerMsg::RefreshRequested),
+            Message::Containers(ContainerMsg::UpgradeAllRequested),
+            Message::Tasks(TaskMsg::ClearCompleted),
+            Message::Backups(BackupsMsg::CreateDialogRequested),
+            Message::Apps(AppMsg::ReloadRequested("box".into())),
+        ]
+    };
+
+    for backend in [
+        backend_for(EnvMode::Blocked, false),
+        backend_for(EnvMode::Native, false),
+    ] {
+        let guard = backend.env();
+        let verdicts: Vec<bool> = header_messages()
+            .into_iter()
+            .map(|m| {
+                gate_header_message(m, is_blocked(&guard), guard.distrobox_installed).is_some()
+            })
+            .collect();
+        assert_eq!(
+            verdicts,
+            vec![false, true, false, true, false, false],
+            "in a gated env only Refresh (re-probe) and Clear Completed (local) stay live"
+        );
+    }
+
+    let healthy = backend_for(EnvMode::Native, true);
+    let guard = healthy.env();
+    for msg in header_messages() {
+        assert!(
+            gate_header_message(msg, is_blocked(&guard), guard.distrobox_installed).is_some(),
+            "every header action stays live on a healthy backend"
+        );
+    }
+}

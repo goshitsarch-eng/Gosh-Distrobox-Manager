@@ -22,7 +22,7 @@
 //! backend work, out of scope.
 
 use crate::fl;
-use crate::icons::distro_icon;
+use crate::icons::{distro_colour, distro_icon};
 use crate::message::Message;
 use cosmic::widget;
 
@@ -176,7 +176,11 @@ fn image_card_body(image: &str) -> cosmic::Element<'static, Message> {
     widget::Column::new()
         .push(check)
         .push(widget::text::body(name))
-        .push(widget::text::caption(tag))
+        // Row #185: the tag rides the distro's theme role (decorative — the
+        // icon + name carry the identity). Shared with the Images page, so
+        // this one line covers two of Flutter's three `_getDistroColor`
+        // copies (the third was updates_page).
+        .push(widget::text::caption(tag).class(distro_colour(image)))
         .spacing(8)
         .align_x(cosmic::iced::Alignment::Center)
         .into()
